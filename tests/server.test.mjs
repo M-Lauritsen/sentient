@@ -17,6 +17,207 @@ function record(type, data = {}) {
   return JSON.stringify({ id: `${type}-${Date.now()}`, type, data }) + '\n';
 }
 
+test('SSE session projection uses stable opaque ids and excludes internal keys', async (t) => {
+  const activityRoot = await fixture(t);
+  const directory = 'private-session-dir';
+  await mkdir(path.join(activityRoot, directory));
+  await writeFile(path.join(activityRoot, directory, 'events.jsonl'), '');
+  const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
+  t.after(() => app.stop());
+  const { port } = await app.start();
+  const base = `http://127.0.0.1:${port}`;
+  const connect = () => fetch(`${base}/events`, { headers: { origin: base } });
+  const readSnapshot = async () => {
+    const response = await connect();
+    const reader = response.body.getReader();
+    const payload = new TextDecoder().decode((await reader.read()).value);
+    await reader.cancel();
+    const json = JSON.parse(payload.match(/data: (.+)\n\n/)[1]);
+    return { json, payload };
+  };
+  const first = await readSnapshot();
+  const sessions = first.json.snapshot.sessions;
+  assert.equal(sessions.length, 1);
+  assert.match(sessions[0].id, /^[A-Z2-7]{6}$/);
+  assert.deepEqual(Object.keys(sessions[0]).sort(), ['elapsedMs', 'id', 'stats', 'status']);
+  assert.equal(sessions[0].status, 'idle');
+  assert.deepEqual(sessions[0].stats.kinds, { thinking: 0, step: 0, completion: 0, activity: 0 });
+  assert.equal(first.json.snapshot.sessionsTruncated, false);
+  assert.deepEqual(first.json.snapshot.hudSessions, []);
+  assert.equal(first.json.snapshot.hudSessionsTruncated, false);
+  assert.deepEqual(first.json.snapshot.waitingSessionIds, []);
+  assert.equal(first.json.snapshot.waitingSessions, 0);
+  assert.doesNotMatch(first.payload, /private-session-dir|events\.jsonl|[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i);
+  const second = await readSnapshot();
+  assert.equal(second.json.snapshot.sessions[0].id, sessions[0].id);
+  await appendFile(path.join(activityRoot, directory, 'events.jsonl'),
+    record('assistant.turn_start', { turnId: 'live' }));
+  await app.source.poll();
+  const third = await readSnapshot();
+  assert.equal(third.json.snapshot.hudSessions.length, 1);
+  assert.equal(third.json.snapshot.hudSessions[0].status, 'running');
+  assert.equal(third.json.snapshot.hudSessions[0].id, sessions[0].id);
+  assert.deepEqual(Object.keys(third.json.snapshot.hudSessions[0]).sort(),
+    ['elapsedMs', 'id', 'stats', 'status']);
+});
+
+test('SSE projects only bounded wait fields for waiting sessions', async (t) => {
+  const activityRoot = await fixture(t);
+  const directory = 'private-wait-session';
+  await mkdir(path.join(activityRoot, directory));
+  const file = path.join(activityRoot, directory, 'events.jsonl');
+  await writeFile(file, '');
+  const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
+  t.after(() => app.stop());
+  const { port } = await app.start();
+  const base = `http://127.0.0.1:${port}`;
+  const response = await fetch(`${base}/events`, { headers: { origin: base } });
+  const reader = response.body.getReader();
+  let payload = new TextDecoder().decode((await reader.read()).value);
+  await appendFile(file,
+    record('permission.requested', { permissionId: 'private-permission-id' }) +
+    record('user_input.requested', { requestId: 'private-input-id' }) +
+    record('elicitation.requested', { requestId: 'private-elicitation-id' }) +
+    record('assistant.message', { content: 'PRIVATE' }));
+  await app.source.poll();
+  const eventFrames = () => payload.split('\n\n');
+  while (eventFrames().filter((event) => event.startsWith('event: snapshot')).length < 2 ||
+      eventFrames().filter((event) => event.includes('event: activity') &&
+        event.includes('"eventType":"assistant.message"')).length < 1) {
+    const part = await reader.read();
+    assert.equal(part.done, false);
+    payload += new TextDecoder().decode(part.value);
+  }
+  const snapshots = () => eventFrames().filter((event) => event.startsWith('event: snapshot'))
+    .map((event) => JSON.parse(event.match(/data: (.+)/)[1]));
+  assert.equal(snapshots().at(-1).snapshot.waitingSessions, 1);
+  assert.equal(snapshots().at(-1).snapshot.sessions[0].status, 'waiting');
+  assert.equal(snapshots().at(-1).snapshot.sessions[0].waitKind, 'both');
+  assert.deepEqual(snapshots().at(-1).snapshot.waitingSessionIds,
+    [snapshots().at(-1).snapshot.sessions[0].id]);
+  assert.deepEqual(snapshots().at(-1).snapshot.hudSessions, []);
+
+  await appendFile(file,
+    record('permission.completed', { permissionId: 'private-permission-id' }) +
+    record('user_input.completed', { requestId: 'private-input-id' }) +
+    record('elicitation.completed', { requestId: 'private-elicitation-id' }) +
+    record('assistant.message', { content: 'PRIVATE AGAIN' }));
+  await app.source.poll();
+  while (eventFrames().filter((event) => event.startsWith('event: snapshot')).length < 3 ||
+      eventFrames().filter((event) => event.includes('event: activity') &&
+        event.includes('"eventType":"assistant.message"')).length < 2) {
+    const part = await reader.read();
+    assert.equal(part.done, false);
+    payload += new TextDecoder().decode(part.value);
+  }
+  const activities = eventFrames().filter((event) => event.includes('event: activity'))
+    .map((event) => JSON.parse(event.match(/data: (.+)/)[1]));
+  assert.deepEqual(activities.map(({ eventType }) => eventType), ['assistant.message', 'assistant.message']);
+  assert.doesNotMatch(payload,
+    /permission\.(?:requested|completed)|user_input\.(?:requested|completed)|elicitation\.(?:requested|completed)/);
+  assert.equal(snapshots().at(-1).snapshot.waitingSessions, 0);
+  assert.deepEqual(snapshots().at(-1).snapshot.waitingSessionIds, []);
+  assert.notEqual(snapshots().at(-1).snapshot.sessions[0].status, 'waiting');
+  assert.deepEqual(Object.keys(snapshots()[1].snapshot.sessions[0]).sort(),
+    ['elapsedMs', 'id', 'stats', 'status', 'waitKind']);
+  assert.doesNotMatch(payload, /private-wait-session|private-permission-id|events\.jsonl/);
+  await reader.cancel();
+});
+
+test('SSE exposes bounded session stats without journal identifiers or private event content', async (t) => {
+  const activityRoot = await fixture(t);
+  const directory = 'private-stats-session';
+  await mkdir(path.join(activityRoot, directory));
+  const file = path.join(activityRoot, directory, 'events.jsonl');
+  await writeFile(file, '');
+  const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
+  t.after(() => app.stop());
+  const { port } = await app.start();
+  await appendFile(file,
+    record('assistant.turn_start', { turnId: 'private-turn' }) +
+    record('assistant.message', { content: 'PRIVATE MESSAGE' }) +
+    record('tool.execution_start', {
+      toolCallId: 'private-call', toolName: 'functions.view', arguments: 'PRIVATE ARGUMENTS',
+    }) +
+    record('subagent.started', { toolCallId: 'private-subagent-call' }) +
+    record('subagent.completed', { toolCallId: 'private-subagent-call' }) +
+    record('session.error', { message: 'PRIVATE ERROR' }));
+  await app.source.poll();
+  const base = `http://127.0.0.1:${port}`;
+  const response = await fetch(`${base}/events`, { headers: { origin: base } });
+  const reader = response.body.getReader();
+  const payload = new TextDecoder().decode((await reader.read()).value);
+  await reader.cancel();
+  const message = JSON.parse(payload.match(/data: (.+)\n\n/)[1]);
+  const stats = message.snapshot.sessions[0].stats;
+  assert.deepEqual(stats.kinds, { thinking: 1, step: 1, completion: 0, activity: 4 });
+  assert.deepEqual(stats.tools, [['functions.view', 1]]);
+  assert.deepEqual(stats.subagents, { started: 1, completed: 1, failed: 0 });
+  assert.equal(stats.errors, 1);
+  assert.doesNotMatch(payload,
+    /PRIVATE|private-stats-session|private-turn|private-call|private-subagent-call|events\.jsonl/);
+});
+
+test('worst-case stats snapshot for 32 sessions stays within the SSE buffer bound', async (t) => {
+  const activityRoot = await fixture(t);
+  for (let index = 0; index < 32; index++) {
+    const directory = path.join(activityRoot, `session-${index}`);
+    await mkdir(directory);
+    await writeFile(path.join(directory, 'events.jsonl'), '');
+  }
+  const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
+  t.after(() => app.stop());
+  const { port } = await app.start();
+  for (const session of app.source.sessions.values()) {
+    Object.assign(session.stats, {
+      kinds: { thinking: 1e9, step: 1e9, completion: 1e9, activity: 1e9 },
+      typeCounts: new Map(Array.from({ length: 10 }, (_, index) =>
+        [`type-${index}`.padEnd(128, 'a'), 1e9])),
+      otherTypes: 1e9,
+      toolCounts: new Map(Array.from({ length: 10 }, (_, index) =>
+        [`tool-${index}`.padEnd(128, 'a'), 1e9])),
+      otherTools: 1e9,
+      subagents: { started: 1e9, completed: 1e9, failed: 1e9 },
+      errors: 1e9,
+      runningMs: 1e9,
+      unverifiedMs: 1e9,
+      waitingMs: 1e9,
+      turns: { count: 1e9, lastMs: 1e9, maxMs: 1e9, durations: Array(50).fill(1e9) },
+    });
+  }
+  const response = await fetch(`http://127.0.0.1:${port}/events`, {
+    headers: { origin: `http://127.0.0.1:${port}` },
+    signal: AbortSignal.timeout(3000),
+  });
+  const reader = response.body.getReader();
+  let payload = '';
+  while (!payload.includes('\n\n')) {
+    const chunk = await reader.read();
+    assert.equal(chunk.done, false);
+    payload += new TextDecoder().decode(chunk.value);
+  }
+  assert.equal(response.status, 200);
+  assert.match(payload, /event: snapshot/);
+  assert.ok(Buffer.byteLength(payload) < 128 * 1024);
+
+  app.source.emit('activity', { kind: 'activity', eventType: 'overflow.test' });
+  app.source.emit('activity', { kind: 'activity', eventType: 'overflow.test' });
+  let ended = false;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        ended = true;
+        break;
+      }
+    }
+  } catch (error) {
+    if (error?.name === 'AbortError' || error?.name === 'TimeoutError') throw error;
+    ended = true;
+  }
+  assert.equal(ended, true, 'the queued frame plus the next stats snapshot exceeds the client buffer cap');
+});
+
 test('loopback server serves only explicit app assets and denies traversal', async (t) => {
   const activityRoot = await fixture(t);
   const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
@@ -35,6 +236,9 @@ test('loopback server serves only explicit app assets and denies traversal', asy
   const three = await fetch(`${base}/vendor/three.module.js`);
   assert.equal(three.status, 200);
   assert.match(three.headers.get('content-type'), /javascript/);
+  const statsUi = await fetch(`${base}/session-stats-ui.mjs`);
+  assert.equal(statsUi.status, 200);
+  assert.match(statsUi.headers.get('content-type'), /javascript/);
   const privatePath = await fetch(`${base}/plans/sentient-copilot/spec.md`);
   assert.equal(privatePath.status, 404);
   const traversal = await fetch(`${base}/%2e%2e/package.json`);
@@ -77,7 +281,7 @@ test('SSE emits sanitized current snapshot, live deltas, and never replays prior
   const first = await reader.read();
   const initial = new TextDecoder().decode(first.value);
   assert.match(initial, /event: snapshot/);
-  assert.doesNotMatch(initial, /completion|PRIVATE HISTORIC TEXT|historic/);
+  assert.doesNotMatch(initial, /event: activity|PRIVATE HISTORIC TEXT|historic/);
   assert.match(initial, /"runningSessions":0,"unverifiedRunningSessions":0/);
 
   await appendFile(file, record('assistant.turn_start', { turnId: 'live' }) +
@@ -107,7 +311,7 @@ test('SSE emits sanitized current snapshot, live deltas, and never replays prior
   const reconnectReader = reconnected.body.getReader();
   const reconnectSnapshot = new TextDecoder().decode((await reconnectReader.read()).value);
   assert.match(reconnectSnapshot, /event: snapshot/);
-  assert.doesNotMatch(reconnectSnapshot, /event: activity|completion|PRIVATE COMPLETION|toolName/);
+  assert.doesNotMatch(reconnectSnapshot, /event: activity|PRIVATE COMPLETION/);
   assert.match(reconnectSnapshot, /"sequence":\d+/);
   await reconnectReader.cancel();
 });
@@ -154,7 +358,7 @@ test('mid-poll reconnect excludes already observed queued events, including comp
     newcomerText = new TextDecoder().decode((await newcomer.read()).value);
     assert.match(newcomerText, /event: snapshot/);
     assert.match(newcomerText, /"sequence":2/);
-    assert.doesNotMatch(newcomerText, /event: activity|eventType|completion/);
+    assert.doesNotMatch(newcomerText, /event: activity/);
     assert.equal(app.source.pendingActivities.size, 0);
   } finally {
     release();
@@ -164,7 +368,8 @@ test('mid-poll reconnect excludes already observed queued events, including comp
   while (!newcomerText.includes('future.after_admission')) {
     newcomerText += new TextDecoder().decode((await newcomer.read()).value);
   }
-  assert.doesNotMatch(newcomerText, /completion|session.task_complete|assistant.turn_start/);
+  assert.equal((newcomerText.match(/event: activity/g) || []).length, 1);
+  assert.doesNotMatch(newcomerText, /"eventType":"session\.task_complete"/);
   let originalText = '';
   while (!originalText.includes('"kind":"completion"')) {
     originalText += new TextDecoder().decode((await original.read()).value);
@@ -240,12 +445,12 @@ test('SSE subagent trees expose bounded epoch-opaque identifiers without local v
     text += new TextDecoder().decode(part.value);
   }
   const snapshot = JSON.parse(text.split('data: ').at(-1).split('\n')[0]).snapshot;
-  assert.equal(snapshot.sessions.length, 1);
-  assert.match(snapshot.sessions[0].sid, /^[A-Z2-7]{4}$/);
-  assert.match(snapshot.sessions[0].subagents[0].sid, /^[A-Z2-7]{4}$/);
-  assert.equal(snapshot.sessions[0].status, 'running');
+  assert.equal(snapshot.treeSessions.length, 1);
+  assert.match(snapshot.treeSessions[0].sid, /^[A-Z2-7]{4}$/);
+  assert.match(snapshot.treeSessions[0].subagents[0].sid, /^[A-Z2-7]{4}$/);
+  assert.equal(snapshot.treeSessions[0].status, 'running');
   assert.doesNotMatch(text, /PRIVATE|tool-call|agent-description|session-directory|events\.jsonl/);
-  const childSid = snapshot.sessions[0].subagents[0].sid;
+  const childSid = snapshot.treeSessions[0].subagents[0].sid;
   await appendFile(file, record('subagent.completed', { toolCallId: 'PRIVATE-tool-call' }));
   await app.source.poll();
   let retiredText = '';
@@ -255,7 +460,7 @@ test('SSE subagent trees expose bounded epoch-opaque identifiers without local v
     retiredText += new TextDecoder().decode(part.value);
   }
   const retiredSnapshot = JSON.parse(retiredText.split('data: ').at(-1).split('\n')[0]).snapshot;
-  assert.deepEqual(retiredSnapshot.sessions[0].retired, [{ sid: childSid, outcome: 'completed' }]);
+  assert.deepEqual(retiredSnapshot.treeSessions[0].retired, [{ sid: childSid, outcome: 'completed' }]);
   assert.doesNotMatch(retiredText, /PRIVATE|tool-call|agent-description|session-directory|events\.jsonl/);
   await reader.cancel();
 });

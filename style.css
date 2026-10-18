@@ -107,6 +107,112 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
   letter-spacing: 0.1em;
 }
 
+.hud-sessions {
+  top: 108px;
+  left: auto;
+  right: 24px;
+  width: min(440px, calc(100vw - 48px));
+  max-height: 48vh;
+  overflow: hidden;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.hud-sessions[hidden] { display: none; }
+.hud-impulses h2, .hud-sessions h2 { margin: 0 0 10px; font-size: inherit; font-weight: 500; opacity: 0.65; }
+.hud-sessions p { margin: 8px 0 0; }
+.hud-sessions.is-unknown { color: #78808b; }
+.hud-sessions.is-unknown h2, .hud-sessions.is-unknown #session-state { color: #9ba1aa; }
+
+#session-list {
+  max-height: min(208px, 25vh);
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  pointer-events: auto;
+  list-style: none;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, #000 25%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0%, #000 25%, transparent 100%);
+}
+
+#session-list:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+.session-row { margin: 0 0 5px; line-height: normal; }
+.session-summary, .session-toggle {
+  display: grid;
+  grid-template-columns: minmax(70px, 0.8fr) minmax(130px, 1.4fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 26px;
+  width: 100%;
+  line-height: 26px;
+  text-transform: none;
+}
+.session-toggle {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.session-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.stats-dialog {
+  position: fixed;
+  inset: 0;
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100dvh - 48px);
+  margin: auto;
+  padding: 24px;
+  overflow-y: auto;
+  border: 1px solid rgba(61, 139, 255, 0.45);
+  background: rgba(2, 8, 18, 0.95);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 8px rgba(61, 139, 255, 0.4);
+  box-shadow: 0 0 40px rgba(61, 139, 255, 0.15);
+}
+.stats-dialog::backdrop { background: rgba(0, 3, 9, 0.7); }
+.stats-dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.stats-dialog-header h2 { margin: 0; font-size: 12px; font-weight: 500; text-transform: uppercase; }
+.stats-close {
+  flex: 0 0 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid rgba(61, 139, 255, 0.4);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 24px;
+  cursor: pointer;
+}
+.stats-close:hover { background: rgba(61, 139, 255, 0.1); }
+.stats-close:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.session-stats {
+  padding: 16px 0 0;
+  line-height: 1.8;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  overflow-wrap: anywhere;
+}
+.session-stats p { margin: 12px 0 0; }
+.session-stats[hidden] { display: none; }
+.session-stats-heading { color: #d8e7ff; }
+
+.session-id, .session-status, .session-elapsed { white-space: nowrap; }
+.session-id { color: #c9dcfa; }
+.session-status { overflow: hidden; text-overflow: ellipsis; }
+.session-elapsed { color: #d8e7ff; text-align: right; font-variant-numeric: tabular-nums; }
+.session-running .session-status { color: var(--blue); }
+.session-running-unverified .session-status { color: #6688b5; border-bottom: 1px dashed currentColor; }
+.session-idle .session-status { color: #969ca6; }
+.session-ended { opacity: 0.48; }
+.session-ended .session-status { color: #9298a1; text-decoration: line-through; }
+
 .hud-impulses h2 {
   margin: 0 0 10px;
   font-size: inherit;
@@ -183,4 +289,11 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
   .hud-top { gap: 1rem; font-size: 9px; }
   .hud-coverage { top: 74px; padding: 0 12px; font-size: 9px; }
   .hud-impulses { top: 118px; left: 16px; width: min(440px, calc(100vw - 32px)); }
+  .hud-sessions {
+    top: calc(118px + min(208px, 25vh) + 38px);
+    right: 16px;
+    width: min(440px, calc(100vw - 32px));
+    max-height: 35vh;
+  }
+  #session-list { max-height: min(208px, 25vh); }
 }

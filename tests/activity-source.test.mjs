@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, appendFile, readFile, rename } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { LocalActivitySource } from '../copilot/activity-source.mjs';
+import { deriveStatus, LocalActivitySource } from '../copilot/activity-source.mjs';
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'sentient-journals-'));
@@ -15,7 +15,303 @@ function event(type, data = {}, extras = {}) {
   return JSON.stringify({ id: `event-${Math.random()}`, type, timestamp: new Date().toISOString(), data, ...extras }) + '\n';
 }
 
-test('all valid event families and future types emit metadata once, including empty lifecycle data', async (t) => {
+test('session HUD status follows live, stale, waiting, ended, and later-event transitions', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, '');
+  let now = 100_000;
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => now });
+  t.after(() => source.stop());
+  await source.start();
+  await appendFile(file, event('assistant.turn_start', { turnId: 'turn' }));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].status, 'running');
+  now += 46_000;
+  assert.equal(source.snapshot().sessions[0].status, 'running-unverified');
+  await appendFile(file, event('permission.requested', { permissionId: 'permission' }));
+  now++;
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].status, 'waiting');
+  await appendFile(file, event('permission.completed', { permissionId: 'permission' }) +
+    event('session.shutdown'));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].status, 'ended');
+  await appendFile(file, event('session.start'));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].status, 'idle');
+});
+
+test('baseline starts and invalidated running state are idle; rebaseline resets status timing', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, event('assistant.turn_start', { turnId: 'baseline' }));
+  let now = 200_000;
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => now });
+  t.after(() => source.stop());
+  await source.start();
+  assert.equal(source.snapshot().sessions[0].status, 'idle');
+  await appendFile(file, event('assistant.turn_start', { turnId: 'live' }));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].status, 'running');
+  source.invalidateAllSessions();
+  assert.equal(source.snapshot().sessions[0].status, 'idle');
+  now += 1_000;
+  source.resetFileState(source.files.get(file));
+  assert.equal(source.snapshot().sessions[0].status, 'idle');
+  assert.equal(source.snapshot().sessions[0].elapsedMs, 0);
+});
+
+test('coverage invalidation clears even a previously observed ended status', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, '');
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  await source.start();
+  await appendFile(file, event('assistant.turn_start', { turnId: 'live' }));
+  await source.poll();
+  await appendFile(file, event('session.shutdown'));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].status, 'ended');
+  source.invalidateAllSessions();
+  assert.equal(source.snapshot().sessions[0].status, 'idle');
+});
+
+test('coverage invalidation clears open waits and fails closed to idle', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, '');
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  await source.start();
+  await appendFile(file, event('assistant.turn_start', { turnId: 'turn' }) +
+    event('permission.requested', { permissionId: 'permission' }));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].status, 'waiting');
+  assert.equal(source.sessions.get(file).agents.get('root').waiting, true);
+  source.invalidateAllSessions();
+  assert.equal(source.snapshot().sessions[0].status, 'idle');
+  assert.equal(source.sessions.get(file).waitingPermissions.size, 0);
+  assert.equal(source.sessions.get(file).waitingInputs.size, 0);
+  assert.equal(source.sessions.get(file).agents.get('root').waiting, false);
+
+  await appendFile(file, event('user_input.requested', { requestId: 'input' }));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].status, 'waiting');
+  source.invalidateAllSessions();
+  assert.equal(source.snapshot().sessions[0].status, 'idle');
+
+  await appendFile(file, event('elicitation.requested', { requestId: 'elicitation' }));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].status, 'waiting');
+  source.invalidateAllSessions();
+  assert.equal(source.snapshot().sessions[0].status, 'idle');
+});
+
+test('source session records are ordered, capped, and elapsed-only changes do not emit change', async (t) => {
+  const root = await fixture(t);
+  let now = 300_000;
+  for (let i = 0; i < 34; i++) {
+    const dir = path.join(root, `session-${String(i).padStart(2, '0')}`);
+    await mkdir(dir);
+    await writeFile(path.join(dir, 'events.jsonl'), '');
+  }
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => now });
+  t.after(() => source.stop());
+  await source.start();
+  for (const file of source.files.keys()) {
+    await appendFile(file, event('assistant.turn_start', { turnId: 'live' }));
+  }
+  await source.poll();
+  const snapshot = source.snapshot();
+  assert.equal(snapshot.sessions.length, 32);
+  assert.equal(snapshot.sessionsTruncated, true);
+  assert.equal(snapshot.sessions[0].status, 'running');
+  assert.equal(snapshot.hudSessions.length, 32);
+  assert.equal(snapshot.hudSessionsTruncated, true);
+  assert.ok(snapshot.hudSessions.every(({ status }) => status === 'running'));
+  let changes = 0;
+  source.on('change', () => changes++);
+  changes = 0;
+  now += 1_000;
+  source.emitChangeIfNeeded();
+  assert.equal(changes, 0);
+  assert.equal(source.snapshot().sessions[0].elapsedMs, 1_000);
+});
+
+test('session records preserve status ordering and produce a separate active HUD projection', async (t) => {
+  const root = await fixture(t);
+  let now = 400_000;
+  const names = ['wait-old', 'wait-new', 'live', 'stale', 'idle', 'ended'];
+  for (const name of names) {
+    const dir = path.join(root, name);
+    await mkdir(dir);
+    await writeFile(path.join(dir, 'events.jsonl'), '');
+  }
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => now });
+  t.after(() => source.stop());
+  await source.start();
+  const states = Object.fromEntries([...source.sessions.entries()]
+    .map(([key, session]) => [path.basename(path.dirname(key)), session]));
+  states['wait-old'].waitingInputs.add('request-old');
+  states['wait-old'].lastEventAt = now - 20;
+  states['wait-new'].waitingPermissions.add('permission-new');
+  states['wait-new'].lastEventAt = now - 10;
+  states.live.agents.set('root', { active: true, live: true });
+  states.live.lastEventAt = now;
+  states.stale.agents.set('root', { active: true, live: true });
+  states.stale.lastEventAt = now - 46_000;
+  states.idle.lastEventAt = now - 30_000;
+  states.ended.ended = true;
+  states.ended.lastEventAt = now;
+
+  const snapshot = source.snapshot();
+  const sessions = snapshot.sessions;
+  assert.deepEqual(sessions.map(({ key, status }) => [path.basename(path.dirname(key)), status]), [
+    ['wait-new', 'waiting'],
+    ['wait-old', 'waiting'],
+    ['live', 'running'],
+    ['stale', 'running-unverified'],
+    ['idle', 'idle'],
+    ['ended', 'ended'],
+  ]);
+  assert.equal(snapshot.sessionsTruncated, false);
+  assert.deepEqual(snapshot.hudSessions.map(({ key, status }) =>
+    [path.basename(path.dirname(key)), status]), [
+    ['live', 'running'],
+    ['stale', 'running-unverified'],
+  ]);
+  assert.equal(snapshot.hudSessionsTruncated, false);
+  assert.deepEqual(snapshot.waitingSessionKeys.map((key) => path.basename(path.dirname(key))), [
+    'wait-new',
+    'wait-old',
+  ]);
+});
+
+test('wait kinds reflect open permission and input requests and clear independently or terminally', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, '');
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  await source.start();
+
+  await appendFile(file, event('permission.requested', { permissionId: 'permission' }) +
+    event('user_input.requested', { requestId: 'input' }));
+  await source.poll();
+  let snapshot = source.snapshot();
+  assert.equal(snapshot.waitingSessions, 1);
+  assert.equal(snapshot.sessions[0].status, 'waiting');
+  assert.equal(snapshot.sessions[0].waitKind, 'both');
+
+  await appendFile(file, event('permission.completed', { permissionId: 'permission' }));
+  await source.poll();
+  snapshot = source.snapshot();
+  assert.equal(snapshot.sessions[0].waitKind, 'input');
+  assert.equal(snapshot.waitingSessions, 1);
+
+  await appendFile(file, event('session.error'));
+  await source.poll();
+  snapshot = source.snapshot();
+  assert.equal(snapshot.sessions[0].status, 'idle');
+  assert.equal(snapshot.sessions[0].waitKind, undefined);
+  assert.equal(snapshot.waitingSessions, 0);
+});
+
+test('waiting session count includes sessions beyond the 32-row HUD cap', async (t) => {
+  const root = await fixture(t);
+  for (let i = 0; i < 34; i++) {
+    const directory = path.join(root, `wait-${String(i).padStart(2, '0')}`);
+    await mkdir(directory);
+    await writeFile(path.join(directory, 'events.jsonl'), '');
+  }
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  await source.start();
+  for (const file of source.files.keys()) {
+    await appendFile(file, event('user_input.requested', { requestId: 'request' }));
+  }
+  await source.poll();
+  const snapshot = source.snapshot();
+  assert.equal(snapshot.waitingSessions, 34);
+  assert.equal(snapshot.sessions.length, 32);
+  assert.equal(snapshot.sessionsTruncated, true);
+  assert.ok(snapshot.sessions.every((session) =>
+    session.status === 'waiting' && session.waitKind === 'input'));
+});
+
+test('active HUD projection retains running sessions when waiters fill the shared list cap', async (t) => {
+  const root = await fixture(t);
+  for (const prefix of ['wait', 'run']) {
+    for (let i = 0; i < 34; i++) {
+      const directory = path.join(root, `${prefix}-${String(i).padStart(2, '0')}`);
+      await mkdir(directory);
+      await writeFile(path.join(directory, 'events.jsonl'), '');
+    }
+  }
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  await source.start();
+  for (const file of source.files.keys()) {
+    const prefix = path.basename(path.dirname(file)).split('-')[0];
+    await appendFile(file, prefix === 'wait'
+      ? event('user_input.requested', { requestId: 'request' })
+      : event('assistant.turn_start', { turnId: 'live' }));
+  }
+  await source.poll();
+  const snapshot = source.snapshot();
+  assert.equal(snapshot.sessions.length, 32);
+  assert.ok(snapshot.sessions.every(({ status }) => status === 'waiting'));
+  assert.equal(snapshot.hudSessions.length, 32);
+  assert.ok(snapshot.hudSessions.every(({ status }) => status === 'running'));
+  assert.equal(snapshot.hudSessionsTruncated, true);
+  assert.equal(snapshot.waitingSessionKeys.length, 32);
+});
+
+test('truncated HUD projection keeps observed waiters visible ahead of a full running list', async (t) => {
+  const root = await fixture(t);
+  const names = [...Array.from({ length: 34 }, (_, index) => `running-${index}`), 'wait-permission', 'wait-input'];
+  for (const name of names) {
+    const directory = path.join(root, name);
+    await mkdir(directory);
+    await writeFile(path.join(directory, 'events.jsonl'), '');
+  }
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => 10_000 });
+  t.after(() => source.stop());
+  await source.start();
+  for (const [file, session] of source.sessions) {
+    const name = path.basename(path.dirname(file));
+    if (name.startsWith('running-')) {
+      session.agents.set('root', { active: true, eligible: true, live: true, waiting: false, toolCalls: new Set() });
+    } else if (name === 'wait-permission') {
+      session.waitingPermissions.add('permission');
+    } else {
+      session.waitingInputs.add('input');
+    }
+  }
+  const snapshot = source.snapshot();
+  assert.equal(snapshot.sessionsTruncated, true);
+  assert.equal(snapshot.waitingSessions, 2);
+  assert.deepEqual(snapshot.sessions.slice(0, 2).map(({ status, waitKind }) => [status, waitKind]), [
+    ['waiting', 'input'],
+    ['waiting', 'permission'],
+  ]);
+  assert.equal(snapshot.sessions.length, 32);
+  assert.equal(snapshot.sessions.filter(({ status }) => status === 'running').length, 30);
+});
+
+test('deriveStatus is a pure ordered status projection', () => {
+  assert.equal(deriveStatus({ ended: true, waitingPermissions: new Set(['p']) }, 0), 'ended');
+  assert.equal(deriveStatus({ waitingPermissions: new Set(['p']), waitingInputs: new Set() }, 0), 'waiting');
+  assert.equal(deriveStatus({ agents: new Map([['root', { active: true, live: true }]]), lastEventAt: 0 }, 46_000), 'running-unverified');
+});
+
+test('valid event families publish activity metadata except user-wait lifecycle events', async (t) => {
   const root = await fixture(t);
   await mkdir(path.join(root, 'session'));
   const file = path.join(root, 'session', 'events.jsonl');
@@ -27,14 +323,19 @@ test('all valid event families and future types emit metadata once, including em
   await source.start();
   const types = ['user.message', 'assistant.message', 'assistant.message_delta',
     'assistant.reasoning_delta', 'tool.execution_progress', 'tool.execution_complete',
-    'permission.requested', 'permission.completed', 'subagent.started', 'subagent.completed',
+    'permission.requested', 'permission.completed', 'user_input.requested', 'user_input.completed',
+    'elicitation.requested', 'elicitation.completed', 'subagent.started', 'subagent.completed',
     'session.start', 'session.error', 'session.shutdown', 'abort', 'future.new_event'];
   const records = types.map((type, i) => event(type, i % 2 ? null : {
     content: 'PRIVATE', result: 'PRIVATE', arguments: 'PRIVATE',
   }, { id: `family-${i}` }));
   await appendFile(file, records.join('') + records.join(''));
   await source.poll();
-  assert.deepEqual(observed.map((value) => value.eventType), types);
+  const waitingEvents = new Set([
+    'permission.requested', 'permission.completed', 'user_input.requested',
+    'user_input.completed', 'elicitation.requested', 'elicitation.completed',
+  ]);
+  assert.deepEqual(observed.map((value) => value.eventType), types.filter((type) => !waitingEvents.has(type)));
   assert.ok(observed.every((value) => value.kind === 'activity'));
   assert.doesNotMatch(JSON.stringify(observed), /PRIVATE|content|result|arguments|family-/);
   assert.equal(source.snapshot().thinkingSessions, 0);
@@ -705,15 +1006,15 @@ test('background subagent keeps running after the root turn ends until its own r
 test('subagent tree records only live starts and distinguishes completed, failed and cleared retirements', async (t) => {
   const { file, source } = await runningFixture(t,
     event('subagent.started', { toolCallId: 'historic-call' }, { agentId: 'historic-agent' }));
-  assert.deepEqual(source.snapshot().sessions[0].subagents, [], 'baseline starts are not represented');
-  assert.deepEqual(source.snapshot().sessions[0].retired, []);
+  assert.deepEqual(source.snapshot().treeSessions[0].subagents, [], 'baseline starts are not represented');
+  assert.deepEqual(source.snapshot().treeSessions[0].retired, []);
 
   await appendFile(file,
     event('subagent.started', { toolCallId: 'completed-call' }, { agentId: 'completed-agent' }) +
     event('subagent.started', { toolCallId: 'failed-call' }, { agentId: 'failed-agent' }) +
     event('subagent.started', { toolCallId: 'cleared-call' }, { agentId: 'cleared-agent' }));
   await source.poll();
-  let session = source.snapshot().sessions[0];
+  let session = source.snapshot().treeSessions[0];
   assert.deepEqual(session.subagents.map(({ callId }) => callId),
     ['completed-call', 'failed-call', 'cleared-call']);
   assert.ok(session.subagents.every(({ ageMs }) => ageMs === 0));
@@ -722,7 +1023,7 @@ test('subagent tree records only live starts and distinguishes completed, failed
     event('subagent.completed', { toolCallId: 'completed-call' }, { agentId: 'completed-agent' }) +
     event('subagent.failed', { toolCallId: 'failed-call' }, { agentId: 'failed-agent' }));
   await source.poll();
-  session = source.snapshot().sessions[0];
+  session = source.snapshot().treeSessions[0];
   assert.deepEqual(session.subagents.map(({ callId }) => callId), ['cleared-call']);
   assert.deepEqual(session.retired.map(({ callId, outcome }) => [callId, outcome]), [
     ['completed-call', 'completed'],
@@ -731,7 +1032,7 @@ test('subagent tree records only live starts and distinguishes completed, failed
 
   await appendFile(file, event('abort', null));
   await source.poll();
-  session = source.snapshot().sessions[0];
+  session = source.snapshot().treeSessions[0];
   assert.deepEqual(session.subagents, []);
   assert.deepEqual(session.retired.map(({ callId, outcome }) => [callId, outcome]), [
     ['completed-call', 'completed'],
@@ -746,7 +1047,7 @@ test('subagent tree display and retirement history respect bounded caps', async 
     event('subagent.started', { toolCallId: `call-${i}` }, { agentId: `agent-${i}` })).join('');
   await appendFile(file, starts);
   await source.poll();
-  let session = source.snapshot().sessions[0];
+  let session = source.snapshot().treeSessions[0];
   assert.equal(session.subagents.length, 16);
   assert.equal(session.subagentsMore, 1);
   assert.equal(session.retired.length, 0);
@@ -754,7 +1055,7 @@ test('subagent tree display and retirement history respect bounded caps', async 
   await appendFile(file, Array.from({ length: 17 }, (_, i) =>
     event('subagent.completed', { toolCallId: `call-${i}` }, { agentId: `agent-${i}` })).join(''));
   await source.poll();
-  session = source.snapshot().sessions[0];
+  session = source.snapshot().treeSessions[0];
   assert.deepEqual(session.subagents, []);
   assert.equal(session.retired.length, 8);
   assert.deepEqual(session.retired.map(({ outcome }) => outcome), Array(8).fill('completed'));
@@ -770,7 +1071,7 @@ test('subagent tree includes no more than 32 journal-session anchors', async (t)
   const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
   t.after(() => source.stop());
   await source.start();
-  assert.equal(source.snapshot().sessions.length, 32);
+  assert.equal(source.snapshot().treeSessions.length, 32);
 });
 
 test('user waits pause running pulses; tool waits do not', async (t) => {
@@ -964,4 +1265,167 @@ test('null subagent terminal identifiers stop only their session and keep covera
     assert.equal(source.snapshot().sourceStatus, 'available', terminal);
     assert.deepEqual(running(source), [1, 0], `${terminal}: unrelated session keeps running`);
   }
+});
+
+test('session stats count only published live records and retain validated metadata', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file,
+    event('assistant.message', { content: 'PRIVATE' }, { id: 'baseline-message' }) +
+    event('subagent.started', { toolCallId: 'baseline-call' }, { id: 'baseline-subagent' }) +
+    event('subagent.completed', { toolCallId: 'baseline-call' }, { id: 'baseline-completed' }));
+  let now = 500_000;
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => now });
+  t.after(() => source.stop());
+  await source.start();
+  let stats = source.snapshot().sessions[0].stats;
+  assert.deepEqual(stats.kinds, { thinking: 0, step: 0, completion: 0, activity: 0 });
+  assert.deepEqual(stats.types, []);
+  assert.deepEqual(stats.subagents, { started: 0, completed: 0, failed: 0 });
+  assert.equal(stats.errors, 0);
+  assert.equal(JSON.stringify(source.snapshot()).includes('PRIVATE'), false);
+
+  const duplicate = event('assistant.message', { content: 'PRIVATE' }, { id: 'live-message' });
+  await appendFile(file,
+    event('assistant.turn_start', { turnId: 'turn-live' }, { id: 'live-turn-start' }) +
+    duplicate + duplicate +
+    event('tool.execution_progress', { toolName: 'functions.view' }, { id: 'valid-tool' }) +
+    event('tool.execution_progress', { toolName: 'invalid tool' }, { id: 'invalid-tool' }) +
+    event('tool.execution_complete', { success: false }, { id: 'tool-error' }) +
+    event('subagent.started', { toolCallId: 'call-live' }, { id: 'live-subagent' }) +
+    event('subagent.completed', { toolCallId: 'call-live' }, { id: 'live-completed' }) +
+    event('subagent.failed', { toolCallId: 42 }, { id: 'invalid-failure' }));
+  await source.poll();
+  stats = source.snapshot().sessions[0].stats;
+  assert.deepEqual(stats.kinds, { thinking: 1, step: 0, completion: 0, activity: 7 });
+  assert.deepEqual(stats.subagents, { started: 1, completed: 1, failed: 0 });
+  assert.equal(stats.errors, 2);
+  assert.deepEqual(stats.tools, [['functions.view', 1]]);
+  assert.equal(stats.types.find(([type]) => type === 'assistant.message')[1], 1);
+  assert.equal(stats.types.find(([type]) => type === 'tool.execution_progress')[1], 2);
+  assert.equal(JSON.stringify(stats).includes('PRIVATE'), false);
+});
+
+test('session stats track bounded top identifiers, overflow, and saturating counters', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, '');
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => 1_000 });
+  t.after(() => source.stop());
+  await source.start();
+  const records = [];
+  for (let index = 0; index < 65; index++) {
+    records.push(event(`custom.type_${index}`, {}, { id: `type-${index}` }));
+    records.push(event('tool.execution_progress', { toolName: `tool-${index}` }, { id: `tool-${index}` }));
+  }
+  await appendFile(file, records.join(''));
+  await source.poll();
+  const session = [...source.sessions.values()][0];
+  let stats = source.snapshot().sessions[0].stats;
+  assert.equal(session.stats.typeCounts.size, 64);
+  assert.equal(session.stats.toolCounts.size, 64);
+  assert.equal(stats.otherTypes, 2);
+  assert.equal(stats.otherTools, 1);
+  assert.equal(stats.types.length, 10);
+  assert.equal(stats.tools.length, 10);
+  assert.deepEqual(stats.types[0], ['tool.execution_progress', 65]);
+  assert.ok(stats.types.some(([type]) => type === 'custom.type_0'));
+
+  session.stats.kinds.activity = 999_999_999;
+  session.stats.otherTypes = 999_999_999;
+  session.stats.errors = 999_999_999;
+  await appendFile(file,
+    event('another.new_type', {}, { id: 'overflow-type' }) +
+    event('session.error', {}, { id: 'saturated-error' }));
+  await source.poll();
+  stats = source.snapshot().sessions[0].stats;
+  assert.equal(stats.kinds.activity, 1_000_000_000);
+  assert.equal(stats.otherTypes, 1_000_000_000);
+  assert.equal(stats.errors, 1_000_000_000);
+  assert.ok(Object.values(stats.kinds).every((value) => value <= 1_000_000_000));
+});
+
+test('session stats reset on rebaseline and keep only the latest 50 turn durations', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, '');
+  let now = 10_000;
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => now });
+  t.after(() => source.stop());
+  await source.start();
+
+  for (let index = 1; index <= 51; index++) {
+    await appendFile(file, event('assistant.turn_start', { turnId: `turn-${index}` }, { id: `start-${index}` }));
+    await source.poll();
+    now += index;
+    await appendFile(file, event('assistant.turn_end', { turnId: `turn-${index}` }, { id: `end-${index}` }));
+    await source.poll();
+    now++;
+  }
+  const session = [...source.sessions.values()][0];
+  let stats = source.snapshot().sessions[0].stats;
+  assert.equal(stats.turns.count, 51);
+  assert.equal(stats.turns.lastMs, 51);
+  assert.equal(stats.turns.maxMs, 51);
+  assert.equal(stats.turns.medianMs, 26);
+  assert.equal(session.stats.turns.durations.length, 50);
+
+  source.resetFileState(source.files.get(file));
+  stats = source.snapshot().sessions[0].stats;
+  assert.equal(stats.turns.count, 0);
+  assert.equal(stats.kinds.thinking, 0);
+});
+
+test('session stats accumulate status intervals and matched source-clock turn durations', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, '');
+  let now = 1_000;
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => now });
+  t.after(() => source.stop());
+  await source.start();
+
+  await appendFile(file, event('assistant.turn_start', { turnId: 'turn-one' }, { id: 'start-one' }));
+  await source.poll();
+  now += 100;
+  source.snapshot();
+  await appendFile(file, event('permission.requested', { permissionId: 'permission' }, { id: 'wait-start' }));
+  await source.poll();
+  now += 100;
+  source.snapshot();
+  await appendFile(file, event('permission.completed', { permissionId: 'permission' }, { id: 'wait-end' }));
+  await source.poll();
+  now += 100;
+  source.snapshot();
+  let stats = source.snapshot().sessions[0].stats;
+  assert.equal(stats.runningMs, 200);
+  assert.equal(stats.waitingMs, 100);
+
+  now += 100;
+  await appendFile(file,
+    event('assistant.turn_end', { turnId: 'turn-one' }, { id: 'wrong-agent-end', agentId: 'other-agent' }) +
+    event('assistant.turn_end', { turnId: 'wrong-turn' }, { id: 'wrong-end' }));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].stats.turns.count, 0);
+  now += 200;
+  await appendFile(file, event('assistant.turn_end', { turnId: 'turn-one' }, { id: 'end-one' }));
+  await source.poll();
+  stats = source.snapshot().sessions[0].stats;
+  assert.deepEqual(stats.turns, { count: 1, lastMs: 600, medianMs: 600, maxMs: 600 });
+
+  await appendFile(file, event('assistant.turn_start', { turnId: 'turn-stale' }, { id: 'start-stale' }));
+  await source.poll();
+  now += 60_000;
+  source.snapshot();
+  assert.equal(source.snapshot().sessions[0].stats.unverifiedMs, 15_000);
+  now += 1_000;
+  source.snapshot();
+  assert.equal(source.snapshot().sessions[0].stats.unverifiedMs, 16_000);
+  await appendFile(file, event('assistant.turn_end', { turnId: 'turn-stale' }, { id: 'end-stale' }));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].stats.turns.count, 1);
 });
