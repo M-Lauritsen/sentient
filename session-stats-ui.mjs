@@ -1,3 +1,42 @@
+import { projectActivity } from './activity-client.mjs';
+import { activityCategory, CATEGORIES, CATEGORY_INDEX } from './activity-colors.mjs';
+
+const MAX_CATEGORY_TOTAL = 0xffffffff;
+
+// Created once per page, independently of sessions, snapshots and frame drains.
+// Only projected metadata reaches the fixed counters; no event records are kept.
+export function createPageActivityTotals() {
+  const counts = new Uint32Array(CATEGORIES.length);
+  return {
+    counts,
+    add(value) {
+      const activity = projectActivity(value);
+      if (!activity) return;
+      const index = CATEGORY_INDEX[activityCategory(activity)];
+      counts[index] = Math.min(MAX_CATEGORY_TOTAL, counts[index] + (activity.count ?? 1));
+    },
+  };
+}
+
+function renderPageActivityTotals(document, totals) {
+  const section = document.createElement('section');
+  section.className = 'page-activity-stats';
+  const label = 'Activity by category · since page load';
+  section.setAttribute('aria-label', label);
+  const heading = document.createElement('h3');
+  heading.textContent = label;
+  const note = document.createElement('p');
+  note.textContent = `Page-wide received totals, not per session · visible live coverage only · hidden/coverage gaps excluded · no backfill. Counts saturate at ${MAX_CATEGORY_TOTAL}. Reload resets totals.`;
+  const list = document.createElement('ul');
+  for (const [index, category] of CATEGORIES.entries()) {
+    const row = document.createElement('li');
+    row.textContent = `${category}: ${totals.counts[index]}`;
+    list.append(row);
+  }
+  section.append(heading, note, list);
+  return section;
+}
+
 export function renderSessionStats(document, stats, formatElapsed) {
   const details = document.createElement('div');
   details.className = 'session-stats';
@@ -104,6 +143,7 @@ export function renderSessionRows({
 
 export function createSessionStatsDialog({
   document, dialog, title, content, closeButton, list, fallbackFocus, formatElapsed, expandedSessionStats,
+  pageActivityTotals = createPageActivityTotals(),
 }) {
   let selectedId = null;
   let selectedKey = null;
@@ -130,6 +170,8 @@ export function createSessionStatsDialog({
         : 'Session no longer observed · live statistics unavailable';
       content.replaceChildren(message);
     }
+    // Keep historical received totals distinct from unavailable live session stats.
+    content.append(renderPageActivityTotals(document, pageActivityTotals));
   };
 
   const close = () => {
@@ -156,6 +198,7 @@ export function createSessionStatsDialog({
   });
 
   return {
+    refreshActivity: render,
     open(event) {
       const toggle = event.target.closest?.('button[data-session-stats-toggle]');
       if (!toggle || !list.contains(toggle) || !coverageKnown) return;

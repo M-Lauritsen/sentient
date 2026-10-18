@@ -239,6 +239,17 @@ test('loopback server serves only explicit app assets and denies traversal', asy
   const statsUi = await fetch(`${base}/session-stats-ui.mjs`);
   assert.equal(statsUi.status, 200);
   assert.match(statsUi.headers.get('content-type'), /javascript/);
+  const colors = await fetch(`${base}/activity-colors.mjs`);
+  assert.equal(colors.status, 200);
+  assert.match(colors.headers.get('content-type'), /javascript/);
+  assert.match(await colors.text(), /activityCategory/);
+  const visualSettings = await fetch(`${base}/visual-settings.mjs`);
+  assert.equal(visualSettings.status, 200);
+  assert.match(visualSettings.headers.get('content-type'), /javascript/);
+  assert.match(await visualSettings.text(), /export const VISUAL/);
+  assert.equal((await fetch(`${base}/copilot/visual-settings.mjs`)).status, 404);
+  const unlistedModule = await fetch(`${base}/copilot/activity-colors.mjs`);
+  assert.equal(unlistedModule.status, 404);
   const privatePath = await fetch(`${base}/plans/sentient-copilot/spec.md`);
   assert.equal(privatePath.status, 404);
   const traversal = await fetch(`${base}/%2e%2e/package.json`);

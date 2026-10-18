@@ -532,6 +532,51 @@ test('observed concurrent turns increase active sessions; tools emit one orange 
   assert.equal(source.snapshot().steps, 1);
 });
 
+test('live root idle publishes once after turn end without duplicating task completion', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, event('assistant.turn_start', { turnId: 'historic' }));
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  const observed = [];
+  source.on('activity', (activity) => observed.push(activity));
+  await source.start();
+  await appendFile(file, event('session.idle'));
+  await source.poll();
+  assert.equal(observed.length, 0, 'historic work must not trigger a cascade');
+  await appendFile(file, event('assistant.turn_start', { turnId: 'live' }) +
+    event('assistant.turn_end', { turnId: 'live' }) + event('session.idle') + event('session.idle'));
+  await source.poll();
+  assert.equal(observed.filter((value) => value.eventType === 'session.idle').length, 1);
+  assert.equal(observed.find((value) => value.eventType === 'session.idle').kind, 'activity');
+  await appendFile(file, event('assistant.turn_start', { turnId: 'success' }) +
+    event('session.task_complete', { success: true, outcome: 'completed' }) +
+    event('assistant.turn_end', { turnId: 'success' }) + event('session.idle'));
+  await source.poll();
+  assert.equal(observed.filter((value) => value.eventType === 'session.idle').length, 1);
+  assert.equal(source.snapshot().sessions[0].status, 'idle');
+});
+
+test('subagent idle and interrupted root work do not emit an idle cascade', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, '');
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  const observed = [];
+  source.on('activity', (activity) => observed.push(activity));
+  await source.start();
+  await appendFile(file, event('assistant.turn_start', { turnId: 'live' }) +
+    event('session.idle', {}, { agentId: 'child' }));
+  await source.poll();
+  assert.equal(source.snapshot().sessions[0].status, 'running');
+  await appendFile(file, event('abort') + event('session.idle'));
+  await source.poll();
+  assert.equal(observed.filter((value) => value.eventType === 'session.idle').length, 0);
+});
+
 test('strict root task completion celebrates only within a fully observed successful interval', async (t) => {
   const root = await fixture(t);
   const session = path.join(root, 'session-a');

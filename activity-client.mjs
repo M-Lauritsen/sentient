@@ -1,3 +1,5 @@
+import { activityCategory, CATEGORIES, CATEGORY_GLYPH, CATEGORY_INDEX } from './activity-colors.mjs';
+
 const EMPTY = Object.freeze({
   connection: 'connecting',
   sourceStatus: 'unknown',
@@ -75,13 +77,8 @@ export function projectActivity(value) {
 }
 
 export function activityColor({ kind, eventType }) {
-  // Classify TYPE, never message text. User messages cannot activate cognition.
-  if (kind === 'completion') return 'orange';
-  if (eventType !== undefined) {
-    return /^assistant\.(?:message|reasoning)(?:[._]|$)/.test(eventType) ||
-      eventType === 'assistant.turn_start' ? 'blue' : 'orange';
-  }
-  return kind === 'thinking' ? 'blue' : 'orange';
+  // Compatibility for the existing scene consumer until its palette migration.
+  return activityCategory({ kind, eventType }) === 'reasoning' ? 'blue' : 'orange';
 }
 
 export function impulseIntensity(count) {
@@ -91,27 +88,172 @@ export function impulseIntensity(count) {
 // One drain per animation frame: fixed counters plus only the latest eight
 // metadata labels. Evicted labels still contribute to the visual totals.
 export function createImpulseBuffer() {
-  let totals = { blue: 0, orange: 0, completions: 0 };
+  const totals = { blue: 0, orange: 0 };
+  const categoryCounts = Array(CATEGORIES.length).fill(0);
+  const byCategory = new Uint32Array(CATEGORIES.length);
+  const sceneByCategory = new Uint32Array(CATEGORIES.length);
+  let idleCount = 0;
   const entries = new Map();
+  // The drain result and label array belong to the buffer; consume before the
+  // next drain. In particular, empty animation frames allocate nothing here.
+  const result = { blue: 0, orange: 0, byCategory, sceneByCategory, entries: [] };
+  const appendEntry = (entry) => result.entries.push(entry);
   return {
     add(value) {
       const activity = projectActivity(value);
       if (!activity) return;
       const count = activity.count ?? 1;
-      totals[activity.kind === 'completion' ? 'completions' : activityColor(activity)] += count;
+      const category = activityCategory(activity);
+      categoryCounts[CATEGORY_INDEX[category]] = Math.min(0xffffffff,
+        categoryCounts[CATEGORY_INDEX[category]] + count);
+      if (activity.eventType === 'session.idle') idleCount = Math.min(0xffffffff, idleCount + count);
+      totals[activityColor(activity)] += count;
       const key = JSON.stringify([activity.kind, activity.eventType, activity.toolName]);
       const previous = entries.get(key);
       entries.delete(key);
-      entries.set(key, { ...activity, count: (previous?.count ?? 0) + count });
+      entries.set(key, { ...activity, category, count: (previous?.count ?? 0) + count });
       if (entries.size > 8) entries.delete(entries.keys().next().value);
     },
     clear() {
-      totals = { blue: 0, orange: 0, completions: 0 };
+      totals.blue = totals.orange = 0;
+      categoryCounts.fill(0);
+      byCategory.fill(0);
+      sceneByCategory.fill(0);
+      idleCount = 0;
       entries.clear();
     },
     drain() {
-      const result = { ...totals, entries: [...entries.values()] };
-      this.clear();
+      byCategory.fill(0);
+      for (let index = 0; index < categoryCounts.length; index++) {
+        byCategory[index] = categoryCounts[index];
+      }
+      // Idle shares cascade motion, not completion's success label or statistics.
+      sceneByCategory.set(byCategory);
+      sceneByCategory[CATEGORY_INDEX.lifecycle] -= Math.min(
+        sceneByCategory[CATEGORY_INDEX.lifecycle], idleCount);
+      sceneByCategory[CATEGORY_INDEX.completion] = Math.min(0xffffffff,
+        sceneByCategory[CATEGORY_INDEX.completion] + idleCount);
+      idleCount = 0;
+      result.blue = totals.blue;
+      result.orange = totals.orange;
+      result.entries.length = 0;
+      entries.forEach(appendEntry);
+      totals.blue = totals.orange = 0;
+      categoryCounts.fill(0);
+      entries.clear();
+      return result;
+    },
+  };
+}
+
+function categoryMotion(category) {
+  if (category === CATEGORY_INDEX.completion) return 2;
+  return category === CATEGORY_INDEX.reasoning || category === CATEGORY_INDEX.lifecycle ||
+    category === CATEGORY_INDEX.unknown ? 0 : 1;
+}
+
+// Reserve completion's cascade, then select the highest category counts
+// (palette order breaks ties) and coalesce overflow within four bursts.
+export function createCategoryBurstPlan() {
+  const remaining = new Float64Array(CATEGORIES.length);
+  const result = {
+    length: 0,
+    categories: new Uint8Array(4),
+    kinds: new Uint8Array(4),
+    counts: new Float64Array(4),
+  };
+  function append(category, count) {
+    const slot = result.length++;
+    result.categories[slot] = category;
+    result.kinds[slot] = categoryMotion(category);
+    result.counts[slot] = count;
+  }
+  return {
+    plan(byCategory) {
+      result.length = 0;
+      result.counts.fill(0);
+      remaining.set(byCategory);
+      remaining[CATEGORY_INDEX.waiting] = 0;
+      let active = 0;
+      for (let i = 0; i < remaining.length; i++) if (remaining[i] > 0) active++;
+      const direct = active <= 4 ? active : 2;
+      for (let slot = 0; slot < direct; slot++) {
+        let best = -1;
+        if (slot === 0 && remaining[CATEGORY_INDEX.completion] > 0) {
+          best = CATEGORY_INDEX.completion;
+        } else {
+          for (let i = 0; i < remaining.length; i++) {
+            if (remaining[i] > 0 && (best < 0 || remaining[i] > remaining[best])) best = i;
+          }
+        }
+        append(best, remaining[best]);
+        remaining[best] = 0;
+      }
+      let reasoning = 0, tool = 0;
+      for (let i = 0; i < remaining.length; i++) {
+        if (categoryMotion(i) === 0) reasoning += remaining[i];
+        else tool += remaining[i];
+      }
+      if (reasoning > 0) append(CATEGORY_INDEX.reasoning, reasoning);
+      if (tool > 0) append(CATEGORY_INDEX.tool, tool);
+      return result;
+    },
+  };
+}
+
+// Aggregate received activity only. Coverage: 0 = unobserved before page load,
+// 1 = fully observed bucket, 2 = unknown/partial coverage (counts may exist).
+// No session identifiers, history, variable-size rows, or per-read allocations.
+export function createActivityTimeline(now = 0) {
+  const size = 120, bucketMs = 5000;
+  const result = {
+    counts: new Uint32Array(size * CATEGORIES.length),
+    coverage: new Uint8Array(size),
+    head: 0,
+    state: 'loading',
+  };
+  let tick = Math.floor(now / bucketMs);
+  let covered = false, started = false;
+  function advance(time) {
+    const next = Math.floor(time / bucketMs);
+    if (next <= tick) return;
+    const steps = Math.min(size, next - tick);
+    for (let i = 0; i < steps; i++) {
+      result.head = (result.head + 1) % size;
+      const offset = result.head * CATEGORIES.length;
+      result.counts.fill(0, offset, offset + CATEGORIES.length);
+      result.coverage[result.head] = started ? (covered ? 1 : 2) : 0;
+    }
+    tick = next;
+  }
+  return {
+    setCoverage(known, time, loading = false) {
+      advance(time);
+      if (!loading || known || started) {
+        started = true;
+        // Changing coverage within a bucket can never make it fully known.
+        if (!known || !covered) result.coverage[result.head] = 2;
+      }
+      covered = known;
+    },
+    add(byCategory, time) {
+      advance(time);
+      if (!covered) return;
+      const offset = result.head * CATEGORIES.length;
+      for (let i = 0; i < CATEGORIES.length; i++) {
+        result.counts[offset + i] = Math.min(0xffffffff, result.counts[offset + i] + byCategory[i]);
+      }
+    },
+    read(time) {
+      advance(time);
+      if (!started) result.state = 'loading';
+      else if (!covered) result.state = 'gap';
+      else {
+        result.state = 'empty';
+        for (let i = 0; i < result.counts.length; i++) {
+          if (result.counts[i] > 0) { result.state = 'live'; break; }
+        }
+      }
       return result;
     },
   };
@@ -124,8 +266,12 @@ export function createImpulseFeed(element) {
       if (!activity) return;
       const label = eventType || IMPULSE_LABELS.get(kind);
       if (!label) return;
+      const category = activityCategory(activity);
+      if (category === 'waiting') return;
       const row = element.ownerDocument.createElement('li');
-      row.className = `impulse-entry impulse-${kind} impulse-${activityColor(activity)}`;
+      row.className = `impulse-entry impulse-${kind} impulse-cat-${category}`;
+      row.dataset.category = category;
+      row.dataset.glyph = CATEGORY_GLYPH[category];
       row.textContent = label + (activity.toolName ? ` · ${activity.toolName}` : '') +
         (count > 1 ? ` ×${count}` : '');
       element.prepend(row);

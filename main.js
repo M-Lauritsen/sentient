@@ -5,10 +5,13 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity,
-  createThinkingPulseClock, summarizeSubagents,
+  createThinkingPulseClock, summarizeSubagents, createCategoryBurstPlan, createActivityTimeline,
   projectActiveHudSessions } from './activity-client.mjs';
-import { clearSessionStats, createSessionStatsDialog, renderSessionRows } from './session-stats-ui.mjs';
+import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, renderSessionRows } from './session-stats-ui.mjs';
+import { CATEGORIES, CATEGORY_HEX, CATEGORY_INDEX, CATEGORY_RGB } from './activity-colors.mjs';
+import { VISUAL } from './visual-settings.mjs';
 
+// Structural geometry and fixed buffer capacities, not visual tuning.
 const CFG = {
   radius: 10,
   nodes: 1200,
@@ -19,12 +22,11 @@ const CFG = {
   trail: 7,
 };
 
-// Pulse kinds: 0 = observed thinking, 1 = observed tool step, 2 = accepted completion.
-const KIND_COLOR = [
-  [0.45, 0.72, 1.0],
-  [1.0, 0.62, 0.22],
-  [1.0, 0.5, 0.12],
-];
+// Pulse kinds: 0 = observed thinking, 1 = activity step, 2 = completion cascade.
+// Motion and category are independent; RGB storage is shared and never rebuilt.
+// Shader attributes are linear; cap the palette at 0.9 before trail brightness.
+const SCENE_RGB = Float32Array.from(CATEGORY_RGB, (channel) =>
+  0.9 * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
 
 // ---------- renderer / scene ----------
 const container = document.getElementById('app');
@@ -58,7 +60,8 @@ controls.target.set(0, 0, 0);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.9, 0.45, 0.12);
+const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight),
+  VISUAL.scene.bloomStrength, VISUAL.scene.bloomRadius, VISUAL.scene.bloomThreshold);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
@@ -127,9 +130,13 @@ const adjacency = Array.from({ length: N }, () => []);
   }
 }
 const E = edgeA.length;
-const edgeHot = new Float32Array(E); // orange glow
-const edgeCool = new Float32Array(E); // blue glow
+const edgeR = new Float32Array(E);
+const edgeG = new Float32Array(E);
+const edgeBColor = new Float32Array(E);
 const edgeBase = new Float32Array(E);
+let maxNodeDegree = 0;
+for (let i = 0; i < N; i++) maxNodeDegree = Math.max(maxNodeDegree, adjacency[i].length);
+const fireEdges = new Int32Array(maxNodeDegree);
 
 const edgeGeo = new THREE.BufferGeometry();
 const edgePositions = new Float32Array(E * 6);
@@ -161,13 +168,23 @@ nodeGeo.setAttribute('aEnergy', new THREE.BufferAttribute(nodeEnergy, 1).setUsag
 nodeGeo.setAttribute('aHot', new THREE.BufferAttribute(nodeHot, 1).setUsage(THREE.DynamicDrawUsage));
 nodeGeo.setAttribute('aSize', new THREE.BufferAttribute(nodeSize, 1));
 const nodeMat = new THREE.ShaderMaterial({
-  uniforms: { uScale: { value: 95 * pixelRatio }, uTime: { value: 0 } },
+  uniforms: {
+    uScale: { value: VISUAL.nodes.scale * pixelRatio }, uTime: { value: 0 },
+    uSize: { value: VISUAL.nodes.size }, uActiveGrowth: { value: VISUAL.nodes.activeGrowth },
+    uIdleBrightness: { value: VISUAL.nodes.idleBrightness },
+    uActiveBrightness: { value: VISUAL.nodes.activeBrightness },
+    uHotMix: { value: VISUAL.nodes.hotMix },
+    uWhiteThreshold: { value: VISUAL.nodes.whiteThreshold },
+    uWhiteMix: { value: VISUAL.nodes.whiteMix },
+  },
   vertexShader: /* glsl */ `
     attribute float aEnergy;
     attribute float aHot;
     attribute float aSize;
     uniform float uScale;
     uniform float uTime;
+    uniform float uSize;
+    uniform float uActiveGrowth;
     varying float vEnergy;
     varying float vHot;
     varying float vTwinkle;
@@ -175,11 +192,16 @@ const nodeMat = new THREE.ShaderMaterial({
       vec4 mv = modelViewMatrix * vec4(position, 1.0);
       gl_Position = projectionMatrix * mv;
       vTwinkle = 0.75 + 0.25 * sin(uTime * 1.7 + position.x * 3.1 + position.y * 2.3);
-      gl_PointSize = aSize * (1.0 + aEnergy * 2.2) * uScale / -mv.z;
+      gl_PointSize = aSize * uSize * (1.0 + aEnergy * uActiveGrowth) * uScale / -mv.z;
       vEnergy = aEnergy;
       vHot = aHot;
     }`,
   fragmentShader: /* glsl */ `
+    uniform float uIdleBrightness;
+    uniform float uActiveBrightness;
+    uniform float uHotMix;
+    uniform float uWhiteThreshold;
+    uniform float uWhiteMix;
     varying float vEnergy;
     varying float vHot;
     varying float vTwinkle;
@@ -190,9 +212,9 @@ const nodeMat = new THREE.ShaderMaterial({
       vec3 base = vec3(0.16, 0.45, 1.0);
       vec3 hot = vec3(1.0, 0.52, 0.12);
       vec3 white = vec3(1.0, 0.92, 0.8);
-      vec3 col = mix(base, hot, clamp(vHot * 1.4, 0.0, 1.0));
-      col = mix(col, white, clamp(max(vEnergy, vHot) - 0.7, 0.0, 1.0));
-      gl_FragColor = vec4(col * core * (0.4 * vTwinkle + max(vEnergy, vHot) * 1.8), 1.0);
+      vec3 col = mix(base, hot, clamp(vHot * uHotMix, 0.0, 1.0));
+      col = mix(col, white, clamp((max(vEnergy, vHot) - uWhiteThreshold) * uWhiteMix, 0.0, 1.0));
+      gl_FragColor = vec4(col * core * (uIdleBrightness * vTwinkle + max(vEnergy, vHot) * uActiveBrightness), 1.0);
     }`,
   transparent: true,
   blending: THREE.AdditiveBlending,
@@ -214,7 +236,10 @@ brain.add(new THREE.Points(nodeGeo, nodeMat));
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
   var dustMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uScale: { value: 40 * pixelRatio } },
+    uniforms: {
+      uTime: { value: 0 }, uScale: { value: 40 * pixelRatio },
+      uBrightness: { value: VISUAL.scene.dustBrightness },
+    },
     vertexShader: /* glsl */ `
       attribute float aPhase;
       uniform float uTime;
@@ -227,11 +252,12 @@ brain.add(new THREE.Points(nodeGeo, nodeMat));
         gl_PointSize = uScale / -mv.z;
       }`,
     fragmentShader: /* glsl */ `
+      uniform float uBrightness;
       varying float vA;
       void main() {
         float d = length(gl_PointCoord - 0.5);
         if (d > 0.5) discard;
-        gl_FragColor = vec4(vec3(0.2, 0.45, 1.0) * vA * 0.18 * smoothstep(0.5, 0.0, d), 1.0);
+        gl_FragColor = vec4(vec3(0.2, 0.45, 1.0) * vA * uBrightness * smoothstep(0.5, 0.0, d), 1.0);
       }`,
     transparent: true,
     blending: THREE.AdditiveBlending,
@@ -260,7 +286,7 @@ const coreGlow = new THREE.Sprite(
     map: glowTex,
     color: 0x3d8bff,
     transparent: true,
-    opacity: 0.015,
+    opacity: VISUAL.scene.coreOpacity,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   })
@@ -268,7 +294,7 @@ const coreGlow = new THREE.Sprite(
 coreGlow.scale.setScalar(16);
 brain.add(coreGlow);
 const baseCoreColor = new THREE.Color(0x3d8bff);
-const waitingCoreColor = new THREE.Color(0xff4fd8);
+const waitingCoreColor = new THREE.Color(CATEGORY_HEX.waiting);
 const waitingMarkerMaterial = new THREE.SpriteMaterial({
   map: glowTex,
   color: 0xff4fd8,
@@ -294,7 +320,7 @@ const haloGlow = new THREE.Sprite(
     map: glowTex,
     color: 0x2a6bff,
     transparent: true,
-    opacity: 0.025,
+    opacity: VISUAL.scene.haloOpacity,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   })
@@ -312,6 +338,7 @@ const pT = new Float32Array(P);
 const pSpeed = new Float32Array(P);
 const pHops = new Int16Array(P);
 const pKind = new Uint8Array(P);
+const pCat = new Uint8Array(P);
 let pCursor = 0;
 let activePulses = 0;
 
@@ -323,7 +350,7 @@ pulseGeo.setAttribute('position', new THREE.BufferAttribute(pulsePos, 3).setUsag
 pulseGeo.setAttribute('aColor', new THREE.BufferAttribute(pulseCol, 3).setUsage(THREE.DynamicDrawUsage));
 pulseGeo.setAttribute('aSize', new THREE.BufferAttribute(pulseSize, 1).setUsage(THREE.DynamicDrawUsage));
 const pulseMat = new THREE.ShaderMaterial({
-  uniforms: { uScale: { value: 110 * pixelRatio } },
+  uniforms: { uScale: { value: VISUAL.pulses.scale * pixelRatio } },
   vertexShader: /* glsl */ `
     attribute vec3 aColor;
     attribute float aSize;
@@ -548,6 +575,11 @@ function writeTreeColor(colors, offset, r, g, b, intensity) {
   colors[offset + 2] = b * intensity;
 }
 
+function writeTreeCategory(colors, offset, category, intensity) {
+  const rgb = category * 3;
+  writeTreeColor(colors, offset, SCENE_RGB[rgb], SCENE_RGB[rgb + 1], SCENE_RGB[rgb + 2], intensity);
+}
+
 function renderSubagentTree(now) {
   for (let i = 0; i < subagentAnchors.length; i++) {
     const session = subagentAnchors[i];
@@ -557,7 +589,7 @@ function renderSubagentTree(now) {
     anchorPositions[colorOffset + 1] = nodePos[offset + 1];
     anchorPositions[colorOffset + 2] = nodePos[offset + 2];
     if (session.status === 'running') writeTreeColor(anchorColors, colorOffset, 0.2, 0.6, 1, 1.1);
-    else if (session.status === 'waiting') writeTreeColor(anchorColors, colorOffset, 1, 0.48, 0.14, 0.9);
+    else if (session.status === 'waiting') writeTreeCategory(anchorColors, colorOffset, CATEGORY_INDEX.waiting, 0.9);
     else if (session.status === 'stuck') writeTreeColor(anchorColors, colorOffset, 0.5, 0.55, 0.65, 0.55);
     else writeTreeColor(anchorColors, colorOffset, 0.16, 0.32, 0.56, 0.35);
   }
@@ -587,19 +619,12 @@ function renderSubagentTree(now) {
     branchTipPositions[tipOffset + 1] = ey;
     branchTipPositions[tipOffset + 2] = ez;
     const intensity = Math.min(1, 0.55 + Math.max(0, now - branch.startedAt) * 0.08);
-    if (session?.status === 'waiting') {
-      writeTreeColor(branchLineColors, lineOffset, 1, 0.48, 0.14, intensity);
-      writeTreeColor(branchLineColors, lineOffset + 3, 1, 0.48, 0.14, intensity);
-      writeTreeColor(branchTipColors, tipOffset, 1, 0.65, 0.28, intensity);
-    } else if (session?.status === 'stuck') {
-      writeTreeColor(branchLineColors, lineOffset, 0.5, 0.55, 0.65, intensity);
-      writeTreeColor(branchLineColors, lineOffset + 3, 0.5, 0.55, 0.65, intensity);
-      writeTreeColor(branchTipColors, tipOffset, 0.65, 0.7, 0.78, intensity);
-    } else {
-      writeTreeColor(branchLineColors, lineOffset, 0.2, 0.6, 1, intensity);
-      writeTreeColor(branchLineColors, lineOffset + 3, 0.2, 0.6, 1, intensity);
-      writeTreeColor(branchTipColors, tipOffset, 0.5, 0.8, 1, intensity);
-    }
+    // No per-child last-activity attribution crosses the wire. Do not infer it
+    // from aggregate events: delegated activity uses its role, waiting its cue.
+    const category = session?.status === 'waiting' ? CATEGORY_INDEX.waiting : CATEGORY_INDEX.subagent;
+    writeTreeCategory(branchLineColors, lineOffset, category, intensity);
+    writeTreeCategory(branchLineColors, lineOffset + 3, category, intensity);
+    writeTreeCategory(branchTipColors, tipOffset, category, intensity);
   }
   branchGeo.setDrawRange(0, activeSubagentBranches.length * 2);
   branchTipGeo.setDrawRange(0, activeSubagentBranches.length);
@@ -633,14 +658,14 @@ function renderSubagentTree(now) {
     fadingTipPositions[i * 3 + 1] = fadingLinePositions[lineOffset + 4];
     fadingTipPositions[i * 3 + 2] = fadingLinePositions[lineOffset + 5];
     if (branch.outcome === 'failed') {
-      writeTreeColor(fadingLineColors, lineOffset, 1, 0.35, 0.08, intensity);
-      writeTreeColor(fadingTipColors, i * 3, 1, 0.5, 0.16, intensity);
+      writeTreeCategory(fadingLineColors, lineOffset, CATEGORY_INDEX.error, intensity);
+      writeTreeCategory(fadingTipColors, i * 3, CATEGORY_INDEX.error, intensity);
     } else if (branch.outcome === 'cleared') {
       writeTreeColor(fadingLineColors, lineOffset, 0.55, 0.58, 0.64, intensity);
       writeTreeColor(fadingTipColors, i * 3, 0.65, 0.68, 0.72, intensity);
     } else {
-      writeTreeColor(fadingLineColors, lineOffset, 0.4, 0.72, 1, intensity);
-      writeTreeColor(fadingTipColors, i * 3, 0.65, 0.85, 1, intensity);
+      writeTreeCategory(fadingLineColors, lineOffset, CATEGORY_INDEX.subagent, intensity);
+      writeTreeCategory(fadingTipColors, i * 3, CATEGORY_INDEX.subagent, intensity);
     }
     fadingLineColors[lineOffset + 3] = fadingLineColors[lineOffset];
     fadingLineColors[lineOffset + 4] = fadingLineColors[lineOffset + 1];
@@ -658,7 +683,7 @@ function otherEnd(e, n) {
   return edgeA[e] === n ? edgeB[e] : edgeA[e];
 }
 
-function spawnPulse(from, edge, hops, kind) {
+function spawnPulse(from, edge, hops, kind, category) {
   for (let tries = 0; tries < P; tries++) {
     const s = pCursor;
     pCursor = (pCursor + 1) % P;
@@ -667,23 +692,31 @@ function spawnPulse(from, edge, hops, kind) {
     pEdge[s] = edge;
     pFrom[s] = from;
     pT[s] = 0;
-    pSpeed[s] = kind === 2 ? 11 + Math.random() * 5 : 4 + Math.random() * 4;
+    pSpeed[s] = VISUAL.pulses.speedMin + Math.random() * VISUAL.pulses.speedRange;
     pHops[s] = hops;
     pKind[s] = kind;
+    pCat[s] = category;
     activePulses++;
     return true;
   }
   return false;
 }
 
-function fireFrom(node, hops, kind, avoid = -1, count = 1) {
-  const edges = adjacency[node].filter((e) => otherEnd(e, node) !== avoid);
-  for (let i = edges.length - 1; i > 0; i--) {
-    const j = (Math.random() * (i + 1)) | 0;
-    [edges[i], edges[j]] = [edges[j], edges[i]];
+function fireFrom(node, hops, kind, avoid = -1, count = 1,
+  category = kind === 0 ? CATEGORY_INDEX.reasoning : CATEGORY_INDEX.tool) {
+  const edges = adjacency[node];
+  let length = 0;
+  for (let i = 0; i < edges.length; i++) {
+    if (otherEnd(edges[i], node) !== avoid) fireEdges[length++] = edges[i];
   }
-  const n = Math.min(count, edges.length);
-  for (let i = 0; i < n; i++) spawnPulse(node, edges[i], hops, kind);
+  for (let i = length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    const swap = fireEdges[i];
+    fireEdges[i] = fireEdges[j];
+    fireEdges[j] = swap;
+  }
+  const n = Math.min(count, length);
+  for (let i = 0; i < n; i++) spawnPulse(node, fireEdges[i], hops, kind, category);
 }
 
 function updatePulses(dt) {
@@ -692,9 +725,11 @@ function updatePulses(dt) {
     const e = pEdge[s];
     const kind = pKind[s];
     pT[s] += (pSpeed[s] * dt) / edgeLen[e];
-    if (kind === 2) edgeHot[e] = Math.max(edgeHot[e], 1.0);
-    else if (kind === 1) edgeHot[e] = Math.max(edgeHot[e], 0.45);
-    else edgeCool[e] = Math.max(edgeCool[e], 0.6);
+    const rgb = pCat[s] * 3;
+    const intensity = kind === 2 ? VISUAL.completion.edgeIntensity : kind === 1 ? 0.45 : 0.6;
+    edgeR[e] = Math.max(edgeR[e], SCENE_RGB[rgb] * intensity);
+    edgeG[e] = Math.max(edgeG[e], SCENE_RGB[rgb + 1] * intensity);
+    edgeBColor[e] = Math.max(edgeBColor[e], SCENE_RGB[rgb + 2] * intensity);
 
     if (pT[s] >= 1) {
       const from = pFrom[s];
@@ -702,10 +737,10 @@ function updatePulses(dt) {
       const to = otherEnd(e, from);
       pActive[s] = 0;
       activePulses--;
-      nodeEnergy[to] = Math.min(1.8, nodeEnergy[to] + (kind === 2 ? 0.9 : 0.5));
+      nodeEnergy[to] = Math.min(1.8, nodeEnergy[to] + (kind === 2 ? VISUAL.completion.nodeEnergy : 0.5));
       if (hops > 0) {
-        const branch = kind === 2 ? (Math.random() < 0.42 ? 2 : 1) : kind === 0 ? 1 : 0;
-        if (branch > 0) fireFrom(to, hops - 1, kind, from, branch);
+        const branch = kind === 2 ? (Math.random() < VISUAL.completion.branchChance ? 2 : 1) : kind === 0 ? 1 : 0;
+        if (branch > 0) fireFrom(to, hops - 1, kind, from, branch, pCat[s]);
       }
     }
   }
@@ -721,9 +756,9 @@ function writePulseBuffers() {
     const e = pEdge[s];
     const a = pFrom[s] * 3;
     const b = otherEnd(e, pFrom[s]) * 3;
-    const col = KIND_COLOR[pKind[s]];
-    const head = pKind[s] === 2 ? 3.2 : 2.2;
-    const spacing = pKind[s] === 2 ? 0.07 : 0.05;
+    const rgb = pCat[s] * 3;
+    const head = pKind[s] === 2 ? VISUAL.pulses.completionHead : VISUAL.pulses.head;
+    const spacing = pKind[s] === 2 ? VISUAL.pulses.completionTrailSpacing : VISUAL.pulses.trailSpacing;
     for (let j = 0; j < T; j++) {
       const idx = base + j;
       const t = pT[s] - j * spacing;
@@ -734,11 +769,11 @@ function writePulseBuffers() {
       pulsePos[idx * 3] = nodePos[a] + (nodePos[b] - nodePos[a]) * t;
       pulsePos[idx * 3 + 1] = nodePos[a + 1] + (nodePos[b + 1] - nodePos[a + 1]) * t;
       pulsePos[idx * 3 + 2] = nodePos[a + 2] + (nodePos[b + 2] - nodePos[a + 2]) * t;
-      const f = Math.pow(1 - j / T, 1.6);
-      const bright = j === 0 ? 1.6 : f;
-      pulseCol[idx * 3] = col[0] * bright;
-      pulseCol[idx * 3 + 1] = col[1] * bright;
-      pulseCol[idx * 3 + 2] = col[2] * bright;
+      const f = Math.pow(1 - j / T, VISUAL.pulses.trailFalloff);
+      const bright = j === 0 ? VISUAL.pulses.headBrightness : f;
+      pulseCol[idx * 3] = SCENE_RGB[rgb] * bright;
+      pulseCol[idx * 3 + 1] = SCENE_RGB[rgb + 1] * bright;
+      pulseCol[idx * 3 + 2] = SCENE_RGB[rgb + 2] * bright;
       pulseSize[idx] = head * (0.35 + 0.65 * f);
     }
   }
@@ -748,16 +783,15 @@ function writePulseBuffers() {
 }
 
 function writeEdgeColors(dt) {
-  const decay = Math.exp(-dt * 2.4);
+  const decay = Math.exp(-dt * VISUAL.scene.edgeFade);
   for (let e = 0; e < E; e++) {
-    edgeHot[e] *= decay;
-    edgeCool[e] *= decay;
+    edgeR[e] *= decay;
+    edgeG[e] *= decay;
+    edgeBColor[e] *= decay;
     const b = edgeBase[e];
-    const h = edgeHot[e];
-    const c = edgeCool[e];
-    const r = 0.012 * b + h * 0.95 + c * 0.2;
-    const g = 0.04 * b + h * 0.4 + c * 0.5;
-    const bl = 0.13 * b + h * 0.08 + c * 1.0;
+    const r = 0.012 * b + edgeR[e];
+    const g = 0.04 * b + edgeG[e];
+    const bl = 0.13 * b + edgeBColor[e];
     const o = e * 6;
     edgeColors[o] = edgeColors[o + 3] = r;
     edgeColors[o + 1] = edgeColors[o + 4] = g;
@@ -766,73 +800,13 @@ function writeEdgeColors(dt) {
   edgeGeo.attributes.color.needsUpdate = true;
 }
 
-// ---------- shockwaves ----------
-const shockGeo = new THREE.SphereGeometry(1, 48, 32);
-const shocks = [];
-function makeShockMaterial() {
-  return new THREE.ShaderMaterial({
-    uniforms: { uOpacity: { value: 1 } },
-    vertexShader: /* glsl */ `
-      varying float vRim;
-      void main() {
-        vec3 n = normalize(normalMatrix * normal);
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vRim = 1.0 - abs(dot(n, normalize(-mv.xyz)));
-        gl_Position = projectionMatrix * mv;
-      }`,
-    fragmentShader: /* glsl */ `
-      uniform float uOpacity;
-      varying float vRim;
-      void main() {
-        float a = pow(vRim, 3.0) * uOpacity;
-        gl_FragColor = vec4(vec3(1.0, 0.5, 0.15) * a, 1.0);
-      }`,
-    transparent: true,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  });
-}
-function spawnShock(node) {
-  let s = shocks.find((x) => !x.active);
-  if (!s) {
-    if (shocks.length >= 8) s = shocks[0];
-    else {
-      s = { mesh: new THREE.Mesh(shockGeo, makeShockMaterial()), center: new THREE.Vector3() };
-      brain.add(s.mesh);
-      shocks.push(s);
-    }
-  }
-  s.active = true;
-  s.r = 0.2;
-  s.center.fromArray(nodePos, node * 3);
-  s.mesh.position.copy(s.center);
-  s.mesh.visible = true;
-}
-function updateShocks(dt) {
-  const maxR = CFG.radius * 2.2;
-  for (const s of shocks) {
-    if (!s.active) continue;
-    s.r += dt * 13;
-    const fade = 1 - s.r / maxR;
-    if (fade <= 0) {
-      s.active = false;
-      s.mesh.visible = false;
-      continue;
-    }
-    s.mesh.scale.setScalar(s.r);
-    s.mesh.material.uniforms.uOpacity.value = fade * fade * 0.9;
-    const cx = s.center.x, cy = s.center.y, cz = s.center.z;
-    for (let i = 0; i < N; i++) {
-      const dx = nodePos[i * 3] - cx, dy = nodePos[i * 3 + 1] - cy, dz = nodePos[i * 3 + 2] - cz;
-      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (Math.abs(d - s.r) < 0.7)       nodeHot[i] = Math.max(nodeHot[i], 0.65 * fade);
-    }
-  }
-}
-
 // ---------- grid floor ----------
 const floorMat = new THREE.ShaderMaterial({
-  uniforms: { uTime: { value: 0 }, uRipple: { value: 999 }, uGlow: { value: 0.3 } },
+  uniforms: {
+    uTime: { value: 0 }, uGlow: { value: 0 },
+    uBrightness: { value: VISUAL.scene.floorBrightness },
+    uFade: { value: VISUAL.scene.floorFade },
+  },
   vertexShader: /* glsl */ `
     varying vec3 vW;
     void main() {
@@ -842,8 +816,9 @@ const floorMat = new THREE.ShaderMaterial({
     }`,
   fragmentShader: /* glsl */ `
     uniform float uTime;
-    uniform float uRipple;
     uniform float uGlow;
+    uniform float uBrightness;
+    uniform float uFade;
     varying vec3 vW;
     float grid(vec2 p, float s) {
       vec2 q = p / s;
@@ -853,12 +828,10 @@ const floorMat = new THREE.ShaderMaterial({
     void main() {
       float d = length(vW.xz);
       float g = grid(vW.xz, 2.5) * 0.45 + grid(vW.xz, 12.5) * 0.8;
-      float fade = exp(-d * 0.028);
-      vec3 col = vec3(0.1, 0.32, 1.0) * g * fade * 0.22;
-      float ripple = exp(-pow(d - uRipple * 22.0, 2.0) * 0.05) * exp(-uRipple * 1.2);
+      float fade = exp(-d * uFade);
+      vec3 col = vec3(0.1, 0.32, 1.0) * g * fade * uBrightness;
       float pool = exp(-d * 0.1) * uGlow;
       col += vec3(0.12, 0.32, 0.95) * pool * (0.06 + g * 0.6);
-      col += vec3(1.0, 0.45, 0.1) * ripple * (0.1 + g * 1.2);
       gl_FragColor = vec4(col, 1.0);
     }`,
   transparent: true,
@@ -888,12 +861,25 @@ const $sessionList = document.getElementById('session-list');
 const $sessionMore = document.getElementById('session-more');
 const impulseFeed = createImpulseFeed(document.getElementById('impulse-feed'));
 const impulseBuffer = createImpulseBuffer();
+const categoryBurstPlan = createCategoryBurstPlan();
+const timeline = createActivityTimeline(performance.now());
+const timelineCanvas = document.getElementById('timeline');
+const timelineContext = timelineCanvas.getContext('2d');
+const timelineState = document.getElementById('timeline-state');
+const timelineLabels = {
+  loading: 'Loading · awaiting live coverage',
+  empty: 'No activity received in the observed window · hatching = unknown coverage',
+  live: 'Received activity by category · hatching = unknown coverage',
+  gap: 'Coverage gap · missing activity is unknown, not zero',
+};
+let lastTimelineState = '';
 const sessionStatusLabels = {
   running: 'RUNNING',
   'running-unverified': 'RUNNING · UNVERIFIED',
 };
 let sessionRows = [];
 const expandedSessionStats = new Set();
+const pageActivityTotals = createPageActivityTotals();
 
 function formatSessionElapsed(elapsedMs) {
   const seconds = Math.floor(Math.min(1_000_000_000, Math.max(0, elapsedMs)) / 1000);
@@ -921,6 +907,7 @@ const sessionStatsDialog = createSessionStatsDialog({
   fallbackFocus: $status,
   formatElapsed: formatSessionElapsed,
   expandedSessionStats,
+  pageActivityTotals,
 });
 
 function renderWaitingMarkers(sessionIds) {
@@ -990,20 +977,6 @@ function renderSessions(state) {
 }
 
 // ---------- interaction ----------
-let reactTimer = 0;
-let shake = 0;
-let rippleT = 999;
-function celebrateCompletion() {
-  const node = (Math.random() * N) | 0;
-  nodeHot[node] = 2.5;
-  fireFrom(node, 7, 2, -1, Math.min(8, adjacency[node].length));
-  for (const e of adjacency[node].slice(0, 4)) fireFrom(otherEnd(e, node), 5, 2, node, 2);
-  spawnShock(node);
-  reactTimer = 1.8;
-  shake = 0.22;
-  rippleT = 0;
-}
-
 let activityState = { connection: 'connecting', sourceStatus: 'unknown', coverage: 'unknown', activeSessions: 0, thinkingSessions: 0, runningSessions: 0, unverifiedRunningSessions: 0, journalFiles: 0, sessions: [] };
 const thinkingPulseClock = createThinkingPulseClock();
 
@@ -1024,6 +997,10 @@ function renderActivityState(state) {
   if (state.connection !== 'connected' || state.sourceStatus === 'unavailable' ||
       !(state.runningSessions > 0)) thinkingPulseClock.reset();
   if (state.connection !== 'connected') impulseBuffer.clear();
+  if (state.sourceStatus === 'unavailable') impulseBuffer.clear();
+  timeline.setCoverage(!document.hidden && state.connection === 'connected' &&
+    state.sourceStatus === 'available' && state.coverage !== 'partial' &&
+    state.coverage !== 'unknown', performance.now(), state.connection === 'connecting');
   activityState = state;
   updateSubagentSummary(state.treeSessions ?? []);
   renderSessions(state);
@@ -1080,12 +1057,23 @@ const activityClient = createActivityClient({
   onTree: applySubagentTree,
   onActivity: (activity) => {
     if (!document.hidden) impulseBuffer.add(activity);
+    // onActivity receives accepted projectActivity() metadata, never raw events.
+    // Count at arrival, not from the bounded/evicting visual buffer or snapshots.
+    if (!document.hidden && activityState.connection === 'connected' &&
+        activityState.sourceStatus === 'available' && activityState.coverage !== 'partial' &&
+        activityState.coverage !== 'unknown') {
+      pageActivityTotals.add(activity);
+      sessionStatsDialog.refreshActivity();
+    }
   },
 });
 activityClient.connect();
 
 document.addEventListener('visibilitychange', () => {
   impulseBuffer.clear();
+  timeline.setCoverage(!document.hidden && activityState.connection === 'connected' &&
+    activityState.sourceStatus === 'available' && activityState.coverage !== 'partial' &&
+    activityState.coverage !== 'unknown', performance.now());
   if (document.hidden) {
     thinkingPulseClock.reset();
   } else {
@@ -1100,26 +1088,88 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+function renderCompletionCascade(node) {
+  const edges = adjacency[node];
+  nodeHot[node] = VISUAL.completion.seedHeat;
+  fireFrom(node, VISUAL.completion.hops, 2, -1, Math.min(VISUAL.completion.spread, edges.length), CATEGORY_INDEX.completion);
+  for (let i = 0; i < Math.min(VISUAL.completion.neighbourSeeds, edges.length); i++) {
+    fireFrom(otherEnd(edges[i], node), VISUAL.completion.neighbourHops, 2, node,
+      VISUAL.completion.neighbourSpread, CATEGORY_INDEX.completion);
+  }
+}
+
 function renderObservedImpulses() {
-  const { blue, orange, completions, entries } = impulseBuffer.drain();
+  const { byCategory, sceneByCategory, entries } = impulseBuffer.drain();
   if (document.hidden) return;
-  for (const { kind, toolName, eventType, count } of entries) {
+  timeline.add(byCategory, performance.now());
+  for (let i = 0; i < entries.length; i++) {
+    const { kind, toolName, eventType, count } = entries[i];
     impulseFeed.add(kind, toolName, eventType, count);
   }
   // Counts strengthen a bounded impulse, rather than rendering one per token.
-  if (blue > 0) {
+  const plan = categoryBurstPlan.plan(sceneByCategory);
+  for (let i = 0; i < plan.length; i++) {
     const node = (Math.random() * N) | 0;
-    const intensity = impulseIntensity(blue);
-    fireFrom(node, 2 + intensity, 0, -1, Math.min(3, intensity));
-    nodeEnergy[node] = Math.min(1.8, nodeEnergy[node] + 0.45 * intensity);
+    const intensity = impulseIntensity(plan.counts[i]);
+    const kind = plan.kinds[i];
+    const category = plan.categories[i];
+    if (kind === 2) {
+      renderCompletionCascade(node);
+      continue;
+    }
+    const hops = category === CATEGORY_INDEX.error ? 0 : kind === 0 ? 2 + intensity : intensity;
+    fireFrom(node, hops, kind, -1, Math.min(3, intensity), category);
+    if (kind === 0) nodeEnergy[node] = Math.min(1.8, nodeEnergy[node] + 0.45 * intensity);
+    else nodeHot[node] = Math.min(1.2, nodeHot[node] + 0.7 * intensity);
   }
-  if (orange > 0) {
-    const node = (Math.random() * N) | 0;
-    const intensity = impulseIntensity(orange);
-    fireFrom(node, intensity, 1, -1, Math.min(3, intensity));
-    nodeHot[node] = Math.min(1.2, nodeHot[node] + 0.7 * intensity);
+}
+
+function renderTimeline(now) {
+  const view = timeline.read(now);
+  if (lastTimelineState !== view.state) {
+    lastTimelineState = view.state;
+    timelineState.textContent = timelineLabels[view.state];
   }
-  if (completions > 0) celebrateCompletion();
+  if (!timelineContext) return;
+  const width = timelineCanvas.width, height = timelineCanvas.height;
+  const column = width / 120;
+  timelineContext.clearRect(0, 0, width, height);
+  let max = 1;
+  for (let bucket = 0; bucket < 120; bucket++) {
+    let total = 0;
+    for (let category = 0; category < CATEGORIES.length; category++) {
+      total += view.counts[bucket * CATEGORIES.length + category];
+    }
+    max = Math.max(max, total);
+  }
+  for (let x = 0; x < 120; x++) {
+    const bucket = (view.head + 1 + x) % 120;
+    const offset = bucket * CATEGORIES.length;
+    let total = 0;
+    for (let category = 0; category < CATEGORIES.length; category++) total += view.counts[offset + category];
+    const bar = total > 0 ? (height - 2) * Math.log1p(total) / Math.log1p(max) : 0;
+    let y = height;
+    for (let category = 0; category < CATEGORIES.length; category++) {
+      const count = view.counts[offset + category];
+      if (!count) continue;
+      const segment = bar * count / total;
+      timelineContext.fillStyle = CATEGORY_HEX[CATEGORIES[category]];
+      timelineContext.fillRect(x * column, y - segment, column - 1, segment);
+      y -= segment;
+    }
+    if (view.coverage[bucket] !== 1) {
+      // Hatch unknown history and partial buckets, even if counts were received.
+      timelineContext.fillStyle = 'rgba(159,195,255,0.08)';
+      timelineContext.fillRect(x * column, 0, column - 1, height);
+      timelineContext.strokeStyle = 'rgba(159,195,255,0.4)';
+      timelineContext.beginPath();
+      for (let hatch = -height; hatch < height; hatch += 8) {
+        timelineContext.moveTo(x * column, Math.max(0, hatch));
+        timelineContext.lineTo(x * column + column - 1, Math.min(height, hatch + column));
+      }
+      timelineContext.stroke();
+    }
+  }
 }
 
 // ---------- loop ----------
@@ -1127,6 +1177,7 @@ const clock = new THREE.Clock();
 let smoothedLoad = 0;
 let hudTimer = 0;
 let sessionTimer = 0;
+let timelineTimer = 0;
 
 function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -1135,8 +1186,12 @@ function frame() {
   renderObservedImpulses();
   renderThinking(dt);
   renderSubagentTree(performance.now() / 1000);
+  timelineTimer -= dt;
+  if (timelineTimer <= 0) {
+    timelineTimer = 0.5;
+    renderTimeline(performance.now());
+  }
   updatePulses(dt);
-  updateShocks(dt);
 
   const decay = Math.exp(-dt * 2.0);
   for (let i = 0; i < N; i++) {
@@ -1152,29 +1207,24 @@ function frame() {
   // ambience
   const load = Math.min(1, activePulses / 500 + activityState.activeSessions / 64);
   smoothedLoad += (load - smoothedLoad) * Math.min(1, dt * 3);
-  reactTimer = Math.max(0, reactTimer - dt);
-  shake *= Math.exp(-dt * 6);
-  rippleT += dt;
 
   const breathe = 1 + Math.sin(now * 0.8) * 0.012;
   brain.scale.setScalar(breathe);
-  brain.position.set((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
   const waitingGlow = activityState.connection === 'connected' &&
     activityState.sourceStatus !== 'unavailable' && activityState.waitingSessions > 0;
   const waitBreath = 0.5 + 0.5 * (0.5 + 0.5 * Math.sin(now * 0.7));
   coreGlow.material.color.lerpColors(baseCoreColor, waitingCoreColor, waitingGlow ? waitBreath : 0);
-  coreGlow.material.opacity = 0.015 + smoothedLoad * 0.12 + reactTimer * 0.08;
+  coreGlow.material.opacity = VISUAL.scene.coreOpacity + smoothedLoad * VISUAL.scene.coreLoad;
   if (waitingGlow) coreGlow.material.opacity += 0.025 + waitBreath * 0.025;
-  haloGlow.material.opacity = 0.025 + smoothedLoad * 0.03;
-  bloom.strength = 0.85 + smoothedLoad * 0.3 + reactTimer * 0.2;
+  haloGlow.material.opacity = VISUAL.scene.haloOpacity + smoothedLoad * VISUAL.scene.haloLoad;
+  bloom.strength = VISUAL.scene.bloomStrength + smoothedLoad * VISUAL.scene.bloomLoad;
   dust.rotation.y = -now * 0.02;
   dust.rotation.x = Math.sin(now * 0.05) * 0.1;
 
   nodeMat.uniforms.uTime.value = now;
   dustMat.uniforms.uTime.value = now;
   floorMat.uniforms.uTime.value = now;
-  floorMat.uniforms.uRipple.value = rippleT;
-  floorMat.uniforms.uGlow.value = smoothedLoad * 0.5 + reactTimer * 0.2;
+  floorMat.uniforms.uGlow.value = smoothedLoad * VISUAL.scene.floorGlow;
 
   hudTimer -= dt;
   if (hudTimer <= 0) {
