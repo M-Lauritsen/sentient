@@ -4,7 +4,10 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity, createThinkingPulseClock } from './activity-client.mjs';
+import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity,
+  projectActiveHudSessions,
+  createThinkingPulseClock } from './activity-client.mjs';
+import { clearSessionStats, createSessionStatsDialog, renderSessionRows } from './session-stats-ui.mjs';
 
 const CFG = {
   radius: 10,
@@ -264,6 +267,28 @@ const coreGlow = new THREE.Sprite(
 );
 coreGlow.scale.setScalar(16);
 brain.add(coreGlow);
+const baseCoreColor = new THREE.Color(0x3d8bff);
+const waitingCoreColor = new THREE.Color(0xff4fd8);
+const waitingMarkerMaterial = new THREE.SpriteMaterial({
+  map: glowTex,
+  color: 0xff4fd8,
+  transparent: true,
+  opacity: 0.9,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+const waitingMarkerGroups = Array.from({ length: 8 }, () => {
+  const cluster = new THREE.Group();
+  for (const [x, y, z] of [[0, 0, 0], [0.32, 0.12, 0], [-0.2, -0.26, 0.18]]) {
+    const marker = new THREE.Sprite(waitingMarkerMaterial);
+    marker.position.set(x, y, z);
+    marker.scale.setScalar(0.55);
+    cluster.add(marker);
+  }
+  cluster.visible = false;
+  brain.add(cluster);
+  return cluster;
+});
 const haloGlow = new THREE.Sprite(
   new THREE.SpriteMaterial({
     map: glowTex,
@@ -547,14 +572,119 @@ scene.add(floor);
 const $status = document.getElementById('status');
 const $journals = document.getElementById('journals');
 const $sessions = document.getElementById('sessions');
+const $waiting = document.getElementById('waiting');
 const $unknown = document.getElementById('unknown');
 const $running = document.getElementById('running');
 const $impulses = document.getElementById('impulses');
 const $load = document.getElementById('load');
 const $subtitle = document.getElementById('subtitle');
 const $coverage = document.getElementById('coverage');
+const $sessionHud = document.getElementById('session-hud');
+const $sessionState = document.getElementById('session-state');
+const $sessionList = document.getElementById('session-list');
+const $sessionMore = document.getElementById('session-more');
 const impulseFeed = createImpulseFeed(document.getElementById('impulse-feed'));
 const impulseBuffer = createImpulseBuffer();
+const sessionStatusLabels = {
+  running: 'RUNNING',
+  'running-unverified': 'RUNNING · UNVERIFIED',
+};
+let sessionRows = [];
+const expandedSessionStats = new Set();
+
+function formatSessionElapsed(elapsedMs) {
+  const seconds = Math.floor(Math.min(1_000_000_000, Math.max(0, elapsedMs)) / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  if (hours >= 1000) return '>999h';
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+  return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+}
+
+function tickSessionTimes(now = performance.now()) {
+  for (const row of sessionRows) {
+    row.time.textContent = formatSessionElapsed(row.elapsedMs + now - row.receivedAt);
+  }
+}
+
+const sessionStatsDialog = createSessionStatsDialog({
+  document,
+  dialog: document.getElementById('session-stats-dialog'),
+  title: document.getElementById('session-stats-title'),
+  content: document.getElementById('session-stats-content'),
+  closeButton: document.getElementById('session-stats-close'),
+  list: $sessionList,
+  fallbackFocus: $status,
+  formatElapsed: formatSessionElapsed,
+  expandedSessionStats,
+});
+
+function renderWaitingMarkers(sessionIds) {
+  const waiting = Array.isArray(sessionIds) ? sessionIds.slice(0, 8) : [];
+  for (let index = 0; index < waitingMarkerGroups.length; index++) {
+    const cluster = waitingMarkerGroups[index];
+    const id = waiting[index];
+    cluster.visible = Boolean(id);
+    if (!id) continue;
+    let hash = 0;
+    for (const character of id) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+    const node = hash % N;
+    cluster.position.set(nodePos[node * 3], nodePos[node * 3 + 1], nodePos[node * 3 + 2]);
+  }
+}
+
+$sessionList.addEventListener('click', (event) => {
+  sessionStatsDialog.open(event);
+});
+
+function renderSessions(state) {
+  renderWaitingMarkers(state.connection === 'connected' && state.sourceStatus !== 'unavailable'
+    ? state.waitingSessionIds : []);
+  const hasHudProjection = Array.isArray(state.hudSessions);
+  const sessionRecords = projectActiveHudSessions(state);
+  const unknown = state.connection !== 'connected' || state.sourceStatus !== 'available' ||
+    state.coverage === 'unknown';
+  sessionStatsDialog.update(
+    state.sessions ?? [], !unknown, sessionRecords ?? []);
+  if (!sessionRecords) {
+    $sessionHud.hidden = true;
+    clearSessionStats($sessionList, expandedSessionStats);
+    $sessionState.textContent = '';
+    $sessionMore.textContent = '';
+    sessionRows = [];
+    return;
+  }
+  $sessionHud.hidden = false;
+  $sessionHud.classList.toggle('is-unknown', unknown);
+  $sessionMore.textContent = '';
+  sessionRows = [];
+  if (unknown) {
+    clearSessionStats($sessionList, expandedSessionStats);
+    $sessionList.hidden = true;
+    $sessionState.textContent = 'COVERAGE UNKNOWN';
+    return;
+  }
+
+  const sessions = sessionRecords;
+  $sessionList.hidden = sessions.length === 0;
+  $sessionState.textContent = sessions.length ? '' : 'No active sessions';
+  const receivedAt = performance.now();
+  sessionRows = renderSessionRows({
+    document,
+    list: $sessionList,
+    sessions,
+    expandedSessionStats,
+    receivedAt,
+    formatElapsed: formatSessionElapsed,
+    statusLabels: sessionStatusLabels,
+  });
+  const visibleRunning = sessions.length;
+  const omitted = Math.max(0, (state.runningSessions ?? visibleRunning) - visibleRunning);
+  const truncated = hasHudProjection
+    ? state.hudSessionsTruncated === true : state.sessionsTruncated === true;
+  if (truncated && omitted > 0) $sessionMore.textContent = `+${omitted} more not shown`;
+}
 
 // ---------- interaction ----------
 let reactTimer = 0;
@@ -573,6 +703,7 @@ function celebrateCompletion() {
 
 let activityState = { connection: 'connecting', sourceStatus: 'unknown', coverage: 'unknown', activeSessions: 0, thinkingSessions: 0, runningSessions: 0, unverifiedRunningSessions: 0, journalFiles: 0 };
 const thinkingPulseClock = createThinkingPulseClock();
+
 // Blue running-state stream: observed running work (thinking, tools and
 // delegated agents), not a claim of hidden cognition.
 function renderThinking(dt) {
@@ -591,8 +722,11 @@ function renderActivityState(state) {
       !(state.runningSessions > 0)) thinkingPulseClock.reset();
   if (state.connection !== 'connected') impulseBuffer.clear();
   activityState = state;
+  renderSessions(state);
   $journals.textContent = String(state.journalFiles ?? 0);
   $sessions.textContent = String(state.activeSessions ?? 0);
+  $waiting.textContent = String(state.connection === 'connected' && state.sourceStatus !== 'unavailable'
+    ? state.waitingSessions ?? 0 : 0);
   $unknown.textContent = String(state.unknownSessions ?? 0);
   $running.textContent = state.unverifiedRunningSessions > 0
     ? `${state.runningSessions ?? 0} · ${state.unverifiedRunningSessions} UNVERIFIED`
@@ -678,6 +812,7 @@ function renderObservedImpulses() {
 const clock = new THREE.Clock();
 let smoothedLoad = 0;
 let hudTimer = 0;
+let sessionTimer = 0;
 
 function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
@@ -709,7 +844,12 @@ function frame() {
   const breathe = 1 + Math.sin(now * 0.8) * 0.012;
   brain.scale.setScalar(breathe);
   brain.position.set((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  const waitingGlow = activityState.connection === 'connected' &&
+    activityState.sourceStatus !== 'unavailable' && activityState.waitingSessions > 0;
+  const waitBreath = 0.5 + 0.5 * (0.5 + 0.5 * Math.sin(now * 0.7));
+  coreGlow.material.color.lerpColors(baseCoreColor, waitingCoreColor, waitingGlow ? waitBreath : 0);
   coreGlow.material.opacity = 0.015 + smoothedLoad * 0.12 + reactTimer * 0.08;
+  if (waitingGlow) coreGlow.material.opacity += 0.025 + waitBreath * 0.025;
   haloGlow.material.opacity = 0.025 + smoothedLoad * 0.03;
   bloom.strength = 0.85 + smoothedLoad * 0.3 + reactTimer * 0.2;
   dust.rotation.y = -now * 0.02;
@@ -726,6 +866,11 @@ function frame() {
     hudTimer = 0.15;
     $impulses.textContent = String(activePulses);
     $load.textContent = Math.round(smoothedLoad * 100) + '%';
+  }
+  sessionTimer -= dt;
+  if (sessionTimer <= 0) {
+    sessionTimer = 1;
+    tickSessionTimes(performance.now());
   }
 
   controls.update();

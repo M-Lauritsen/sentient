@@ -20,10 +20,11 @@
   <div class="scanlines" aria-hidden="true"></div>
 
   <header class="hud hud-top">
-    <span><i class="dot"></i> SOURCE · <b id="status">CONNECTING</b></span>
+    <span><i class="dot"></i> SOURCE · <b id="status" tabindex="-1">CONNECTING</b></span>
     <span>JOURNALS <b id="journals">0</b></span>
     <span>ACTIVE SESSIONS <b id="sessions">0</b></span>
     <span>RUNNING <b id="running">0</b></span>
+    <span>WAITING <b id="waiting">0</b></span>
     <span>UNVERIFIED <b id="unknown">0</b></span>
     <span>IMPULSES <b id="impulses">0</b></span>
     <span>LOAD <b id="load">0%</b></span>
@@ -37,6 +38,21 @@
     <h2>Impulse stream</h2>
     <ol id="impulse-feed" aria-live="off"></ol>
   </aside>
+
+  <aside class="hud hud-sessions" id="session-hud" aria-label="Active sessions" hidden>
+    <h2>Active sessions</h2>
+    <p id="session-state" aria-live="polite"></p>
+    <ol id="session-list" tabindex="0" aria-label="Active session statuses and elapsed time" aria-live="off"></ol>
+    <p id="session-more"></p>
+  </aside>
+
+  <dialog id="session-stats-dialog" class="stats-dialog" aria-labelledby="session-stats-title">
+    <header class="stats-dialog-header">
+      <h2 id="session-stats-title">Session statistics</h2>
+      <button id="session-stats-close" class="stats-close" type="button" aria-label="Close session statistics" autofocus>&times;</button>
+    </header>
+    <div id="session-stats-content"></div>
+  </dialog>
 
   <footer class="hud hud-bottom">
     <h1 class="title">SENTIENT</h1>

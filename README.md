@@ -24,6 +24,28 @@ does not load a CDN or send activity outside this machine.
 
 ## What the display means
 
+- The right-side Active sessions panel uses the same visual treatment as the
+  left activity field and lists only RUNNING and RUNNING · UNVERIFIED sessions.
+  Running means a live start was observed; unverified means that active work
+  has had no journal event for more than 45 seconds. IDs are six-character,
+  per-process opaque handles; titles and local paths are never shown. The panel
+  displays elapsed time, reports omitted active sessions when truncated, and
+  says “No active sessions” when none are running. During a coverage gap it
+  greys out and shows “coverage unknown” instead of stale statuses. Waiting
+  sessions are excluded from the list; bounded waiter handles preserve their
+  scene markers. SENTIENT does not request browser notification permission or
+  display OS notifications.
+- A session with validated statistics has a keyboard-accessible details button;
+  activate it with click, Enter, or Space to open a centered modal overlay.
+  Close it with the close button, Escape, or a backdrop click; keyboard focus
+  returns to the session row, the list, or the source status if no rows remain.
+  The overlay updates live and stays open when the session stops running.
+  Details are marked
+  “since observed · live only” and show record counts by kind, top event types
+  and tool identifiers, subagent/error counts, observed running/unverified/
+  waiting durations, and turn timing. Missing stats in older snapshots omit
+  the button; empty counts are shown as zero or “None observed.” A coverage
+  gap replaces the details with unknown coverage rather than stale statistics.
 - While sessions are observed RUNNING, a continuous blue stream fires six
   impulse starts per second per session (up to 32 sessions). Running means
   observed work — thinking, tool execution or delegated (sub)agents — not a
@@ -40,13 +62,16 @@ does not load a CDN or send activity outside this machine.
   only from a new live start. Pulses also stop for disconnection, unavailable
   source or hidden tabs (no catch-up). They do not manufacture activity-feed
   entries; existing trails fade naturally.
-- Every valid newly observed journal event triggers an impulse, including
-  messages, progress/results, permissions, subagents, errors, lifecycle events,
-  and unknown future event types. Only event metadata is displayed.
+- Every valid newly observed journal event except permission, user-input and
+  elicitation wait lifecycle events triggers an impulse, including messages,
+  progress/results, subagents, errors, lifecycle events, and unknown future
+  event types. Waiting is represented in the session HUD and scene without
+  spawning activity pulses. Only event metadata is displayed.
 - Blue activity represents assistant turn starts, message and reasoning event
-  types. Orange represents tools, user messages, permissions, errors, lifecycle
-  changes and other events. User messages do not start or refresh ongoing
-  cognition. Ongoing blue pulses require a live-observed running interval.
+  types. Orange represents tools, user messages, non-wait permission events,
+  errors, lifecycle changes and other events. User messages do not start or
+  refresh ongoing cognition. Ongoing blue pulses require a live-observed
+  running interval.
 - The top-left impulse stream shows privacy-safe event titles, newest first.
   Older entries slide down into a bottom fade; only the latest eight are kept.
   Labels show exact bounded event types, for example `assistant.message_delta`
@@ -81,10 +106,11 @@ The file schema is internal and may change with Copilot updates.
 The reader only enumerates direct session subdirectories and opens
 `events.jsonl` read-only. At startup it baselines a bounded tail without replaying
 old activity; later it incrementally parses bounded complete lines. The JSON
-record is parsed transiently in memory, but only aggregate counts, fixed
-statuses, event kinds (`thinking`, `step`, `completion`, `activity`), bounded
-`eventType`, optional grouped `count` (1–1,000,000,000), and optional bounded
-`toolName` on live tool events can cross the loopback SSE stream. Event types
+record is parsed transiently in memory, but only aggregate counts, bounded
+per-session statistics, fixed statuses, event kinds (`thinking`, `step`,
+`completion`, `activity`), bounded `eventType`, optional grouped `count`
+(1–1,000,000,000), and optional bounded `toolName` on live tool events can
+cross the loopback SSE stream. Event types
 must be 1–128 ASCII letters, digits, dots, underscores, colons or hyphens:
 enough for journal identifiers, never arbitrary labels/content. Invalid names
 are rejected and mark the poll partial. Missing/null data is safe for lifecycle
@@ -107,8 +133,18 @@ the existing renderer limits remain 1,600 pulses and eight shockwaves.
 After 45 seconds without a journal event, an open turn becomes unknown and is
 not eligible for a success burst (it may still pulse as unverified running
 work, see above). Snapshots carry `runningSessions` and
-`unverifiedRunningSessions` aggregate counts; at most 64 running subagent
-calls and 64 user-input waits are tracked per session.
+`unverifiedRunningSessions` aggregate counts. Per-session statistics count
+validated, deduplicated live records, not the grouped `×N` feed entries; they
+reset when a session is rebaselined or leaves the selected file set, so they
+are “since observed,” not lifetime totals. The stats snapshot includes only
+bounded counters, durations, event types and tool identifiers; it never
+includes event content. Tool identifiers can reveal internal integrations, so
+inspect them before sharing screenshots or recordings. At most 64 running
+subagent calls and 64 user-input waits are tracked per session.
+Missing permission/request IDs collapse to the `unknown` wait ID; therefore a
+completion for one id-less request can clear another id-less request of the
+same kind. The display reports this observed source behavior without guessing
+at missing identifiers.
 
 This is a **journal-file integration**, not a supported Copilot all-session
 subscription. It cannot prove that every running app session writes to this
