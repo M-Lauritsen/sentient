@@ -29,6 +29,14 @@ test('publication check accepts portable source and placeholder documentation', 
   assert.deepEqual(await scanPublication(root), []);
 });
 
+test('publication check excludes .git worktree pointer files', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'sentient-publication-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const worktreePath = ['C:', 'Users', 'sample-user', 'worktree', 'gitdir'].join('\\');
+  await writeFile(path.join(root, '.git'), `gitdir: ${worktreePath}`);
+  assert.deepEqual(await scanPublication(root), []);
+});
+
 test('publication check detects session identifiers and local record directories', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'sentient-publication-'));
   t.after(() => rm(root, { recursive: true, force: true }));

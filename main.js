@@ -4,7 +4,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity, createThinkingPulseClock } from './activity-client.mjs';
+import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity,
+  createThinkingPulseClock, summarizeSubagents } from './activity-client.mjs';
 
 const CFG = {
   radius: 10,
@@ -326,6 +327,309 @@ const pulsePoints = new THREE.Points(pulseGeo, pulseMat);
 pulsePoints.frustumCulled = false;
 brain.add(pulsePoints);
 
+const MAX_ACTIVE_SUBAGENT_BRANCHES = 512;
+const MAX_FADING_SUBAGENT_BRANCHES = 64;
+const MAX_SUBAGENT_ANCHORS = 32;
+const SUBAGENT_FADE_SECONDS = 2;
+const SUBAGENT_GROW_SECONDS = 0.22;
+const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+let reducedMotion = reducedMotionQuery.matches;
+reducedMotionQuery.addEventListener('change', (event) => {
+  reducedMotion = event.matches;
+  if (reducedMotion) {
+    for (const branch of activeSubagentBranches) branch.growthStart = -Infinity;
+    fadingSubagentBranches.length = 0;
+  }
+});
+const subagentSummary = document.getElementById('subagent-summary');
+const branchLinePositions = new Float32Array(MAX_ACTIVE_SUBAGENT_BRANCHES * 6);
+const branchLineColors = new Float32Array(MAX_ACTIVE_SUBAGENT_BRANCHES * 6);
+const branchTipPositions = new Float32Array(MAX_ACTIVE_SUBAGENT_BRANCHES * 3);
+const branchTipColors = new Float32Array(MAX_ACTIVE_SUBAGENT_BRANCHES * 3);
+const fadingLinePositions = new Float32Array(MAX_FADING_SUBAGENT_BRANCHES * 6);
+const fadingLineColors = new Float32Array(MAX_FADING_SUBAGENT_BRANCHES * 6);
+const fadingTipPositions = new Float32Array(MAX_FADING_SUBAGENT_BRANCHES * 3);
+const fadingTipColors = new Float32Array(MAX_FADING_SUBAGENT_BRANCHES * 3);
+const anchorPositions = new Float32Array(MAX_SUBAGENT_ANCHORS * 3);
+const anchorColors = new Float32Array(MAX_SUBAGENT_ANCHORS * 3);
+const activeSubagentBranches = [];
+const subagentBranchByKey = new Map();
+const fadingSubagentBranches = [];
+const subagentAnchors = [];
+const subagentAnchorBySid = new Map();
+
+const branchGeo = new THREE.BufferGeometry();
+branchGeo.setAttribute('position', new THREE.BufferAttribute(branchLinePositions, 3).setUsage(THREE.DynamicDrawUsage));
+branchGeo.setAttribute('color', new THREE.BufferAttribute(branchLineColors, 3).setUsage(THREE.DynamicDrawUsage));
+const branchLines = new THREE.LineSegments(branchGeo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+branchLines.frustumCulled = false;
+brain.add(branchLines);
+
+const branchTipGeo = new THREE.BufferGeometry();
+branchTipGeo.setAttribute('position', new THREE.BufferAttribute(branchTipPositions, 3).setUsage(THREE.DynamicDrawUsage));
+branchTipGeo.setAttribute('color', new THREE.BufferAttribute(branchTipColors, 3).setUsage(THREE.DynamicDrawUsage));
+const branchTips = new THREE.Points(branchTipGeo, new THREE.PointsMaterial({
+  size: 5 * pixelRatio, sizeAttenuation: false, vertexColors: true, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+branchTips.frustumCulled = false;
+brain.add(branchTips);
+
+const fadingGeo = new THREE.BufferGeometry();
+fadingGeo.setAttribute('position', new THREE.BufferAttribute(fadingLinePositions, 3).setUsage(THREE.DynamicDrawUsage));
+fadingGeo.setAttribute('color', new THREE.BufferAttribute(fadingLineColors, 3).setUsage(THREE.DynamicDrawUsage));
+const fadingLines = new THREE.LineSegments(fadingGeo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+fadingLines.frustumCulled = false;
+brain.add(fadingLines);
+
+const fadingTipGeo = new THREE.BufferGeometry();
+fadingTipGeo.setAttribute('position', new THREE.BufferAttribute(fadingTipPositions, 3).setUsage(THREE.DynamicDrawUsage));
+fadingTipGeo.setAttribute('color', new THREE.BufferAttribute(fadingTipColors, 3).setUsage(THREE.DynamicDrawUsage));
+const fadingTips = new THREE.Points(fadingTipGeo, new THREE.PointsMaterial({
+  size: 4 * pixelRatio, sizeAttenuation: false, vertexColors: true, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+fadingTips.frustumCulled = false;
+brain.add(fadingTips);
+
+const anchorGeo = new THREE.BufferGeometry();
+anchorGeo.setAttribute('position', new THREE.BufferAttribute(anchorPositions, 3).setUsage(THREE.DynamicDrawUsage));
+anchorGeo.setAttribute('color', new THREE.BufferAttribute(anchorColors, 3).setUsage(THREE.DynamicDrawUsage));
+const anchorPoints = new THREE.Points(anchorGeo, new THREE.PointsMaterial({
+  size: 8 * pixelRatio, sizeAttenuation: false, vertexColors: true, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+anchorPoints.frustumCulled = false;
+brain.add(anchorPoints);
+
+function hashTreeSid(value) {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619);
+  return hash >>> 0;
+}
+
+function treeBranchKey(sessionSid, sid) {
+  return `${sessionSid}:${sid}`;
+}
+
+function updateSubagentSummary(sessions) {
+  if (activityState.connection !== 'connected' || activityState.sourceStatus === 'unavailable' ||
+      activityState.coverage === 'unknown') {
+    subagentSummary.textContent = 'Delegated work status unavailable during a connection or source gap.';
+    return;
+  }
+  const summary = summarizeSubagents(sessions);
+  subagentSummary.textContent = activityState.coverage === 'partial'
+    ? `Partial coverage. ${summary}`
+    : summary;
+}
+
+function addSubagentBranch(session, child, animate) {
+  if (activeSubagentBranches.length >= MAX_ACTIVE_SUBAGENT_BRANCHES) return;
+  const hash = hashTreeSid(child.sid);
+  const anchorOffset = session.anchorIndex * 3;
+  const nx = nodePos[anchorOffset], ny = nodePos[anchorOffset + 1], nz = nodePos[anchorOffset + 2];
+  const normalLength = Math.hypot(nx, ny, nz) || 1;
+  const normalX = nx / normalLength, normalY = ny / normalLength, normalZ = nz / normalLength;
+  const y = ((hash & 0xffff) / 32767.5) - 1;
+  const angle = ((hash >>> 16) / 65536) * Math.PI * 2;
+  let tangentX = Math.sqrt(Math.max(0, 1 - y * y)) * Math.cos(angle);
+  let tangentY = y;
+  let tangentZ = Math.sqrt(Math.max(0, 1 - y * y)) * Math.sin(angle);
+  const projection = tangentX * normalX + tangentY * normalY + tangentZ * normalZ;
+  tangentX -= projection * normalX;
+  tangentY -= projection * normalY;
+  tangentZ -= projection * normalZ;
+  const tangentLength = Math.hypot(tangentX, tangentY, tangentZ) || 1;
+  const directionX = normalX + tangentX / tangentLength * 0.4;
+  const directionY = normalY + tangentY / tangentLength * 0.4;
+  const directionZ = normalZ + tangentZ / tangentLength * 0.4;
+  const directionLength = Math.hypot(directionX, directionY, directionZ);
+  const branch = {
+    key: treeBranchKey(session.sid, child.sid),
+    sid: child.sid,
+    sessionSid: session.sid,
+    anchorIndex: session.anchorIndex,
+    directionX: directionX / directionLength,
+    directionY: directionY / directionLength,
+    directionZ: directionZ / directionLength,
+    length: 2 + ((hash >>> 8) % 2001) / 1000,
+    growthStart: animate ? performance.now() / 1000 : -Infinity,
+    startedAt: performance.now() / 1000 - child.ageMs / 1000,
+    fadeStart: 0,
+    outcome: '',
+    slot: activeSubagentBranches.length,
+  };
+  activeSubagentBranches.push(branch);
+  subagentBranchByKey.set(branch.key, branch);
+}
+
+function retireSubagentBranch(sessionSid, sid, outcome, now) {
+  const key = treeBranchKey(sessionSid, sid);
+  const branch = subagentBranchByKey.get(key);
+  if (!branch) return;
+  const slot = branch.slot;
+  const last = activeSubagentBranches.pop();
+  if (slot < activeSubagentBranches.length) {
+    activeSubagentBranches[slot] = last;
+    last.slot = slot;
+  }
+  subagentBranchByKey.delete(key);
+  if (reducedMotion) return;
+  branch.outcome = outcome;
+  branch.fadeStart = now;
+  if (fadingSubagentBranches.length >= MAX_FADING_SUBAGENT_BRANCHES) fadingSubagentBranches.shift();
+  fadingSubagentBranches.push(branch);
+}
+
+function applySubagentTree(tree) {
+  const now = performance.now() / 1000;
+  subagentAnchors.length = 0;
+  subagentAnchorBySid.clear();
+  for (const item of tree.sessions) {
+    if (!item.subagents.length) continue;
+    if (subagentAnchors.length >= MAX_SUBAGENT_ANCHORS) break;
+    const session = { sid: item.sid, status: item.status, anchorIndex: hashTreeSid(item.sid) % N };
+    subagentAnchors.push(session);
+    subagentAnchorBySid.set(session.sid, session);
+  }
+  updateSubagentSummary(tree.sessions);
+  if (tree.reset || document.hidden) {
+    activeSubagentBranches.length = 0;
+    subagentBranchByKey.clear();
+    fadingSubagentBranches.length = 0;
+    for (const item of tree.sessions) {
+      const session = subagentAnchorBySid.get(item.sid);
+      if (!session) continue;
+      for (const child of item.subagents) addSubagentBranch(session, child, false);
+    }
+    return;
+  }
+  for (const outcome of ['completed', 'failed', 'cleared']) {
+    for (const branch of tree[outcome]) retireSubagentBranch(branch.sessionSid, branch.sid, outcome, now);
+  }
+  for (const branch of tree.added) {
+    const session = subagentAnchorBySid.get(branch.sessionSid);
+    if (session) addSubagentBranch(session, branch, !reducedMotion);
+  }
+}
+
+function writeTreeColor(colors, offset, r, g, b, intensity) {
+  colors[offset] = r * intensity;
+  colors[offset + 1] = g * intensity;
+  colors[offset + 2] = b * intensity;
+}
+
+function renderSubagentTree(now) {
+  for (let i = 0; i < subagentAnchors.length; i++) {
+    const session = subagentAnchors[i];
+    const offset = session.anchorIndex * 3;
+    const colorOffset = i * 3;
+    anchorPositions[colorOffset] = nodePos[offset];
+    anchorPositions[colorOffset + 1] = nodePos[offset + 1];
+    anchorPositions[colorOffset + 2] = nodePos[offset + 2];
+    if (session.status === 'running') writeTreeColor(anchorColors, colorOffset, 0.2, 0.6, 1, 1.1);
+    else if (session.status === 'waiting') writeTreeColor(anchorColors, colorOffset, 1, 0.48, 0.14, 0.9);
+    else if (session.status === 'stuck') writeTreeColor(anchorColors, colorOffset, 0.5, 0.55, 0.65, 0.55);
+    else writeTreeColor(anchorColors, colorOffset, 0.16, 0.32, 0.56, 0.35);
+  }
+  anchorGeo.setDrawRange(0, subagentAnchors.length);
+  anchorGeo.attributes.position.needsUpdate = true;
+  anchorGeo.attributes.color.needsUpdate = true;
+
+  for (let i = 0; i < activeSubagentBranches.length; i++) {
+    const branch = activeSubagentBranches[i];
+    const anchorOffset = branch.anchorIndex * 3;
+    const lineOffset = i * 6;
+    const tipOffset = i * 3;
+    const session = subagentAnchorBySid.get(branch.sessionSid);
+    const growth = reducedMotion ? 1 : Math.min(1, Math.max(0, (now - branch.growthStart) / SUBAGENT_GROW_SECONDS));
+    const length = branch.length * growth;
+    const x = nodePos[anchorOffset], y = nodePos[anchorOffset + 1], z = nodePos[anchorOffset + 2];
+    const ex = x + branch.directionX * length;
+    const ey = y + branch.directionY * length;
+    const ez = z + branch.directionZ * length;
+    branchLinePositions[lineOffset] = x;
+    branchLinePositions[lineOffset + 1] = y;
+    branchLinePositions[lineOffset + 2] = z;
+    branchLinePositions[lineOffset + 3] = ex;
+    branchLinePositions[lineOffset + 4] = ey;
+    branchLinePositions[lineOffset + 5] = ez;
+    branchTipPositions[tipOffset] = ex;
+    branchTipPositions[tipOffset + 1] = ey;
+    branchTipPositions[tipOffset + 2] = ez;
+    const intensity = Math.min(1, 0.55 + Math.max(0, now - branch.startedAt) * 0.08);
+    if (session?.status === 'waiting') {
+      writeTreeColor(branchLineColors, lineOffset, 1, 0.48, 0.14, intensity);
+      writeTreeColor(branchLineColors, lineOffset + 3, 1, 0.48, 0.14, intensity);
+      writeTreeColor(branchTipColors, tipOffset, 1, 0.65, 0.28, intensity);
+    } else if (session?.status === 'stuck') {
+      writeTreeColor(branchLineColors, lineOffset, 0.5, 0.55, 0.65, intensity);
+      writeTreeColor(branchLineColors, lineOffset + 3, 0.5, 0.55, 0.65, intensity);
+      writeTreeColor(branchTipColors, tipOffset, 0.65, 0.7, 0.78, intensity);
+    } else {
+      writeTreeColor(branchLineColors, lineOffset, 0.2, 0.6, 1, intensity);
+      writeTreeColor(branchLineColors, lineOffset + 3, 0.2, 0.6, 1, intensity);
+      writeTreeColor(branchTipColors, tipOffset, 0.5, 0.8, 1, intensity);
+    }
+  }
+  branchGeo.setDrawRange(0, activeSubagentBranches.length * 2);
+  branchTipGeo.setDrawRange(0, activeSubagentBranches.length);
+  branchGeo.attributes.position.needsUpdate = true;
+  branchGeo.attributes.color.needsUpdate = true;
+  branchTipGeo.attributes.position.needsUpdate = true;
+  branchTipGeo.attributes.color.needsUpdate = true;
+
+  for (let i = 0; i < fadingSubagentBranches.length;) {
+    if (now - fadingSubagentBranches[i].fadeStart >= SUBAGENT_FADE_SECONDS) {
+      fadingSubagentBranches[i] = fadingSubagentBranches[fadingSubagentBranches.length - 1];
+      fadingSubagentBranches.pop();
+    } else i++;
+  }
+  for (let i = 0; i < fadingSubagentBranches.length; i++) {
+    const branch = fadingSubagentBranches[i];
+    const offset = branch.anchorIndex * 3;
+    const lineOffset = i * 6;
+    const age = Math.max(0, (now - branch.fadeStart) / SUBAGENT_FADE_SECONDS);
+    const flash = branch.outcome === 'failed' && age < 0.12 ? 2 : 1;
+    const intensity = (1 - age) * flash *
+      (branch.outcome === 'completed' && age < 0.15 ? 0.6 + age * 6 : 1);
+    const x = nodePos[offset], y = nodePos[offset + 1], z = nodePos[offset + 2];
+    fadingLinePositions[lineOffset] = x;
+    fadingLinePositions[lineOffset + 1] = y;
+    fadingLinePositions[lineOffset + 2] = z;
+    fadingLinePositions[lineOffset + 3] = x + branch.directionX * branch.length;
+    fadingLinePositions[lineOffset + 4] = y + branch.directionY * branch.length;
+    fadingLinePositions[lineOffset + 5] = z + branch.directionZ * branch.length;
+    fadingTipPositions[i * 3] = fadingLinePositions[lineOffset + 3];
+    fadingTipPositions[i * 3 + 1] = fadingLinePositions[lineOffset + 4];
+    fadingTipPositions[i * 3 + 2] = fadingLinePositions[lineOffset + 5];
+    if (branch.outcome === 'failed') {
+      writeTreeColor(fadingLineColors, lineOffset, 1, 0.35, 0.08, intensity);
+      writeTreeColor(fadingTipColors, i * 3, 1, 0.5, 0.16, intensity);
+    } else if (branch.outcome === 'cleared') {
+      writeTreeColor(fadingLineColors, lineOffset, 0.55, 0.58, 0.64, intensity);
+      writeTreeColor(fadingTipColors, i * 3, 0.65, 0.68, 0.72, intensity);
+    } else {
+      writeTreeColor(fadingLineColors, lineOffset, 0.4, 0.72, 1, intensity);
+      writeTreeColor(fadingTipColors, i * 3, 0.65, 0.85, 1, intensity);
+    }
+    fadingLineColors[lineOffset + 3] = fadingLineColors[lineOffset];
+    fadingLineColors[lineOffset + 4] = fadingLineColors[lineOffset + 1];
+    fadingLineColors[lineOffset + 5] = fadingLineColors[lineOffset + 2];
+  }
+  fadingGeo.setDrawRange(0, fadingSubagentBranches.length * 2);
+  fadingTipGeo.setDrawRange(0, fadingSubagentBranches.length);
+  fadingGeo.attributes.position.needsUpdate = true;
+  fadingGeo.attributes.color.needsUpdate = true;
+  fadingTipGeo.attributes.position.needsUpdate = true;
+  fadingTipGeo.attributes.color.needsUpdate = true;
+}
+
 function otherEnd(e, n) {
   return edgeA[e] === n ? edgeB[e] : edgeA[e];
 }
@@ -571,7 +875,7 @@ function celebrateCompletion() {
   rippleT = 0;
 }
 
-let activityState = { connection: 'connecting', sourceStatus: 'unknown', coverage: 'unknown', activeSessions: 0, thinkingSessions: 0, runningSessions: 0, unverifiedRunningSessions: 0, journalFiles: 0 };
+let activityState = { connection: 'connecting', sourceStatus: 'unknown', coverage: 'unknown', activeSessions: 0, thinkingSessions: 0, runningSessions: 0, unverifiedRunningSessions: 0, journalFiles: 0, sessions: [] };
 const thinkingPulseClock = createThinkingPulseClock();
 // Blue running-state stream: observed running work (thinking, tools and
 // delegated agents), not a claim of hidden cognition.
@@ -591,6 +895,7 @@ function renderActivityState(state) {
       !(state.runningSessions > 0)) thinkingPulseClock.reset();
   if (state.connection !== 'connected') impulseBuffer.clear();
   activityState = state;
+  updateSubagentSummary(state.sessions ?? []);
   $journals.textContent = String(state.journalFiles ?? 0);
   $sessions.textContent = String(state.activeSessions ?? 0);
   $unknown.textContent = String(state.unknownSessions ?? 0);
@@ -639,6 +944,7 @@ function renderActivityState(state) {
 
 const activityClient = createActivityClient({
   onState: renderActivityState,
+  onTree: applySubagentTree,
   onActivity: (activity) => {
     if (!document.hidden) impulseBuffer.add(activity);
   },
@@ -649,6 +955,15 @@ document.addEventListener('visibilitychange', () => {
   impulseBuffer.clear();
   if (document.hidden) {
     thinkingPulseClock.reset();
+  } else {
+    applySubagentTree({
+      sessions: activityState.sessions ?? [],
+      added: [],
+      completed: [],
+      failed: [],
+      cleared: [],
+      reset: true,
+    });
   }
 });
 
@@ -685,6 +1000,7 @@ function frame() {
 
   renderObservedImpulses();
   renderThinking(dt);
+  renderSubagentTree(performance.now() / 1000);
   updatePulses(dt);
   updateShocks(dt);
 

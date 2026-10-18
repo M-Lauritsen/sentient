@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -9,6 +9,10 @@ import { projectActivity } from './activity-client.mjs';
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const MAX_CLIENTS = 8;
 const MAX_CLIENT_BUFFER = 64 * 1024;
+const MAX_TREE_SESSIONS = 32;
+const MAX_TREE_SUBAGENTS = 16;
+const MAX_TREE_RETIREMENTS = 8;
+const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const VENDOR_FILES = new Map([
   ['/vendor/three.module.js', 'node_modules/three/build/three.module.js'],
   ['/vendor/addons/controls/OrbitControls.js', 'node_modules/three/examples/jsm/controls/OrbitControls.js'],
@@ -69,13 +73,28 @@ export function createSentientServer({
   const clients = new Set();
   let streamSequence = 0;
   const streamEpoch = randomBytes(18).toString('base64url');
+  const treeKey = randomBytes(32);
+  const treeSid = (scope, value, used) => {
+    for (let collision = 0; ; collision++) {
+      const digest = createHmac('sha256', treeKey).update(scope).update('\0')
+        .update(value).update('\0').update(String(collision)).digest();
+      const first20Bits = (digest[0] << 12) | (digest[1] << 4) | (digest[2] >> 4);
+      const sid = Array.from({ length: 4 }, (_, index) =>
+        BASE32_ALPHABET[(first20Bits >>> (15 - index * 5)) & 31]).join('');
+      if (!used.has(sid)) {
+        used.add(sid);
+        return sid;
+      }
+    }
+  };
   let server;
   let expectedHost;
   let origin;
   let started = false;
 
-  const snapshot = () => {
+  const snapshot = (includeTree = true) => {
     const value = source.snapshot();
+    const snapshotSessionSids = new Set();
     return {
       source: value.source,
       sourceStatus: value.sourceStatus,
@@ -88,6 +107,33 @@ export function createSentientServer({
       unverifiedRunningSessions: value.unverifiedRunningSessions,
       backlogFiles: value.backlogFiles,
       steps: value.steps,
+      sessions: includeTree ? value.sessions.slice(0, MAX_TREE_SESSIONS)
+        .sort((a, b) => a.file.localeCompare(b.file))
+        .map((session) => {
+          const usedSessionSids = snapshotSessionSids;
+          const sid = treeSid('session', session.file, usedSessionSids);
+          const calls = new Map();
+          const usedSubagentSids = new Set();
+          for (const callId of [...new Set([
+            ...session.subagents.map((subagent) => subagent.callId),
+            ...session.retired.map((retirement) => retirement.callId),
+          ])].sort()) {
+            calls.set(callId, treeSid(`subagent:${session.file}`, callId, usedSubagentSids));
+          }
+          return {
+            sid,
+            status: ['running', 'waiting', 'stuck', 'quiet'].includes(session.status) ? session.status : 'quiet',
+            subagents: session.subagents.slice(0, MAX_TREE_SUBAGENTS).map((subagent) => ({
+              sid: calls.get(subagent.callId),
+              ageMs: subagent.ageMs,
+            })),
+            subagentsMore: session.subagentsMore,
+            retired: session.retired.slice(-MAX_TREE_RETIREMENTS).map((retirement) => ({
+              sid: calls.get(retirement.callId),
+              outcome: retirement.outcome,
+            })),
+          };
+        }) : undefined,
     };
   };
 
@@ -113,7 +159,7 @@ export function createSentientServer({
     const activity = projectActivity(value);
     if (!activity) return;
     streamSequence++;
-    const message = { epoch: streamEpoch, sequence: streamSequence, ...activity, snapshot: snapshot() };
+    const message = { epoch: streamEpoch, sequence: streamSequence, ...activity, snapshot: snapshot(false) };
     for (const response of clients) sendEvent(response, 'activity', message, streamSequence);
   };
 

@@ -216,6 +216,50 @@ test('real file tails group token SSE traffic and project future, empty and name
       await reconnectReader.cancel();
 });
 
+test('SSE subagent trees expose bounded epoch-opaque identifiers without local values', async (t) => {
+  const activityRoot = await fixture(t);
+  const session = path.join(activityRoot, 'PRIVATE-session-directory');
+  await mkdir(session);
+  const file = path.join(session, 'events.jsonl');
+  await writeFile(file, '');
+  const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
+  t.after(() => app.stop());
+  const { port } = await app.start();
+  const base = `http://127.0.0.1:${port}`;
+  const response = await fetch(`${base}/events`, { headers: { origin: base } });
+  const reader = response.body.getReader();
+  await reader.read();
+  await appendFile(file, record('subagent.started', {
+    toolCallId: 'PRIVATE-tool-call', agentDescription: 'PRIVATE-agent-description',
+  }));
+  await app.source.poll();
+  let text = '';
+  while (!text.includes('"subagents":[{"sid":')) {
+    const part = await reader.read();
+    assert.equal(part.done, false);
+    text += new TextDecoder().decode(part.value);
+  }
+  const snapshot = JSON.parse(text.split('data: ').at(-1).split('\n')[0]).snapshot;
+  assert.equal(snapshot.sessions.length, 1);
+  assert.match(snapshot.sessions[0].sid, /^[A-Z2-7]{4}$/);
+  assert.match(snapshot.sessions[0].subagents[0].sid, /^[A-Z2-7]{4}$/);
+  assert.equal(snapshot.sessions[0].status, 'running');
+  assert.doesNotMatch(text, /PRIVATE|tool-call|agent-description|session-directory|events\.jsonl/);
+  const childSid = snapshot.sessions[0].subagents[0].sid;
+  await appendFile(file, record('subagent.completed', { toolCallId: 'PRIVATE-tool-call' }));
+  await app.source.poll();
+  let retiredText = '';
+  while (!retiredText.includes('"outcome":"completed"')) {
+    const part = await reader.read();
+    assert.equal(part.done, false);
+    retiredText += new TextDecoder().decode(part.value);
+  }
+  const retiredSnapshot = JSON.parse(retiredText.split('data: ').at(-1).split('\n')[0]).snapshot;
+  assert.deepEqual(retiredSnapshot.sessions[0].retired, [{ sid: childSid, outcome: 'completed' }]);
+  assert.doesNotMatch(retiredText, /PRIVATE|tool-call|agent-description|session-directory|events\.jsonl/);
+  await reader.cancel();
+});
+
 test('rejects hostile host/origin and connection caps fail closed', async (t) => {
   const activityRoot = await fixture(t);
   const app = createSentientServer({ activityRoot, port: 0, maxClients: 1, pollIntervalMs: 0 });

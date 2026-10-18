@@ -16,6 +16,9 @@ const MAX_AGENTS_PER_SESSION = 64;
 const MAX_TOOLS_PER_AGENT = 64;
 const MAX_WAITING_PER_SESSION = 64;
 const MAX_SUBAGENTS_PER_SESSION = 64;
+const MAX_TREE_SESSIONS = 32;
+const MAX_TREE_SUBAGENTS = 16;
+const MAX_TREE_RETIREMENTS = 8;
 const STALE_ACTIVITY_MS = 45_000;
 const SOURCE = 'local-activity-files';
 
@@ -106,19 +109,20 @@ export class LocalActivitySource extends EventEmitter {
     let unknownSessions = 0;
     let runningSessions = 0;
     let unverifiedRunningSessions = 0;
-    for (const state of this.sessions.values()) {
-      const stale = now - state.lastEventAt > STALE_ACTIVITY_MS;
+    const sessions = [];
+    for (const [file, session] of this.sessions) {
+      const stale = now - session.lastEventAt > STALE_ACTIVITY_MS;
       // Running is a separate visual liveness signal: only work whose start was
       // observed live counts; staleness marks it unverified but does not stop it.
       // It never grants success eligibility.
-      if (this.isRunning(state)) {
+      if (this.isRunning(session)) {
         runningSessions++;
         if (stale) unverifiedRunningSessions++;
       }
       let active = false;
       let thinking = false;
       let unknown = false;
-      for (const agent of state.agents.values()) {
+      for (const agent of session.agents.values()) {
         if (!agent.active) continue;
         if (!agent.eligible || stale) unknown = true;
         else if (agent.waiting || agent.toolCalls.size > 0) active = true;
@@ -130,6 +134,23 @@ export class LocalActivitySource extends EventEmitter {
       if (active) activeSessions++;
       if (thinking) thinkingSessions++;
       if (unknown) unknownSessions++;
+      if (sessions.length < MAX_TREE_SESSIONS) {
+        let status = 'quiet';
+        if (session.waitingPermissions.size > 0 || session.waitingInputs.size > 0) status = 'waiting';
+        else if (this.isRunning(session)) status = stale ? 'stuck' : 'running';
+        else if (unknown) status = 'stuck';
+        const subagents = [...session.subagents].map(([callId, subagent]) => ({
+          callId,
+          ageMs: Math.min(1_000_000_000, Math.floor(Math.max(0, now - subagent.startedAt))),
+        }));
+        sessions.push({
+          file,
+          status,
+          subagents: subagents.slice(0, MAX_TREE_SUBAGENTS),
+          subagentsMore: Math.max(0, subagents.length - MAX_TREE_SUBAGENTS),
+          retired: session.retired.slice(-MAX_TREE_RETIREMENTS),
+        });
+      }
     }
     const sourceStatus = this.sourceStatus;
     return {
@@ -145,6 +166,7 @@ export class LocalActivitySource extends EventEmitter {
       backlogFiles: this.backlogFiles,
       steps: this.steps,
       sequence: this.sequence,
+      sessions,
     };
   }
 
@@ -428,6 +450,7 @@ export class LocalActivitySource extends EventEmitter {
       agents: new Map(),
       // Live-observed subagent calls (toolCallId -> child attribution key).
       subagents: new Map(),
+      retired: [],
       eligibleRootTurn: null,
       completedRootTurn: null,
       waitingPermissions: new Set(),
@@ -713,7 +736,7 @@ export class LocalActivitySource extends EventEmitter {
         this.invalidateSession(state);
         return;
       }
-      session.subagents.set(call, key);
+      session.subagents.set(call, { key, startedAt: this.clock() });
       return;
     }
 
@@ -729,8 +752,10 @@ export class LocalActivitySource extends EventEmitter {
       }
       // Retire the delegated call and its child agent even if the child never
       // wrote its own turn end. Duplicate terminal records are no-ops.
-      const childKey = session.subagents.get(call);
+      const subagent = session.subagents.get(call);
       session.subagents.delete(call);
+      if (subagent) this.retireSubagent(session, call, type === 'subagent.completed' ? 'completed' : 'failed');
+      const childKey = subagent?.key;
       for (const retired of [childKey, root ? undefined : key]) {
         if (retired && retired !== 'root') session.agents.delete(retired);
       }
@@ -778,7 +803,7 @@ export class LocalActivitySource extends EventEmitter {
       session.eligibleRootTurn = null;
       session.waitingPermissions.clear();
       session.waitingInputs.clear();
-      session.subagents.clear();
+      this.clearSubagents(session);
     }
   }
 
@@ -806,7 +831,17 @@ export class LocalActivitySource extends EventEmitter {
   invalidateSession(state) {
     this.expireEligibility(state);
     for (const agent of state.session.agents.values()) agent.live = false;
-    state.session.subagents.clear();
+    this.clearSubagents(state.session);
+  }
+
+  retireSubagent(session, callId, outcome) {
+    session.retired.push({ callId, outcome });
+    if (session.retired.length > MAX_TREE_RETIREMENTS) session.retired.shift();
+  }
+
+  clearSubagents(session) {
+    for (const callId of session.subagents.keys()) this.retireSubagent(session, callId, 'cleared');
+    session.subagents.clear();
   }
 
   invalidateAllSessions() {
