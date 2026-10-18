@@ -8,6 +8,8 @@ const EMPTY = Object.freeze({
   unknownSessions: 0,
   runningSessions: 0,
   unverifiedRunningSessions: 0,
+  sessions: [],
+  treeSessions: [],
   waitingSessions: 0,
   backlogFiles: 0,
   steps: 0,
@@ -136,6 +138,50 @@ function integer(value) {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000;
 }
 
+const TREE_SID = /^[A-Z2-7]{4}$/;
+const TREE_STATUSES = new Set(['running', 'waiting', 'stuck', 'quiet']);
+const RETIREMENT_OUTCOMES = new Set(['completed', 'failed', 'cleared']);
+
+function projectTreeSessions(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 32) return null;
+  const sessionIds = new Set();
+  const sessions = [];
+  for (const session of value) {
+    if (!session || typeof session !== 'object' || !TREE_SID.test(session.sid) ||
+        sessionIds.has(session.sid) || !TREE_STATUSES.has(session.status) ||
+        !Array.isArray(session.subagents) || session.subagents.length > 16 ||
+        !integer(session.subagentsMore) || !Array.isArray(session.retired) || session.retired.length > 8) return null;
+    if (session.subagentsMore > 0 && session.subagents.length !== 16) return null;
+    sessionIds.add(session.sid);
+    const childIds = new Set();
+    const subagents = [];
+    for (const child of session.subagents) {
+      if (!child || typeof child !== 'object' || !TREE_SID.test(child.sid) ||
+          childIds.has(child.sid) || !integer(child.ageMs)) return null;
+      childIds.add(child.sid);
+      subagents.push({ sid: child.sid, ageMs: child.ageMs });
+    }
+    const retired = [];
+    const retiredIds = new Set();
+    for (const item of session.retired) {
+      if (!item || typeof item !== 'object' || !TREE_SID.test(item.sid) ||
+          childIds.has(item.sid) || retiredIds.has(item.sid) ||
+          !RETIREMENT_OUTCOMES.has(item.outcome)) return null;
+      retiredIds.add(item.sid);
+      retired.push({ sid: item.sid, outcome: item.outcome });
+    }
+    sessions.push({
+      sid: session.sid,
+      status: session.status,
+      subagents,
+      subagentsMore: session.subagentsMore,
+      retired,
+    });
+  }
+  return sessions;
+}
+
 function exactKeys(value, keys) {
   return value !== null && typeof value === 'object' && !Array.isArray(value) &&
     Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
@@ -219,6 +265,52 @@ function projectSessions(value) {
   return sessions;
 }
 
+export function diffSubagents(previous, next) {
+  const result = { added: [], completed: [], failed: [], cleared: [] };
+  const nextBySession = new Map(next.map((session) => [session.sid, session]));
+  const previousBySession = new Map(previous.map((session) => [session.sid, session]));
+  for (const session of previous) {
+    const current = nextBySession.get(session.sid);
+    for (const child of session.subagents) {
+      if (current?.subagents.some((candidate) => candidate.sid === child.sid)) continue;
+      const retirement = current?.retired.find((candidate) => candidate.sid === child.sid);
+      const outcome = RETIREMENT_OUTCOMES.has(retirement?.outcome) ? retirement.outcome : 'cleared';
+      result[outcome].push({ sessionSid: session.sid, sid: child.sid });
+    }
+  }
+  for (const session of next) {
+    const previousSession = previousBySession.get(session.sid);
+    for (const child of session.subagents) {
+      if (!previousSession?.subagents.some((candidate) => candidate.sid === child.sid)) {
+        result.added.push({ sessionSid: session.sid, sid: child.sid, ageMs: child.ageMs });
+      }
+    }
+  }
+  return result;
+}
+
+export function summarizeSubagents(sessions) {
+  let visibleBranches = 0;
+  let omittedBranches = 0;
+  let visibleSessions = 0;
+  const statusCounts = new Map();
+  for (const session of sessions) {
+    const count = session.subagents.length;
+    omittedBranches += session.subagentsMore;
+    if (!count) continue;
+    visibleSessions++;
+    visibleBranches += count;
+    statusCounts.set(session.status, (statusCounts.get(session.status) ?? 0) + count);
+  }
+  if (!visibleBranches && !omittedBranches) return 'No observed delegated work.';
+  const details = [...statusCounts].map(([status, count]) => `${count} ${status}`).join(', ');
+  const sessionLabel = visibleSessions === 1 ? 'session' : 'sessions';
+  const branchLabel = omittedBranches === 1 ? 'branch' : 'branches';
+  return `Observed delegated work: ${visibleBranches} visible subagent branches across ` +
+    `${visibleSessions} ${sessionLabel}${details ? ` (${details})` : ''}` +
+    `${omittedBranches ? `; ${omittedBranches} additional ${branchLabel} omitted by display limits` : ''}.`;
+}
+
 function projectHudSessions(value) {
   const sessions = projectSessions(value);
   if (sessions === null || sessions.some((session) =>
@@ -261,6 +353,9 @@ function projectSnapshot(value) {
   const hasSessions = value.sessions !== undefined;
   const sessions = hasSessions ? projectSessions(value.sessions) : undefined;
   if (hasSessions && sessions === null) return null;
+  const hasTreeSessions = value.treeSessions !== undefined;
+  const treeSessions = projectTreeSessions(value.treeSessions);
+  if (hasTreeSessions && treeSessions === null) return null;
   if (value.sessionsTruncated !== undefined && typeof value.sessionsTruncated !== 'boolean') return null;
   const hasHudSessions = value.hudSessions !== undefined;
   const hasHudSessionsTruncated = value.hudSessionsTruncated !== undefined;
@@ -298,6 +393,7 @@ function projectSnapshot(value) {
     backlogFiles: value.backlogFiles,
     steps: value.steps,
     ...(hasSessions ? { sessions } : {}),
+    treeSessions,
     ...(value.sessionsTruncated !== undefined ? { sessionsTruncated: value.sessionsTruncated } : {}),
     ...(hasHudSessions ? { hudSessions } : {}),
     ...(hasHudSessionsTruncated ? { hudSessionsTruncated: value.hudSessionsTruncated } : {}),
@@ -317,6 +413,7 @@ function unknownConnection(state, connection) {
     unverifiedRunningSessions: 0,
     waitingSessions: 0,
     sessions: [],
+    treeSessions: [],
     sessionsTruncated: false,
     hudSessions: [],
     hudSessionsTruncated: false,
@@ -329,6 +426,7 @@ export function createActivityClient({
   url = '/events',
   onState = () => {},
   onActivity = () => {},
+  onTree = () => {},
 } = {}) {
   let state = { ...EMPTY };
   let streamSequence = -1;
@@ -338,6 +436,11 @@ export function createActivityClient({
   let closed = false;
 
   const publishState = () => onState({ ...state });
+  const publishTree = (sessions, changes, reset) => onTree({ sessions, ...changes, reset });
+  const loseTree = () => {
+    publishTree([], diffSubagents(state.treeSessions, []), false);
+    state = { ...state, treeSessions: [] };
+  };
   const markUnknown = () => {
     needsSnapshot = true;
     state = unknownConnection(state, 'unknown');
@@ -355,11 +458,15 @@ export function createActivityClient({
       return;
     }
     if (message.epoch === streamEpoch && message.sequence < streamSequence) return;
+    const reset = needsSnapshot || message.epoch !== streamEpoch;
+    const changes = reset ? { added: [], completed: [], failed: [], cleared: [] }
+      : diffSubagents(state.treeSessions, snapshot.treeSessions);
     streamEpoch = message.epoch;
     streamSequence = message.sequence;
     needsSnapshot = false;
     state = { ...snapshot, connection: 'connected' };
     publishState();
+    publishTree(snapshot.treeSessions, changes, reset);
   };
   const handleActivity = (message) => {
     const activity = projectActivity(message);
@@ -374,6 +481,7 @@ export function createActivityClient({
     }
     if (needsSnapshot || message.epoch !== streamEpoch) {
       needsSnapshot = true;
+      loseTree();
       state = unknownConnection(state, 'unknown');
       publishState();
       return;
@@ -382,13 +490,19 @@ export function createActivityClient({
     if (streamSequence >= 0 && message.sequence !== streamSequence + 1) {
       streamSequence = message.sequence;
       needsSnapshot = true;
+      loseTree();
       state = unknownConnection(state, 'unknown');
       publishState();
       return;
     }
+    const previousTreeSessions = state.treeSessions;
+    const hasTreeSnapshot = Array.isArray(message.snapshot.treeSessions);
     streamSequence = message.sequence;
-    state = { ...snapshot, connection: 'connected' };
+    state = { ...snapshot, ...(hasTreeSnapshot ? {} : { treeSessions: previousTreeSessions }), connection: 'connected' };
     publishState();
+    if (hasTreeSnapshot) {
+      publishTree(snapshot.treeSessions, diffSubagents(previousTreeSessions, snapshot.treeSessions), false);
+    }
     onActivity(activity);
   };
 
@@ -405,6 +519,7 @@ export function createActivityClient({
       source.onerror = () => {
         if (closed) return;
         needsSnapshot = true;
+        loseTree();
         state = unknownConnection(state, 'retrying');
         publishState();
       };
@@ -415,6 +530,7 @@ export function createActivityClient({
       source?.close();
       source = null;
       needsSnapshot = true;
+      loseTree();
       state = unknownConnection(state, 'disconnected');
       publishState();
     },

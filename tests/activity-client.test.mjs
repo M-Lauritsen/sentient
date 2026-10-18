@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createActivityClient, createImpulseFeed, createImpulseBuffer, activityColor,
-  impulseIntensity, projectActivity, projectActiveHudSessions, createThinkingPulseClock } from '../activity-client.mjs';
+  diffSubagents, impulseIntensity, projectActivity, summarizeSubagents,
+  projectActiveHudSessions, createThinkingPulseClock } from '../activity-client.mjs';
 
 function feedElement() {
   const element = {
@@ -105,6 +106,82 @@ class FakeEventSource {
   close() { this.closed = true; }
   emit(name, data) { this.listeners.get(name)?.({ data: JSON.stringify(data) }); }
 }
+
+test('subagent snapshot diffs classify live additions and all retirement outcomes', () => {
+  const previous = [{
+    sid: 'AAAA', status: 'running', subagents: [{ sid: 'AB22', ageMs: 10 }, { sid: 'CD33', ageMs: 20 }],
+    subagentsMore: 0, retired: [],
+  }];
+  const next = [{
+    sid: 'AAAA', status: 'waiting', subagents: [{ sid: 'AB22', ageMs: 30 }, { sid: 'EF44', ageMs: 0 }],
+    subagentsMore: 0, retired: [{ sid: 'CD33', outcome: 'failed' }],
+  }];
+  assert.deepEqual(diffSubagents(previous, next), {
+    added: [{ sessionSid: 'AAAA', sid: 'EF44', ageMs: 0 }],
+    completed: [], failed: [{ sessionSid: 'AAAA', sid: 'CD33' }], cleared: [],
+  });
+  assert.deepEqual(diffSubagents(next, []), {
+    added: [], completed: [], failed: [], cleared: [
+      { sessionSid: 'AAAA', sid: 'AB22' }, { sessionSid: 'AAAA', sid: 'EF44' },
+    ],
+  });
+});
+
+test('subagent summaries expose bounded counts and statuses without identifiers', () => {
+  assert.equal(summarizeSubagents([]), 'No observed delegated work.');
+  assert.equal(summarizeSubagents([
+    { status: 'running', subagents: [{ sid: 'ABCD' }], subagentsMore: 1 },
+    { status: 'waiting', subagents: [{ sid: 'EFGH' }], subagentsMore: 0 },
+    { status: 'quiet', subagents: [], subagentsMore: 0 },
+  ]), 'Observed delegated work: 2 visible subagent branches across 2 sessions ' +
+    '(1 running, 1 waiting); 1 additional branch omitted by display limits.');
+});
+
+test('client validates bounded subagent metadata, diffs snapshots, and clears branches across gaps', () => {
+  FakeEventSource.instances = [];
+  const trees = [];
+  const client = createActivityClient({
+    EventSourceImpl: FakeEventSource,
+    onTree: (tree) => trees.push(tree),
+  });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  const base = {
+    source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only',
+    activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0,
+    journalFiles: 1, steps: 0, sessions: [], treeSessions: [],
+  };
+  const session = (subagents, retired = []) => ({
+    sid: 'AAAA', status: 'running', subagents, subagentsMore: 0, retired,
+  });
+  const child = (sid, ageMs = 0) => ({ sid, ageMs });
+  const epoch = 'subagent-client-epoch';
+  stream.emit('snapshot', { epoch, sequence: 0, snapshot: { ...base, treeSessions: [session([])] } });
+  stream.emit('snapshot', { epoch, sequence: 0, snapshot: { ...base, treeSessions: [session([{ ...child('bad!') }])] } });
+  assert.equal(trees.length, 1, 'malformed snapshots are discarded');
+  stream.emit('snapshot', { epoch, sequence: 0, snapshot: { ...base, treeSessions: [session([child('AB22')])] } });
+  assert.equal(trees.at(-1).reset, true);
+  assert.deepEqual(trees.at(-1).sessions[0].subagents, [child('AB22')]);
+  stream.emit('snapshot', {
+    epoch, sequence: 1,
+    snapshot: { ...base, treeSessions: [session([child('AB22'), child('EF44')])] },
+  });
+  assert.deepEqual(trees.at(-1).added, [{ sessionSid: 'AAAA', sid: 'EF44', ageMs: 0 }]);
+  const activitySnapshot = { ...base };
+  delete activitySnapshot.treeSessions;
+  stream.emit('activity', {
+    epoch, sequence: 2, kind: 'activity', eventType: 'future.event', snapshot: activitySnapshot,
+  });
+  assert.deepEqual(client.getState().treeSessions[0].subagents, [child('AB22'), child('EF44')]);
+  stream.emit('snapshot', {
+    epoch, sequence: 2,
+    snapshot: { ...base, treeSessions: [session([], [{ sid: 'AB22', outcome: 'completed' }])] },
+  });
+  assert.deepEqual(trees.at(-1).completed, [{ sessionSid: 'AAAA', sid: 'AB22' }]);
+  stream.onerror();
+  assert.deepEqual(trees.at(-1).cleared, []);
+  client.disconnect();
+});
 
 test('client validates grouped generic metadata and never forwards private fields or replays after gaps', () => {
       FakeEventSource.instances = [];

@@ -16,7 +16,7 @@ export async function scanPublication(root) {
   const findings = [];
   async function visit(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
-      if (entry.isDirectory() && IGNORED_DIRECTORIES.has(entry.name)) continue;
+      if (entry.name === '.git' || (entry.isDirectory() && IGNORED_DIRECTORIES.has(entry.name))) continue;
       const absolute = path.join(directory, entry.name);
       const relative = path.relative(root, absolute);
       const report = (category) => findings.push({ file: relative, category });

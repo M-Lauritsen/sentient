@@ -1003,6 +1003,77 @@ test('background subagent keeps running after the root turn ends until its own r
   assert.deepEqual(running(source), [0, 0], 'an ended subagent call does not re-open');
 });
 
+test('subagent tree records only live starts and distinguishes completed, failed and cleared retirements', async (t) => {
+  const { file, source } = await runningFixture(t,
+    event('subagent.started', { toolCallId: 'historic-call' }, { agentId: 'historic-agent' }));
+  assert.deepEqual(source.snapshot().treeSessions[0].subagents, [], 'baseline starts are not represented');
+  assert.deepEqual(source.snapshot().treeSessions[0].retired, []);
+
+  await appendFile(file,
+    event('subagent.started', { toolCallId: 'completed-call' }, { agentId: 'completed-agent' }) +
+    event('subagent.started', { toolCallId: 'failed-call' }, { agentId: 'failed-agent' }) +
+    event('subagent.started', { toolCallId: 'cleared-call' }, { agentId: 'cleared-agent' }));
+  await source.poll();
+  let session = source.snapshot().treeSessions[0];
+  assert.deepEqual(session.subagents.map(({ callId }) => callId),
+    ['completed-call', 'failed-call', 'cleared-call']);
+  assert.ok(session.subagents.every(({ ageMs }) => ageMs === 0));
+
+  await appendFile(file,
+    event('subagent.completed', { toolCallId: 'completed-call' }, { agentId: 'completed-agent' }) +
+    event('subagent.failed', { toolCallId: 'failed-call' }, { agentId: 'failed-agent' }));
+  await source.poll();
+  session = source.snapshot().treeSessions[0];
+  assert.deepEqual(session.subagents.map(({ callId }) => callId), ['cleared-call']);
+  assert.deepEqual(session.retired.map(({ callId, outcome }) => [callId, outcome]), [
+    ['completed-call', 'completed'],
+    ['failed-call', 'failed'],
+  ]);
+
+  await appendFile(file, event('abort', null));
+  await source.poll();
+  session = source.snapshot().treeSessions[0];
+  assert.deepEqual(session.subagents, []);
+  assert.deepEqual(session.retired.map(({ callId, outcome }) => [callId, outcome]), [
+    ['completed-call', 'completed'],
+    ['failed-call', 'failed'],
+    ['cleared-call', 'cleared'],
+  ]);
+});
+
+test('subagent tree display and retirement history respect bounded caps', async (t) => {
+  const { file, source } = await runningFixture(t);
+  const starts = Array.from({ length: 17 }, (_, i) =>
+    event('subagent.started', { toolCallId: `call-${i}` }, { agentId: `agent-${i}` })).join('');
+  await appendFile(file, starts);
+  await source.poll();
+  let session = source.snapshot().treeSessions[0];
+  assert.equal(session.subagents.length, 16);
+  assert.equal(session.subagentsMore, 1);
+  assert.equal(session.retired.length, 0);
+
+  await appendFile(file, Array.from({ length: 17 }, (_, i) =>
+    event('subagent.completed', { toolCallId: `call-${i}` }, { agentId: `agent-${i}` })).join(''));
+  await source.poll();
+  session = source.snapshot().treeSessions[0];
+  assert.deepEqual(session.subagents, []);
+  assert.equal(session.retired.length, 8);
+  assert.deepEqual(session.retired.map(({ outcome }) => outcome), Array(8).fill('completed'));
+});
+
+test('subagent tree includes no more than 32 journal-session anchors', async (t) => {
+  const root = await fixture(t);
+  for (let i = 0; i < 33; i++) {
+    const directory = path.join(root, `session-${String(i).padStart(2, '0')}`);
+    await mkdir(directory);
+    await writeFile(path.join(directory, 'events.jsonl'), '');
+  }
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  await source.start();
+  assert.equal(source.snapshot().treeSessions.length, 32);
+});
+
 test('user waits pause running pulses; tool waits do not', async (t) => {
   const { file, source } = await runningFixture(t);
   await appendFile(file, event('assistant.turn_start', { turnId: 'turn' }) +

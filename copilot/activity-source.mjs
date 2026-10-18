@@ -16,6 +16,9 @@ const MAX_AGENTS_PER_SESSION = 64;
 const MAX_TOOLS_PER_AGENT = 64;
 const MAX_WAITING_PER_SESSION = 64;
 const MAX_SUBAGENTS_PER_SESSION = 64;
+const MAX_TREE_SESSIONS = 32;
+const MAX_TREE_SUBAGENTS = 16;
+const MAX_TREE_RETIREMENTS = 8;
 const MAX_HUD_SESSIONS = 32;
 const MAX_HUD_ELAPSED_MS = 1_000_000_000;
 const MAX_STATS_COUNTER = 1_000_000_000;
@@ -227,6 +230,7 @@ export class LocalActivitySource extends EventEmitter {
     }
     const sourceStatus = this.sourceStatus;
     const sessions = [];
+    const treeSessions = [];
     for (const [key, state] of this.sessions) {
       const status = this.syncSessionStatus(state, now);
       sessions.push({
@@ -241,6 +245,19 @@ export class LocalActivitySource extends EventEmitter {
         lastEventAt: state.lastEventAt,
         stats: snapshotStats(state.stats),
       });
+      if (treeSessions.length < MAX_TREE_SESSIONS) {
+        treeSessions.push({
+          file: key,
+          status: status === 'running-unverified' ? 'stuck'
+            : ['running', 'waiting'].includes(status) ? status : 'quiet',
+          subagents: [...state.subagents].map(([callId, subagent]) => ({
+            callId,
+            ageMs: Math.min(MAX_HUD_ELAPSED_MS, Math.max(0, Math.floor(now - subagent.startedAt))),
+          })).slice(0, MAX_TREE_SUBAGENTS),
+          subagentsMore: Math.max(0, state.subagents.size - MAX_TREE_SUBAGENTS),
+          retired: state.retired.slice(-MAX_TREE_RETIREMENTS),
+        });
+      }
     }
     sessions.sort((a, b) =>
       STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) ||
@@ -285,6 +302,7 @@ export class LocalActivitySource extends EventEmitter {
       hudSessions,
       hudSessionsTruncated,
       waitingSessionKeys,
+      treeSessions,
     };
   }
 
@@ -416,6 +434,10 @@ export class LocalActivitySource extends EventEmitter {
     const snapshot = this.snapshot();
     const comparable = {
       ...snapshot,
+      treeSessions: snapshot.treeSessions.map(({ subagents, ...session }) => ({
+        ...session,
+        subagents: subagents.map(({ ageMs, ...subagent }) => subagent),
+      })),
       sessions: snapshot.sessions.map(({ elapsedMs, stats, ...session }) => ({
         ...session,
         stats: {
@@ -590,6 +612,7 @@ export class LocalActivitySource extends EventEmitter {
       agents: new Map(),
       // Live-observed subagent calls (toolCallId -> child attribution key).
       subagents: new Map(),
+      retired: [],
       eligibleRootTurn: null,
       completedRootTurn: null,
       waitingPermissions: new Set(),
@@ -952,7 +975,7 @@ export class LocalActivitySource extends EventEmitter {
         this.invalidateSession(state);
         return;
       }
-      session.subagents.set(call, key);
+      session.subagents.set(call, { key, startedAt: eventAt });
       session.stats.subagents.started = increment(session.stats.subagents.started);
       return;
     }
@@ -973,7 +996,9 @@ export class LocalActivitySource extends EventEmitter {
       }
       // Retire the delegated call and its child agent even if the child never
       // wrote its own turn end. Duplicate terminal records are no-ops.
-      const childKey = session.subagents.get(call);
+      const subagent = session.subagents.get(call);
+      const childKey = subagent?.key;
+      if (subagent) this.retireSubagent(session, call, type === 'subagent.completed' ? 'completed' : 'failed');
       session.subagents.delete(call);
       for (const retired of [childKey, root ? undefined : key]) {
         if (retired && retired !== 'root') {
@@ -1026,6 +1051,7 @@ export class LocalActivitySource extends EventEmitter {
       session.eligibleRootTurn = null;
       session.waitingPermissions.clear();
       session.waitingInputs.clear();
+      for (const callId of session.subagents.keys()) this.retireSubagent(session, callId, 'cleared');
       session.subagents.clear();
       session.stats.openTurns.clear();
     }
@@ -1064,8 +1090,18 @@ export class LocalActivitySource extends EventEmitter {
       agent.live = false;
       agent.waiting = false;
     }
-    state.session.subagents.clear();
+    this.clearSubagents(state.session);
     this.syncSessionStatus(state.session, now);
+  }
+
+  retireSubagent(session, callId, outcome) {
+    session.retired.push({ callId, outcome });
+    if (session.retired.length > MAX_TREE_RETIREMENTS) session.retired.shift();
+  }
+
+  clearSubagents(session) {
+    for (const callId of session.subagents.keys()) this.retireSubagent(session, callId, 'cleared');
+    session.subagents.clear();
   }
 
   invalidateAllSessions() {

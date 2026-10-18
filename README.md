@@ -62,6 +62,15 @@ does not load a CDN or send activity outside this machine.
   only from a new live start. Pulses also stop for disconnection, unavailable
   source or hidden tabs (no catch-up). They do not manufacture activity-feed
   entries; existing trails fade naturally.
+- The scene shows up to 32 observed journal sessions that have live delegated
+  subagents as lattice anchors; an empty tree stays invisible. Live delegates
+  appear as outward branches; completion, failure and coverage-driven clearing
+  use distinct bounded fades. A screen-reader status summary reports bounded
+  branch counts and statuses without identifiers. Tree IDs are
+  process-epoch-keyed opaque four-character values; raw session paths,
+  tool-call IDs and agent descriptions never enter the SSE snapshot. The
+  renderer caps active branches at 512 and fades at 64, and reduced-motion
+  settings skip branch growth animation and can be changed while the page is open.
 - Every valid newly observed journal event except permission, user-input and
   elicitation wait lifecycle events triggers an impulse, including messages,
   progress/results, subagents, errors, lifecycle events, and unknown future
@@ -107,18 +116,20 @@ The reader only enumerates direct session subdirectories and opens
 `events.jsonl` read-only. At startup it baselines a bounded tail without replaying
 old activity; later it incrementally parses bounded complete lines. The JSON
 record is parsed transiently in memory, but only aggregate counts, bounded
-per-session statistics, fixed statuses, event kinds (`thinking`, `step`,
-`completion`, `activity`), bounded `eventType`, optional grouped `count`
-(1–1,000,000,000), and optional bounded `toolName` on live tool events can
-cross the loopback SSE stream. Event types
+per-session statistics, fixed statuses, event kinds
+(`thinking`, `step`, `completion`, `activity`), bounded
+`eventType`, optional grouped `count` (1–1,000,000,000), optional bounded
+`toolName` on live tool events, and bounded session-tree snapshots with
+process-epoch-keyed opaque SIDs can cross the loopback SSE stream. Event types
 must be 1–128 ASCII letters, digits, dots, underscores, colons or hyphens:
 enough for journal identifiers, never arbitrary labels/content. Invalid names
 are rejected and mark the poll partial. Missing/null data is safe for lifecycle
 events; malformed non-object data or attribution is rejected conservatively.
-Event-type and tool identifiers are the only additional detail; prompts,
-reasoning, tool arguments/results, session IDs, and file paths are never
-forwarded or logged. Snapshot/reconnect messages contain no event/tool deltas or
-history. Startup, catch-up and source-gap recovery do not replay impulses.
+Event-type, tool identifiers and opaque SIDs are the only additional detail;
+prompts, reasoning, tool arguments/results, raw session IDs, tool-call IDs,
+agent IDs/descriptions and file paths are never forwarded or logged.
+Snapshot/reconnect messages contain no event/tool deltas or history. Startup,
+catch-up and source-gap recovery do not replay impulses.
 Hidden tabs discard pending/incoming visuals; connection gaps clear queued
 visuals. Neither replays a backlog on return.
 

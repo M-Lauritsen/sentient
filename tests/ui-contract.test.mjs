@@ -176,6 +176,26 @@ test('orbit and zoom controls remain enabled while canvas interactions do not cr
   assert.doesNotMatch(main, /pointerdown|pointerup|stimulate\(/);
 });
 
+test('subagent trees use bounded preallocated scene buffers and reset safely', () => {
+  assert.match(main, /MAX_ACTIVE_SUBAGENT_BRANCHES = 512/);
+  assert.match(main, /MAX_FADING_SUBAGENT_BRANCHES = 64/);
+  assert.match(main, /new Float32Array\(MAX_ACTIVE_SUBAGENT_BRANCHES \* 6\)/);
+  assert.match(main, /new Float32Array\(MAX_FADING_SUBAGENT_BRANCHES \* 6\)/);
+  assert.match(main, /onTree: applySubagentTree/);
+  assert.match(main, /if \(tree\.reset \|\| document\.hidden\)/);
+  assert.match(main, /reducedMotionQuery\.addEventListener\('change'/);
+  assert.match(main, /if \(!item\.subagents\.length\) continue;/);
+  assert.match(main, /updateSubagentSummary\(tree\.sessions\)/);
+  assert.match(main, /activityState\.coverage === 'partial'/);
+  assert.match(main, /activityState\.connection !== 'connected'/);
+  assert.match(html, /id="subagent-summary" role="status" aria-live="polite"/);
+  assert.match(html, /Delegated work status unavailable until connected/);
+  assert.match(css, /\.visually-hidden\s*\{[\s\S]*clip-path: inset\(50%\)/);
+  const frame = main.slice(main.indexOf('function frame()'), main.indexOf("window.addEventListener('resize'"));
+  assert.match(frame, /renderSubagentTree/);
+  assert.doesNotMatch(frame, /new THREE\./);
+});
+
 test('session HUD matches the impulse field, shows only active sessions, and fails closed on gaps', () => {
   assert.match(html, /<aside[^>]+id="session-hud"[^>]+aria-label="Active sessions"/);
   assert.match(html, /id="session-list"/);
@@ -185,7 +205,7 @@ test('session HUD matches the impulse field, shows only active sessions, and fai
   assert.match(main, /function renderSessions\(state\)/);
   assert.match(main, /const hasHudProjection = Array\.isArray\(state\.hudSessions\)/);
   assert.match(main, /projectActiveHudSessions\(state\)/);
-  assert.match(main, /projectActiveHudSessions,/);
+  assert.match(main, /projectActiveHudSessions/);
   assert.match(main, /state\.hudSessionsTruncated/);
   assert.match(main, /state\.waitingSessionIds/);
   assert.match(main, /No active sessions/);
