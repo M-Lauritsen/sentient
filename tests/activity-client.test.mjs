@@ -1,8 +1,7 @@
 import test from 'node:test';
-import { createThinkingPulseClock } from '../activity-client.mjs';
 import assert from 'node:assert/strict';
 import { createActivityClient, createImpulseFeed, createImpulseBuffer, activityColor,
-  impulseIntensity, projectActivity } from '../activity-client.mjs';
+  impulseIntensity, projectActivity, projectActiveHudSessions, createThinkingPulseClock } from '../activity-client.mjs';
 
 function feedElement() {
   const element = {
@@ -299,9 +298,9 @@ test('client validates optional bounded running counts and clears them on gaps',
     { unverifiedRunningSessions: 2 }, { runningSessions: undefined },
     { unverifiedRunningSessions: undefined }, { runningSessions: 1_000_000_001, unverifiedRunningSessions: 0 },
   ]) {
-    const count = states.length;
     stream.emit('snapshot', { epoch: 'running-epoch-aaaa', sequence: 1, snapshot: runningSnapshot(invalid) });
-    assert.equal(states.length, count, JSON.stringify(invalid));
+    assert.equal(client.getState().connection, 'unknown', JSON.stringify(invalid));
+    assert.deepEqual(client.getState().sessions, []);
   }
   const legacy = runningSnapshot({ thinkingSessions: 2, activeSessions: 2, unknownSessions: 0 });
   delete legacy.runningSessions;
@@ -329,4 +328,233 @@ test('running clock pulses for observed tool/delegated work, including unverifie
   assert.equal(clock.tick(0.05, { ...state, sourceStatus: 'unavailable' }, false), 0);
   assert.equal(clock.tick(10, state, true), 0, 'hidden tabs pause without catch-up');
   assert.equal(clock.tick(10, state, false), 0, 'long frames are capped (0.05s => 0.3 pulse)');
+});
+
+test('client strictly validates and whitelists optional session HUD projections', () => {
+  FakeEventSource.instances = [];
+  const states = [];
+  const client = createActivityClient({
+    EventSourceImpl: FakeEventSource,
+    onState: (state) => states.push(state),
+  });
+
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  const base = {
+    source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only',
+    activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 1, steps: 0,
+  };
+  const valid = { ...base, sessions: [{ id: 'K3F2QA', status: 'running', elapsedMs: 42 }], sessionsTruncated: false };
+  stream.emit('snapshot', { epoch: 'sessions-epoch-aaaa', sequence: 0, snapshot: valid });
+  assert.deepEqual(states.at(-1).sessions, [{ id: 'K3F2QA', status: 'running', elapsedMs: 42 }]);
+  assert.equal(states.at(-1).sessionsTruncated, false);
+
+  const invalidSnapshots = [
+    { sessions: 'not-an-array' },
+    { sessions: Array.from({ length: 33 }, (_, i) => ({ id: 'K3F2QA', status: 'idle', elapsedMs: i })) },
+    { sessions: [{ id: 'session', status: 'idle', elapsedMs: 0 }] },
+    { sessions: [{ id: 'K3F2QA', status: 'unknown', elapsedMs: 0 }] },
+    { sessions: [{ id: 'K3F2QA', status: 'idle', elapsedMs: -1 }] },
+    { sessions: [{ id: 'K3F2QA', status: 'idle', elapsedMs: 1.5 }] },
+    { sessions: [{ id: 'K3F2QA', status: 'idle', elapsedMs: 1_000_000_001 }] },
+    { sessions: [{ id: 'K3F2QA', status: 'idle', elapsedMs: 0, extra: true }] },
+    { sessionsTruncated: 'false' },
+  ];
+  for (const extra of invalidSnapshots) {
+    stream.emit('snapshot', { epoch: 'sessions-epoch-aaaa', sequence: 1, snapshot: { ...base, ...extra } });
+    assert.equal(client.getState().connection, 'unknown', JSON.stringify(extra));
+    assert.deepEqual(client.getState().sessions, []);
+  }
+  const legacy = { ...base };
+  stream.emit('snapshot', { epoch: 'sessions-epoch-aaaa', sequence: 1, snapshot: legacy });
+  assert.equal(states.at(-1).sessions, undefined);
+  client.disconnect();
+});
+
+test('client validates separate active HUD sessions and waiter handles', () => {
+  FakeEventSource.instances = [];
+  const client = createActivityClient({ EventSourceImpl: FakeEventSource });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  const running = { id: 'K3F2QA', status: 'running', elapsedMs: 42 };
+  const waiting = { id: 'K3F2QB', status: 'waiting', waitKind: 'input', elapsedMs: 10 };
+  const base = {
+    source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only',
+    activeSessions: 1, thinkingSessions: 1, unknownSessions: 0, backlogFiles: 0, journalFiles: 2, steps: 0,
+    runningSessions: 1, unverifiedRunningSessions: 0, waitingSessions: 1,
+    sessions: [running, waiting], sessionsTruncated: false,
+    hudSessions: [running], hudSessionsTruncated: false,
+    waitingSessionIds: [waiting.id],
+  };
+  stream.emit('snapshot', {
+    epoch: 'active-hud-epoch-aaaa', sequence: 0, snapshot: base,
+  });
+  assert.deepEqual(client.getState().hudSessions, [running]);
+  assert.deepEqual(client.getState().waitingSessionIds, [waiting.id]);
+
+  const invalid = [
+    { hudSessions: [waiting] },
+    { hudSessions: [running], hudSessionsTruncated: true },
+    { hudSessionsTruncated: 'false' },
+    { waitingSessionIds: ['private'] },
+    { waitingSessionIds: [] },
+    { waitingSessionIds: Array.from({ length: 33 }, () => waiting.id) },
+  ];
+  for (let index = 0; index < invalid.length; index++) {
+    stream.emit('snapshot', {
+      epoch: 'active-hud-epoch-aaaa', sequence: index + 1, snapshot: { ...base, ...invalid[index] },
+    });
+    assert.equal(client.getState().connection, 'unknown', JSON.stringify(invalid[index]));
+    assert.deepEqual(client.getState().hudSessions, []);
+    assert.deepEqual(client.getState().waitingSessionIds, []);
+  }
+  client.disconnect();
+});
+
+test('active HUD projection prefers the running-only list and filters legacy waiting rows', () => {
+  const running = { id: 'K3F2QA', status: 'running' };
+  const unverified = { id: 'K3F2QB', status: 'running-unverified' };
+  const waiting = { id: 'K3F2QC', status: 'waiting' };
+  const idle = { id: 'K3F2QD', status: 'idle' };
+
+  assert.deepEqual(projectActiveHudSessions({
+    hudSessions: [running, unverified],
+    sessions: [running, waiting],
+  }), [running, unverified]);
+  assert.deepEqual(projectActiveHudSessions({ sessions: [running, waiting, idle] }), [running]);
+  assert.equal(projectActiveHudSessions({}), null);
+});
+
+test('client strictly validates and whitelists per-session stats', () => {
+  FakeEventSource.instances = [];
+  const client = createActivityClient({ EventSourceImpl: FakeEventSource });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  const base = {
+    source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only',
+    activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 1, steps: 0,
+  };
+  const stats = {
+    kinds: { thinking: 1, step: 2, completion: 3, activity: 4 },
+    types: [['assistant.message', 2]],
+    otherTypes: 0,
+    tools: [['functions.view', 1]],
+    otherTools: 0,
+    subagents: { started: 1, completed: 0, failed: 0 },
+    errors: 0,
+    runningMs: 100,
+    unverifiedMs: 10,
+    waitingMs: 20,
+    turns: { count: 1, lastMs: 50, medianMs: 50, maxMs: 50 },
+  };
+  const session = { id: 'K3F2QA', status: 'running', elapsedMs: 42, stats };
+  stream.emit('snapshot', {
+    epoch: 'stats-epoch-aaaa', sequence: 0,
+    snapshot: { ...base, sessions: [session] },
+  });
+  assert.deepEqual(client.getState().sessions, [session]);
+
+  const invalidStats = [
+    { ...stats, extra: true },
+    { ...stats, kinds: { ...stats.kinds, extra: 0 } },
+    { ...stats, kinds: { ...stats.kinds, step: -1 } },
+    { ...stats, types: [['PRIVATE TEXT', 1]] },
+    { ...stats, types: Array.from({ length: 11 }, (_, index) => [`type.${index}`, 1]) },
+    { ...stats, types: [['assistant.message', 1], ['assistant.message', 2]] },
+    { ...stats, tools: [['invalid tool', 1]] },
+    { ...stats, tools: [['functions.view', 1_000_000_001]] },
+    { ...stats, subagents: { started: 1, completed: 0, failed: 0, extra: 0 } },
+    { ...stats, errors: 1.5 },
+    { ...stats, runningMs: -1 },
+    { ...stats, turns: { ...stats.turns, medianMs: 1_000_000_001 } },
+  ];
+  for (const invalid of invalidStats) {
+    stream.emit('snapshot', {
+      epoch: 'stats-epoch-aaaa', sequence: 1,
+      snapshot: { ...base, sessions: [{ ...session, stats: invalid }] },
+    });
+    assert.equal(client.getState().connection, 'unknown', JSON.stringify(invalid));
+    assert.deepEqual(client.getState().sessions, []);
+  }
+  stream.emit('snapshot', {
+    epoch: 'stats-epoch-aaaa', sequence: 1,
+    snapshot: { ...base, sessions: [{ id: 'K3F2QA', status: 'running', elapsedMs: 42 }] },
+  });
+  assert.deepEqual(client.getState().sessions, [{ id: 'K3F2QA', status: 'running', elapsedMs: 42 }]);
+  client.disconnect();
+});
+
+test('client validates wait kind consistency and bounded aggregate count', () => {
+  FakeEventSource.instances = [];
+  const client = createActivityClient({ EventSourceImpl: FakeEventSource });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  const base = {
+    source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only',
+    activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 2, journalFiles: 2, steps: 0,
+    sessionsTruncated: false,
+  };
+  const waiting = { id: 'K3F2QA', status: 'waiting', waitKind: 'both', elapsedMs: 10 };
+  stream.emit('snapshot', {
+    epoch: 'waiting-fields-epoch', sequence: 0,
+    snapshot: { ...base, waitingSessions: 1, sessions: [waiting] },
+  });
+  assert.equal(client.getState().waitingSessions, 1);
+  assert.deepEqual(client.getState().sessions, [waiting]);
+
+  const invalid = [
+    { waitingSessions: -1 },
+    { waitingSessions: 3 },
+    { waitingSessions: 513 },
+    { waitingSessions: 1.5 },
+    { sessions: [{ id: 'K3F2QA', status: 'waiting', elapsedMs: 0 }] },
+    { sessions: [{ ...waiting, waitKind: 'tool' }] },
+    { sessions: [{ ...waiting, status: 'idle' }] },
+    { waitingSessions: 0 },
+  ];
+  for (const extra of invalid) {
+    stream.emit('snapshot', {
+      epoch: 'waiting-fields-epoch', sequence: 1,
+      snapshot: { ...base, waitingSessions: 1, sessions: [waiting], ...extra },
+    });
+    assert.equal(client.getState().connection, 'unknown', JSON.stringify(extra));
+  }
+  client.disconnect();
+});
+
+test('malformed session snapshots and activities clear stale statuses until a fresh snapshot', () => {
+  FakeEventSource.instances = [];
+  const states = [];
+  const client = createActivityClient({
+    EventSourceImpl: FakeEventSource,
+    onState: (state) => states.push(state),
+  });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  const snapshot = {
+    source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only',
+    activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 1, steps: 0,
+    sessions: [{ id: 'K3F2QA', status: 'running', elapsedMs: 100 }],
+    sessionsTruncated: false,
+  };
+  stream.emit('snapshot', { epoch: 'session-gap-epoch', sequence: 0, snapshot });
+  assert.equal(client.getState().sessions[0].status, 'running');
+
+  stream.emit('snapshot', {
+    epoch: 'session-gap-epoch', sequence: 1,
+    snapshot: { ...snapshot, sessions: [{ ...snapshot.sessions[0], extra: 'invalid' }] },
+  });
+  assert.equal(client.getState().connection, 'unknown');
+  assert.deepEqual(client.getState().sessions, []);
+
+  stream.emit('snapshot', { epoch: 'session-gap-epoch', sequence: 1, snapshot });
+  assert.equal(client.getState().connection, 'connected');
+  assert.equal(client.getState().sessions[0].status, 'running');
+  stream.emit('activity', {
+    epoch: 'session-gap-epoch', sequence: 2, kind: 'step',
+    snapshot: { ...snapshot, sessions: [{ id: 'invalid', status: 'running', elapsedMs: 100 }] },
+  });
+  assert.equal(client.getState().connection, 'unknown');
+  assert.deepEqual(client.getState().sessions, []);
+  client.disconnect();
 });

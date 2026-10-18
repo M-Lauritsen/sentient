@@ -16,8 +16,82 @@ const MAX_AGENTS_PER_SESSION = 64;
 const MAX_TOOLS_PER_AGENT = 64;
 const MAX_WAITING_PER_SESSION = 64;
 const MAX_SUBAGENTS_PER_SESSION = 64;
+const MAX_HUD_SESSIONS = 32;
+const MAX_HUD_ELAPSED_MS = 1_000_000_000;
+const MAX_STATS_COUNTER = 1_000_000_000;
+const MAX_STATS_IDENTIFIERS = 64;
+const MAX_STATS_TOP = 10;
+const MAX_TURN_DURATIONS = 50;
 const STALE_ACTIVITY_MS = 45_000;
 const SOURCE = 'local-activity-files';
+const WAIT_EVENT_TYPES = new Set([
+  'permission.requested', 'permission.completed',
+  'user_input.requested', 'user_input.completed',
+  'elicitation.requested', 'elicitation.completed',
+]);
+const STATUS_ORDER = ['waiting', 'running', 'running-unverified', 'idle', 'ended'];
+const ACTIVITY_KINDS = ['thinking', 'step', 'completion', 'activity'];
+
+function createStats(statusAt) {
+  return {
+    kinds: { thinking: 0, step: 0, completion: 0, activity: 0 },
+    typeCounts: new Map(),
+    otherTypes: 0,
+    toolCounts: new Map(),
+    otherTools: 0,
+    subagents: { started: 0, completed: 0, failed: 0 },
+    errors: 0,
+    runningMs: 0,
+    unverifiedMs: 0,
+    waitingMs: 0,
+    statusAt,
+    turns: { count: 0, lastMs: 0, maxMs: 0, durations: [] },
+    openTurns: new Map(),
+  };
+}
+
+function increment(value) {
+  return Math.min(MAX_STATS_COUNTER, value + 1);
+}
+
+function addDuration(value, duration) {
+  return Math.min(MAX_STATS_COUNTER, value + duration);
+}
+
+function topCounts(counts) {
+  return [...counts.entries()]
+    .sort(([leftName, leftCount], [rightName, rightCount]) =>
+      rightCount - leftCount || (leftName < rightName ? -1 : leftName > rightName ? 1 : 0))
+    .slice(0, MAX_STATS_TOP)
+    .map(([name, count]) => [name, count]);
+}
+
+function snapshotStats(stats) {
+  const sortedDurations = [...stats.turns.durations].sort((left, right) => left - right);
+  const middle = Math.floor(sortedDurations.length / 2);
+  const medianMs = sortedDurations.length === 0 ? 0
+    : sortedDurations.length % 2 === 0
+      ? Math.floor((sortedDurations[middle - 1] + sortedDurations[middle]) / 2)
+      : sortedDurations[middle];
+  return {
+    kinds: { ...stats.kinds },
+    types: topCounts(stats.typeCounts),
+    otherTypes: stats.otherTypes,
+    tools: topCounts(stats.toolCounts),
+    otherTools: stats.otherTools,
+    subagents: { ...stats.subagents },
+    errors: stats.errors,
+    runningMs: stats.runningMs,
+    unverifiedMs: stats.unverifiedMs,
+    waitingMs: stats.waitingMs,
+    turns: {
+      count: stats.turns.count,
+      lastMs: stats.turns.lastMs,
+      medianMs,
+      maxMs: stats.turns.maxMs,
+    },
+  };
+}
 
 function safeId(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 256 ? value : null;
@@ -31,6 +105,22 @@ function attribution(event, data) {
   if (agentIds.length) return { key: `agent:${agentIds[0]}`, root: false };
   if (parentIds.length) return { key: `child:${parentIds[0]}`, root: false };
   return { key: 'root', root: true };
+}
+
+export function deriveStatus(session, now) {
+  if (session.ended) return 'ended';
+  if ((session.waitingPermissions?.size ?? 0) + (session.waitingInputs?.size ?? 0) > 0) return 'waiting';
+  let running = (session.subagents?.size ?? 0) > 0;
+  if (!running) {
+    for (const agent of session.agents?.values?.() ?? []) {
+      if (agent.active && agent.live) {
+        running = true;
+        break;
+      }
+    }
+  }
+  if (!running) return 'idle';
+  return now - session.lastEventAt > STALE_ACTIVITY_MS ? 'running-unverified' : 'running';
 }
 
 export class LocalActivitySource extends EventEmitter {
@@ -106,8 +196,12 @@ export class LocalActivitySource extends EventEmitter {
     let unknownSessions = 0;
     let runningSessions = 0;
     let unverifiedRunningSessions = 0;
+    let waitingSessions = 0;
     for (const state of this.sessions.values()) {
       const stale = now - state.lastEventAt > STALE_ACTIVITY_MS;
+      if (state.waitingPermissions.size > 0 || state.waitingInputs.size > 0) {
+        waitingSessions++;
+      }
       // Running is a separate visual liveness signal: only work whose start was
       // observed live counts; staleness marks it unverified but does not stop it.
       // It never grants success eligibility.
@@ -132,6 +226,46 @@ export class LocalActivitySource extends EventEmitter {
       if (unknown) unknownSessions++;
     }
     const sourceStatus = this.sourceStatus;
+    const sessions = [];
+    for (const [key, state] of this.sessions) {
+      const status = this.syncSessionStatus(state, now);
+      sessions.push({
+        key,
+        status,
+        ...(status === 'waiting' ? {
+          waitKind: state.waitingPermissions.size > 0
+            ? state.waitingInputs.size > 0 ? 'both' : 'permission'
+            : 'input',
+        } : {}),
+        elapsedMs: Math.min(MAX_HUD_ELAPSED_MS, Math.max(0, Math.floor(now - state.statusSince))),
+        lastEventAt: state.lastEventAt,
+        stats: snapshotStats(state.stats),
+      });
+    }
+    sessions.sort((a, b) =>
+      STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) ||
+      b.lastEventAt - a.lastEventAt);
+    const sessionsTruncated = sessions.length > MAX_HUD_SESSIONS;
+    // Preserve the observed waiters in the public 32-row projection even when
+    // running sessions would otherwise fill every row; the UI can then show
+    // their state and build its bounded scene markers.
+    const preferredSessions = sessions.length > MAX_HUD_SESSIONS
+      ? [
+        ...sessions.filter((session) => session.status === 'waiting'),
+        ...sessions.filter((session) => session.status !== 'waiting'),
+      ]
+      : sessions;
+    const boundedSessions = preferredSessions.slice(0, MAX_HUD_SESSIONS)
+      .map(({ lastEventAt, ...session }) => session);
+    const hudCandidates = sessions.filter((session) =>
+      session.status === 'running' || session.status === 'running-unverified');
+    const hudSessionsTruncated = hudCandidates.length > MAX_HUD_SESSIONS;
+    const hudSessions = hudCandidates.slice(0, MAX_HUD_SESSIONS)
+      .map(({ lastEventAt, ...session }) => session);
+    const waitingSessionKeys = sessions
+      .filter((session) => session.status === 'waiting')
+      .slice(0, MAX_HUD_SESSIONS)
+      .map(({ key }) => key);
     return {
       source: SOURCE,
       sourceStatus,
@@ -142,9 +276,15 @@ export class LocalActivitySource extends EventEmitter {
       unknownSessions,
       runningSessions,
       unverifiedRunningSessions,
+      waitingSessions,
       backlogFiles: this.backlogFiles,
       steps: this.steps,
       sequence: this.sequence,
+      sessions: boundedSessions,
+      sessionsTruncated,
+      hudSessions,
+      hudSessionsTruncated,
+      waitingSessionKeys,
     };
   }
 
@@ -274,7 +414,28 @@ export class LocalActivitySource extends EventEmitter {
 
   emitChangeIfNeeded() {
     const snapshot = this.snapshot();
-    const after = JSON.stringify(snapshot);
+    const comparable = {
+      ...snapshot,
+      sessions: snapshot.sessions.map(({ elapsedMs, stats, ...session }) => ({
+        ...session,
+        stats: {
+          ...stats,
+          runningMs: 0,
+          unverifiedMs: 0,
+          waitingMs: 0,
+        },
+      })),
+      hudSessions: snapshot.hudSessions.map(({ elapsedMs, stats, ...session }) => ({
+        ...session,
+        stats: {
+          ...stats,
+          runningMs: 0,
+          unverifiedMs: 0,
+          waitingMs: 0,
+        },
+      })),
+    };
+    const after = JSON.stringify(comparable);
     if (after !== this.lastSnapshotJson) {
       this.lastSnapshotJson = after;
       this.emit('change', snapshot);
@@ -424,6 +585,7 @@ export class LocalActivitySource extends EventEmitter {
   }
 
   createSession() {
+    const now = this.clock();
     return {
       agents: new Map(),
       // Live-observed subagent calls (toolCallId -> child attribution key).
@@ -432,7 +594,11 @@ export class LocalActivitySource extends EventEmitter {
       completedRootTurn: null,
       waitingPermissions: new Set(),
       waitingInputs: new Set(),
-      lastEventAt: this.clock(),
+      lastEventAt: now,
+      ended: false,
+      statusSince: now,
+      lastStatus: 'idle',
+      stats: createStats(now),
     };
   }
 
@@ -571,6 +737,67 @@ export class LocalActivitySource extends EventEmitter {
     }
   }
 
+  syncSessionStatus(session, now) {
+    const elapsed = Math.max(0, Math.floor(now - session.stats.statusAt));
+    const status = deriveStatus(session, now);
+    if (session.lastStatus === 'running' && status === 'running-unverified') {
+      const verifiedMs = Math.min(elapsed, Math.max(0,
+        Math.floor(session.lastEventAt + STALE_ACTIVITY_MS - session.stats.statusAt)));
+      const unverifiedMs = elapsed - verifiedMs;
+      session.stats.runningMs = addDuration(session.stats.runningMs, elapsed);
+      session.stats.unverifiedMs = addDuration(session.stats.unverifiedMs, unverifiedMs);
+    } else if (session.lastStatus === 'running' || session.lastStatus === 'running-unverified') {
+      session.stats.runningMs = addDuration(session.stats.runningMs, elapsed);
+      if (session.lastStatus === 'running-unverified') {
+        session.stats.unverifiedMs = addDuration(session.stats.unverifiedMs, elapsed);
+      }
+    }
+    if (session.lastStatus === 'waiting') {
+      session.stats.waitingMs = addDuration(session.stats.waitingMs, elapsed);
+    }
+
+    session.stats.statusAt = now;
+    if (status !== session.lastStatus) {
+      session.lastStatus = status;
+      session.statusSince = now;
+    }
+    if (status === 'running-unverified') session.stats.openTurns.clear();
+    return status;
+  }
+
+  countStatsIdentifier(counts, value, overflowKey, stats) {
+    if (counts.has(value)) {
+      counts.set(value, increment(counts.get(value)));
+    } else if (counts.size < MAX_STATS_IDENTIFIERS) {
+      counts.set(value, 1);
+    } else {
+      stats[overflowKey] = increment(stats[overflowKey]);
+    }
+  }
+
+  recordPublishedStats(session, kind, type, toolName, data) {
+    const stats = session.stats;
+    const eventKind = ACTIVITY_KINDS.includes(kind) ? kind : 'activity';
+    stats.kinds[eventKind] = increment(stats.kinds[eventKind]);
+    this.countStatsIdentifier(stats.typeCounts, type, 'otherTypes', stats);
+    if (toolName) this.countStatsIdentifier(stats.toolCounts, toolName, 'otherTools', stats);
+
+    if (type === 'session.error' || type === 'subagent.failed' ||
+        (type === 'tool.execution_complete' && data.success === false)) {
+      stats.errors = increment(stats.errors);
+    }
+  }
+
+  recordTurn(session, elapsed) {
+    const duration = Math.min(MAX_STATS_COUNTER, Math.max(0, Math.floor(elapsed)));
+    const turns = session.stats.turns;
+    turns.count = increment(turns.count);
+    turns.lastMs = duration;
+    turns.maxMs = Math.max(turns.maxMs, duration);
+    turns.durations.push(duration);
+    if (turns.durations.length > MAX_TURN_DURATIONS) turns.durations.shift();
+  }
+
   consumeLine(state, line, baseline) {
     let event;
     try {
@@ -596,24 +823,30 @@ export class LocalActivitySource extends EventEmitter {
     const eventId = safeId(event.id);
     if (eventId && !this.uniqueKey(state.file, 'event', eventId)) return;
     const session = state.session;
-    if (this.clock() - session.lastEventAt > STALE_ACTIVITY_MS) this.expireEligibility(state);
+    const eventAt = this.clock();
+    this.syncSessionStatus(session, eventAt);
+    if (eventAt - session.lastEventAt > STALE_ACTIVITY_MS) this.expireEligibility(state);
     // Incoming user messages are visible impulses, not fresh evidence that an
     // already-open assistant interval is still computing.
-    if (!type.startsWith('user.')) session.lastEventAt = this.clock();
+    if (!type.startsWith('user.')) session.lastEventAt = eventAt;
     const attributionInfo = attribution(event, data);
     if (!attributionInfo) {
       this.readIssues++;
       if (!baseline) this.invalidateSession(state);
+      this.syncSessionStatus(session, eventAt);
       return;
     }
-    const kind = this.applyEvent(state, event, data, baseline, attributionInfo);
-    if (!baseline && kind !== false) {
+    session.ended = false;
+    const kind = this.applyEvent(state, event, data, baseline, attributionInfo, eventAt);
+    this.syncSessionStatus(session, eventAt);
+    if (!baseline && kind !== false && !WAIT_EVENT_TYPES.has(type)) {
       const toolName = type.startsWith('tool.') && validToolName(data.toolName) ? data.toolName : undefined;
+      this.recordPublishedStats(session, kind || 'activity', type, toolName, data);
       this.publish(kind || 'activity', type, toolName);
     }
   }
 
-  applyEvent(state, event, data, baseline, attributionInfo) {
+  applyEvent(state, event, data, baseline, attributionInfo, eventAt) {
     const type = event.type;
     const session = state.session;
     const { root, key } = attributionInfo;
@@ -629,6 +862,7 @@ export class LocalActivitySource extends EventEmitter {
         return;
       }
       session.agents.set(key, { turnId, active: true, eligible: !baseline, live: !baseline, waiting: false, toolCalls: new Set() });
+      if (!baseline) session.stats.openTurns.set(key, { turnId, startedAt: eventAt });
       if (root) {
         session.eligibleRootTurn = baseline ? null : turnId;
         session.completedRootTurn = null;
@@ -640,6 +874,11 @@ export class LocalActivitySource extends EventEmitter {
       const turnId = safeId(data.turnId);
       const agent = session.agents.get(key);
       if (agent && (!turnId || agent.turnId === turnId)) {
+        const openTurn = session.stats.openTurns.get(key);
+        if (turnId && openTurn?.turnId === turnId) {
+          this.recordTurn(session, eventAt - openTurn.startedAt);
+        }
+        if (openTurn?.turnId === agent.turnId) session.stats.openTurns.delete(key);
         agent.active = false;
         agent.eligible = false;
         if (root) session.eligibleRootTurn = null;
@@ -714,6 +953,7 @@ export class LocalActivitySource extends EventEmitter {
         return;
       }
       session.subagents.set(call, key);
+      session.stats.subagents.started = increment(session.stats.subagents.started);
       return;
     }
 
@@ -727,12 +967,19 @@ export class LocalActivitySource extends EventEmitter {
         this.invalidateSession(state);
         return;
       }
+      if (!baseline) {
+        session.stats.subagents[type === 'subagent.failed' ? 'failed' : 'completed'] =
+          increment(session.stats.subagents[type === 'subagent.failed' ? 'failed' : 'completed']);
+      }
       // Retire the delegated call and its child agent even if the child never
       // wrote its own turn end. Duplicate terminal records are no-ops.
       const childKey = session.subagents.get(call);
       session.subagents.delete(call);
       for (const retired of [childKey, root ? undefined : key]) {
-        if (retired && retired !== 'root') session.agents.delete(retired);
+        if (retired && retired !== 'root') {
+          session.agents.delete(retired);
+          session.stats.openTurns.delete(retired);
+        }
       }
       return;
     }
@@ -770,6 +1017,7 @@ export class LocalActivitySource extends EventEmitter {
     }
 
     if (type === 'abort' || type === 'session.error' || type === 'session.shutdown' || type === 'session.idle') {
+      session.ended = type === 'session.shutdown';
       for (const agent of session.agents.values()) {
         agent.active = false;
         agent.eligible = false;
@@ -779,6 +1027,7 @@ export class LocalActivitySource extends EventEmitter {
       session.waitingPermissions.clear();
       session.waitingInputs.clear();
       session.subagents.clear();
+      session.stats.openTurns.clear();
     }
   }
 
@@ -798,15 +1047,25 @@ export class LocalActivitySource extends EventEmitter {
   expireEligibility(state) {
     for (const agent of state.session.agents.values()) agent.eligible = false;
     state.session.eligibleRootTurn = null;
+    state.session.stats.openTurns.clear();
   }
 
   // Coverage gaps (read errors, truncation, rebaseline, malformed/partial
   // records, backlog, source loss): an end event may have been missed, so live
   // running state is dropped too and never resumes without a new live start.
   invalidateSession(state) {
+    const now = this.clock();
+    this.syncSessionStatus(state.session, now);
     this.expireEligibility(state);
-    for (const agent of state.session.agents.values()) agent.live = false;
+    state.session.ended = false;
+    state.session.waitingPermissions.clear();
+    state.session.waitingInputs.clear();
+    for (const agent of state.session.agents.values()) {
+      agent.live = false;
+      agent.waiting = false;
+    }
     state.session.subagents.clear();
+    this.syncSessionStatus(state.session, now);
   }
 
   invalidateAllSessions() {

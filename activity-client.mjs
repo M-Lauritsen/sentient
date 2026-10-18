@@ -8,12 +8,14 @@ const EMPTY = Object.freeze({
   unknownSessions: 0,
   runningSessions: 0,
   unverifiedRunningSessions: 0,
+  waitingSessions: 0,
   backlogFiles: 0,
   steps: 0,
 });
 const ACTIVITY_KINDS = new Set(['thinking', 'step', 'completion', 'activity']);
 const SOURCE_STATES = new Set(['available', 'partial', 'unavailable']);
 const COVERAGE_STATES = new Set(['journal-only', 'partial']);
+const SESSION_STATUSES = new Set(['running', 'running-unverified', 'waiting', 'idle', 'ended']);
 const IMPULSE_LABELS = new Map([
   ['thinking', 'Thinking'],
   ['step', 'Task step'],
@@ -134,6 +136,110 @@ function integer(value) {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000;
 }
 
+function exactKeys(value, keys) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function projectCountPairs(value, validName) {
+  if (!Array.isArray(value) || value.length > 10) return null;
+  const seen = new Set();
+  const result = [];
+  for (const pair of value) {
+    if (!Array.isArray(pair) || pair.length !== 2 ||
+        !validName(pair[0]) || !integer(pair[1]) || pair[1] < 1 || seen.has(pair[0])) return null;
+    seen.add(pair[0]);
+    result.push([pair[0], pair[1]]);
+  }
+  return result;
+}
+
+export function projectSessionStats(value) {
+  const kindKeys = ['thinking', 'step', 'completion', 'activity'];
+  const subagentKeys = ['started', 'completed', 'failed'];
+  const turnKeys = ['count', 'lastMs', 'medianMs', 'maxMs'];
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      !exactKeys(value, [
+        'kinds', 'types', 'otherTypes', 'tools', 'otherTools', 'subagents',
+        'errors', 'runningMs', 'unverifiedMs', 'waitingMs', 'turns',
+      ]) ||
+      !exactKeys(value.kinds, kindKeys) ||
+      !kindKeys.every((key) => integer(value.kinds[key])) ||
+      !integer(value.otherTypes) || !integer(value.otherTools) ||
+      !exactKeys(value.subagents, subagentKeys) ||
+      !subagentKeys.every((key) => integer(value.subagents[key])) ||
+      !integer(value.errors) || !integer(value.runningMs) ||
+      !integer(value.unverifiedMs) || value.unverifiedMs > value.runningMs ||
+      !integer(value.waitingMs) ||
+      !exactKeys(value.turns, turnKeys) ||
+      !turnKeys.every((key) => integer(value.turns[key]))) return null;
+  const types = projectCountPairs(value.types, validEventType);
+  const tools = projectCountPairs(value.tools, validToolName);
+  if (types === null || tools === null) return null;
+  return {
+    kinds: Object.fromEntries(kindKeys.map((key) => [key, value.kinds[key]])),
+    types,
+    otherTypes: value.otherTypes,
+    tools,
+    otherTools: value.otherTools,
+    subagents: Object.fromEntries(subagentKeys.map((key) => [key, value.subagents[key]])),
+    errors: value.errors,
+    runningMs: value.runningMs,
+    unverifiedMs: value.unverifiedMs,
+    waitingMs: value.waitingMs,
+    turns: Object.fromEntries(turnKeys.map((key) => [key, value.turns[key]])),
+  };
+}
+
+function projectSessions(value) {
+  if (!Array.isArray(value) || value.length > 32) return null;
+  const sessions = [];
+  for (const session of value) {
+    const hasWaitKind = session && Object.hasOwn(session, 'waitKind');
+    const hasStats = session && Object.hasOwn(session, 'stats');
+    if (!session || typeof session !== 'object' || Array.isArray(session) ||
+        Object.keys(session).length !== 3 + Number(hasWaitKind) + Number(hasStats) ||
+        !Object.hasOwn(session, 'id') || !Object.hasOwn(session, 'status') ||
+        !Object.hasOwn(session, 'elapsedMs') ||
+        typeof session.id !== 'string' || !/^[A-Z2-7]{6}$/.test(session.id) ||
+        !SESSION_STATUSES.has(session.status) || !integer(session.elapsedMs) ||
+        (session.status === 'waiting'
+          ? !hasWaitKind || !['permission', 'input', 'both'].includes(session.waitKind)
+          : hasWaitKind)) return null;
+    const stats = hasStats ? projectSessionStats(session.stats) : undefined;
+    if (hasStats && stats === null) return null;
+    sessions.push({
+      id: session.id,
+      status: session.status,
+      ...(hasWaitKind ? { waitKind: session.waitKind } : {}),
+      elapsedMs: session.elapsedMs,
+      ...(hasStats ? { stats } : {}),
+    });
+  }
+  return sessions;
+}
+
+function projectHudSessions(value) {
+  const sessions = projectSessions(value);
+  if (sessions === null || sessions.some((session) =>
+    session.status !== 'running' && session.status !== 'running-unverified')) return null;
+  return sessions;
+}
+
+function projectWaitingSessionIds(value) {
+  if (!Array.isArray(value) || value.length > 32 ||
+      value.some((id) => typeof id !== 'string' || !/^[A-Z2-7]{6}$/.test(id))) return null;
+  return [...value];
+}
+
+export function projectActiveHudSessions(state) {
+  const sessions = Array.isArray(state?.hudSessions) ? state.hudSessions : state?.sessions;
+  return Array.isArray(sessions)
+    ? sessions.filter((session) =>
+      session.status === 'running' || session.status === 'running-unverified')
+    : null;
+}
+
 function projectSnapshot(value) {
   if (!value || typeof value !== 'object' ||
       !SOURCE_STATES.has(value.sourceStatus) ||
@@ -145,10 +251,40 @@ function projectSnapshot(value) {
       !integer(value.unknownSessions) ||
       !integer(value.backlogFiles) ||
       !integer(value.steps)) return null;
+  const hasWaiting = value.waitingSessions !== undefined;
+  if (hasWaiting && (!integer(value.waitingSessions) ||
+      value.waitingSessions > Math.min(512, value.journalFiles))) return null;
   // Optional running counts: both present and consistent, or both absent.
   const hasRunning = value.runningSessions !== undefined || value.unverifiedRunningSessions !== undefined;
   if (hasRunning && (!integer(value.runningSessions) || !integer(value.unverifiedRunningSessions) ||
       value.unverifiedRunningSessions > value.runningSessions)) return null;
+  const hasSessions = value.sessions !== undefined;
+  const sessions = hasSessions ? projectSessions(value.sessions) : undefined;
+  if (hasSessions && sessions === null) return null;
+  if (value.sessionsTruncated !== undefined && typeof value.sessionsTruncated !== 'boolean') return null;
+  const hasHudSessions = value.hudSessions !== undefined;
+  const hasHudSessionsTruncated = value.hudSessionsTruncated !== undefined;
+  if (hasHudSessions !== hasHudSessionsTruncated) return null;
+  const hudSessions = hasHudSessions ? projectHudSessions(value.hudSessions) : undefined;
+  if (hasHudSessions && (!hasRunning || hudSessions === null ||
+      hudSessions.length > value.runningSessions ||
+      (value.hudSessionsTruncated
+        ? value.runningSessions <= hudSessions.length
+        : value.runningSessions !== hudSessions.length))) return null;
+  if (hasHudSessionsTruncated && typeof value.hudSessionsTruncated !== 'boolean') return null;
+  const hasWaitingSessionIds = value.waitingSessionIds !== undefined;
+  const waitingSessionIds = hasWaitingSessionIds
+    ? projectWaitingSessionIds(value.waitingSessionIds)
+    : hasSessions ? sessions.filter((session) => session.status === 'waiting').map(({ id }) => id)
+      : undefined;
+  if (hasWaitingSessionIds && (waitingSessionIds === null || !hasWaiting ||
+      waitingSessionIds.length !== Math.min(32, value.waitingSessions))) return null;
+  if (hasWaiting && hasSessions) {
+    const visibleWaiting = sessions.filter((session) => session.status === 'waiting').length;
+    if (value.sessionsTruncated === true
+      ? value.waitingSessions < visibleWaiting
+      : value.waitingSessions !== visibleWaiting) return null;
+  }
   return {
     sourceStatus: value.sourceStatus,
     coverage: value.coverage,
@@ -158,8 +294,14 @@ function projectSnapshot(value) {
     unknownSessions: value.unknownSessions,
     runningSessions: hasRunning ? value.runningSessions : value.thinkingSessions,
     unverifiedRunningSessions: hasRunning ? value.unverifiedRunningSessions : 0,
+    ...(hasWaiting ? { waitingSessions: value.waitingSessions } : {}),
     backlogFiles: value.backlogFiles,
     steps: value.steps,
+    ...(hasSessions ? { sessions } : {}),
+    ...(value.sessionsTruncated !== undefined ? { sessionsTruncated: value.sessionsTruncated } : {}),
+    ...(hasHudSessions ? { hudSessions } : {}),
+    ...(hasHudSessionsTruncated ? { hudSessionsTruncated: value.hudSessionsTruncated } : {}),
+    ...(waitingSessionIds !== undefined ? { waitingSessionIds } : {}),
   };
 }
 
@@ -173,6 +315,12 @@ function unknownConnection(state, connection) {
     thinkingSessions: 0,
     runningSessions: 0,
     unverifiedRunningSessions: 0,
+    waitingSessions: 0,
+    sessions: [],
+    sessionsTruncated: false,
+    hudSessions: [],
+    hudSessionsTruncated: false,
+    waitingSessionIds: [],
   };
 }
 
@@ -190,11 +338,22 @@ export function createActivityClient({
   let closed = false;
 
   const publishState = () => onState({ ...state });
+  const markUnknown = () => {
+    needsSnapshot = true;
+    state = unknownConnection(state, 'unknown');
+    publishState();
+  };
   const handleSnapshot = (message) => {
     if (!integer(message?.sequence) || typeof message?.epoch !== 'string' ||
-        message.epoch.length < 16 || message.epoch.length > 64) return;
+        message.epoch.length < 16 || message.epoch.length > 64) {
+      markUnknown();
+      return;
+    }
     const snapshot = projectSnapshot(message.snapshot);
-    if (!snapshot) return;
+    if (!snapshot) {
+      markUnknown();
+      return;
+    }
     if (message.epoch === streamEpoch && message.sequence < streamSequence) return;
     streamEpoch = message.epoch;
     streamSequence = message.sequence;
@@ -204,9 +363,15 @@ export function createActivityClient({
   };
   const handleActivity = (message) => {
     const activity = projectActivity(message);
-    if (!integer(message?.sequence) || !activity) return;
+    if (!integer(message?.sequence) || !activity) {
+      markUnknown();
+      return;
+    }
     const snapshot = projectSnapshot(message.snapshot);
-    if (!snapshot) return;
+    if (!snapshot) {
+      markUnknown();
+      return;
+    }
     if (needsSnapshot || message.epoch !== streamEpoch) {
       needsSnapshot = true;
       state = unknownConnection(state, 'unknown');
@@ -232,10 +397,10 @@ export function createActivityClient({
       if (closed || source || typeof EventSourceImpl !== 'function') return;
       source = new EventSourceImpl(url);
       source.addEventListener('snapshot', (event) => {
-        try { handleSnapshot(JSON.parse(event.data)); } catch { /* malformed stream data is discarded */ }
+        try { handleSnapshot(JSON.parse(event.data)); } catch { markUnknown(); }
       });
       source.addEventListener('activity', (event) => {
-        try { handleActivity(JSON.parse(event.data)); } catch { /* malformed stream data is discarded */ }
+        try { handleActivity(JSON.parse(event.data)); } catch { markUnknown(); }
       });
       source.onerror = () => {
         if (closed) return;

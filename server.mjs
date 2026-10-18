@@ -1,14 +1,15 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LocalActivitySource } from './copilot/activity-source.mjs';
-import { projectActivity } from './activity-client.mjs';
+import { projectActivity, projectSessionStats } from './activity-client.mjs';
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const MAX_CLIENTS = 8;
-const MAX_CLIENT_BUFFER = 64 * 1024;
+const MAX_CLIENT_BUFFER = 128 * 1024;
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const VENDOR_FILES = new Map([
   ['/vendor/three.module.js', 'node_modules/three/build/three.module.js'],
   ['/vendor/addons/controls/OrbitControls.js', 'node_modules/three/examples/jsm/controls/OrbitControls.js'],
@@ -28,6 +29,7 @@ const STATIC_FILES = new Map([
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
   ['/main.js', ['main.js', 'text/javascript; charset=utf-8']],
   ['/activity-client.mjs', ['activity-client.mjs', 'text/javascript; charset=utf-8']],
+  ['/session-stats-ui.mjs', ['session-stats-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
   ['/THREE-LICENSE.txt', ['node_modules/three/LICENSE', 'text/plain; charset=utf-8']],
 ]);
@@ -43,6 +45,19 @@ function contentTypeFor(file, fallback) {
   if (fallback) return fallback;
   if (file.endsWith('.js')) return 'text/javascript; charset=utf-8';
   return 'application/octet-stream';
+}
+
+function sessionHandle(key, epochKey) {
+  const digest = createHmac('sha256', epochKey).update(key).digest();
+  let encoded = '';
+  for (let char = 0; char < 6; char++) {
+    const bitOffset = char * 5;
+    const byteOffset = Math.floor(bitOffset / 8);
+    const bitInByte = bitOffset % 8;
+    const pair = (digest[byteOffset] << 8) | digest[byteOffset + 1];
+    encoded += BASE32[(pair >>> (11 - bitInByte)) & 31];
+  }
+  return encoded;
 }
 
 function writeJson(response, status, value) {
@@ -69,6 +84,7 @@ export function createSentientServer({
   const clients = new Set();
   let streamSequence = 0;
   const streamEpoch = randomBytes(18).toString('base64url');
+  const streamEpochKey = randomBytes(32);
   let server;
   let expectedHost;
   let origin;
@@ -86,19 +102,46 @@ export function createSentientServer({
       unknownSessions: value.unknownSessions,
       runningSessions: value.runningSessions,
       unverifiedRunningSessions: value.unverifiedRunningSessions,
+      waitingSessions: value.waitingSessions,
       backlogFiles: value.backlogFiles,
       steps: value.steps,
+      sessions: value.sessions.map(({ key, status, waitKind, elapsedMs, stats }) => {
+        const projectedStats = projectSessionStats(stats);
+        if (!projectedStats) throw new Error('Invalid session stats from activity source');
+        return {
+          id: sessionHandle(key, streamEpochKey),
+          status,
+          ...(status === 'waiting' ? { waitKind } : {}),
+          elapsedMs,
+          stats: projectedStats,
+        };
+      }),
+      sessionsTruncated: value.sessionsTruncated,
+      hudSessions: value.hudSessions.map(({ key, status, elapsedMs, stats }) => {
+        const projectedStats = projectSessionStats(stats);
+        if (!projectedStats) throw new Error('Invalid HUD session stats from activity source');
+        return {
+          id: sessionHandle(key, streamEpochKey),
+          status,
+          elapsedMs,
+          stats: projectedStats,
+        };
+      }),
+      hudSessionsTruncated: value.hudSessionsTruncated,
+      waitingSessionIds: value.waitingSessionKeys.map((key) => sessionHandle(key, streamEpochKey)),
     };
   };
 
   const sendEvent = (response, name, data, id) => {
-    if (response.destroyed || !response.writable || response.writableLength > MAX_CLIENT_BUFFER) {
+    const payload = JSON.stringify(data);
+    const frame = `${id === undefined ? '' : `id: ${id}\n`}event: ${name}\ndata: ${payload}\n\n`;
+    if (response.destroyed || !response.writable ||
+        response.writableLength + Buffer.byteLength(frame) > MAX_CLIENT_BUFFER) {
       response.destroy();
       clients.delete(response);
       return;
     }
-    const payload = JSON.stringify(data);
-    response.write(`${id === undefined ? '' : `id: ${id}\n`}event: ${name}\ndata: ${payload}\n\n`);
+    response.write(frame);
   };
 
   const sendSnapshot = (response) => {
