@@ -3,11 +3,161 @@ import assert from 'node:assert/strict';
 import { createActivityClient, createImpulseFeed, createImpulseBuffer, activityColor,
   diffSubagents, impulseIntensity, projectActivity, summarizeSubagents,
   projectActiveHudSessions, createThinkingPulseClock } from '../activity-client.mjs';
+import { CATEGORIES, CATEGORY_GLYPH } from '../activity-colors.mjs';
+import * as activityUi from '../activity-client.mjs';
 
+test('idle uses the completion cascade while retaining lifecycle feed categorization', () => {
+  const buffer = createImpulseBuffer();
+  buffer.add({ kind: 'activity', eventType: 'session.idle' });
+  const drained = buffer.drain();
+  assert.equal(drained.entries[0].category, 'lifecycle');
+  assert.equal(drained.byCategory[CATEGORIES.indexOf('lifecycle')], 1);
+  assert.equal(drained.byCategory[CATEGORIES.indexOf('completion')], 0);
+  const plan = activityUi.createCategoryBurstPlan().plan(drained.sceneByCategory);
+  assert.equal(plan.length, 1);
+  assert.equal(plan.kinds[0], 2);
+  assert.equal(plan.categories[0], CATEGORIES.indexOf('completion'));
+});
+
+test('scene burst planning reuses storage, preserves motion and caps all category bursts at four', () => {
+  const planner = activityUi.createCategoryBurstPlan();
+  const counts = new Uint32Array(CATEGORIES.length);
+  const index = (category) => CATEGORIES.indexOf(category);
+  counts[index('read')] = 90;
+  counts[index('shell')] = 80;
+  counts[index('edit')] = 70;
+  counts[index('reasoning')] = 60;
+  counts[index('lifecycle')] = 50;
+  counts[index('unknown')] = 40;
+  counts[index('waiting')] = 999;
+  const plan = planner.plan(counts);
+  assert.equal(plan.length, 4);
+  assert.deepEqual([...plan.categories], [index('read'), index('shell'), index('reasoning'), index('tool')]);
+  assert.deepEqual([...plan.counts], [90, 80, 150, 70]);
+  assert.deepEqual([...plan.kinds], [1, 1, 0, 1]);
+  const categories = plan.categories;
+  const totals = plan.counts;
+  counts.fill(0);
+  counts[index('completion')] = 1;
+  const next = planner.plan(counts);
+  assert.equal(next, plan);
+  assert.equal(next.categories, categories);
+  assert.equal(next.counts, totals);
+  assert.equal(next.length, 1);
+  assert.equal(next.categories[0], index('completion'), 'completion remains a category-colored burst');
+  assert.equal(next.kinds[0], 2, 'completion retains its branching network motion');
+  assert.equal(next.counts[0], 1);
+  counts.fill(100);
+  counts[index('completion')] = 1;
+  const crowded = planner.plan(counts);
+  assert.equal(crowded.length, 4);
+  assert.equal(crowded.categories[0], index('completion'), 'completion cascade survives category overflow');
+  assert.equal(crowded.kinds[0], 2);
+  counts.fill(0);
+  for (const category of ['reasoning', 'lifecycle', 'unknown', 'error']) {
+    counts[index(category)] = 1;
+    const single = planner.plan(counts);
+    assert.equal(single.kinds[0], category === 'error' ? 1 : 0);
+    counts.fill(0);
+  }
+  counts[index('waiting')] = 10;
+  assert.equal(planner.plan(counts).length, 0);
+});
+
+test('aggregate timeline is fixed-size, rolls grouped counts and distinguishes loading, empty and gaps', () => {
+  const timeline = activityUi.createActivityTimeline(0);
+  const counts = new Uint32Array(CATEGORIES.length);
+  const view = timeline.read(0);
+  assert.equal(view.state, 'loading');
+  assert.equal(view.counts.length, 120 * CATEGORIES.length);
+  assert.equal(view.coverage.length, 120);
+  assert.equal(view.coverage[view.head], 0, 'unobserved history is not zero activity');
+  timeline.setCoverage(true, 1000);
+  assert.equal(timeline.read(1000).state, 'empty');
+  assert.equal(view.coverage[view.head], 2, 'partial startup bucket remains unknown');
+  timeline.read(5000);
+  assert.equal(view.coverage[view.head], 1, 'complete live bucket is known');
+  counts[CATEGORIES.indexOf('edit')] = 7;
+  counts[CATEGORIES.indexOf('read')] = 3;
+  timeline.add(counts, 5001);
+  assert.equal(timeline.read(5001).state, 'live');
+  assert.equal(view.counts[view.head * CATEGORIES.length + CATEGORIES.indexOf('edit')], 7);
+  timeline.setCoverage(false, 6000);
+  counts.fill(1);
+  timeline.add(counts, 11000);
+  assert.equal(view.coverage[view.head], 2);
+  assert.equal(view.counts[view.head * CATEGORIES.length], 0, 'gap/hidden activity is discarded');
+  timeline.setCoverage(true, 12000);
+  assert.equal(view.coverage[view.head], 2, 'reconnect cannot erase unknown coverage');
+  timeline.read(15000);
+  assert.equal(view.coverage[view.head], 1);
+  const savedCounts = view.counts;
+  const savedCoverage = view.coverage;
+  assert.equal(timeline.read(700000), view);
+  assert.equal(view.counts, savedCounts);
+  assert.equal(view.coverage, savedCoverage);
+  assert.equal(view.counts.reduce((sum, count) => sum + count, 0), 0);
+  assert.equal(view.state, 'empty', 'old events expire without backfill');
+  timeline.setCoverage(false, 700001);
+  assert.equal(timeline.read(700001).state, 'gap');
+});
+
+test('frame drains reuse their result and label array rather than allocating empty-frame objects', () => {
+  const buffer = createImpulseBuffer();
+  buffer.add({ kind: 'step', toolName: 'edit' });
+  const result = buffer.drain();
+  const entries = result.entries;
+  const categories = result.byCategory;
+  for (let frame = 0; frame < 3600; frame++) {
+    assert.equal(buffer.drain(), result);
+    assert.equal(result.entries, entries);
+    assert.equal(result.byCategory, categories);
+    assert.equal(entries.length, 0);
+  }
+});
+
+test('timeline expires exactly after 120 buckets, saturates safely, and fails closed before first coverage', () => {
+  const timeline = activityUi.createActivityTimeline(0);
+  timeline.setCoverage(false, 0, true);
+  assert.equal(timeline.read(0).state, 'loading');
+  timeline.setCoverage(false, 1);
+  assert.equal(timeline.read(1).state, 'gap', 'initial connection failure is not endless loading');
+  timeline.setCoverage(true, 2);
+  const counts = new Uint32Array(CATEGORIES.length);
+  counts[0] = 0xffffffff;
+  timeline.add(counts, 3);
+  timeline.add(counts, 4);
+  const view = timeline.read(599999);
+  assert.equal(view.counts[0], 0xffffffff, 'group counts saturate rather than wrap');
+  timeline.read(600000);
+  assert.equal(view.counts[0], 0);
+  assert.equal(view.state, 'empty');
+  assert.equal(view.coverage[view.head], 1);
+});
+
+test('waiting metadata produces no feed row and burst coalescing preserves all ordinary counts', () => {
+  const element = feedElement();
+  const feed = createImpulseFeed(element);
+  for (const eventType of ['permission.requested', 'user_input.requested', 'elicitation.requested']) {
+    feed.add('activity', undefined, eventType, 10);
+  }
+  assert.equal(element.children.length, 0);
+  const planner = activityUi.createCategoryBurstPlan();
+  const counts = new Uint32Array(CATEGORIES.length);
+  for (let mask = 0; mask < 1 << CATEGORIES.length; mask++) {
+    for (let i = 0; i < counts.length; i++) counts[i] = mask & (1 << i) ? i + 1 : 0;
+    const plan = planner.plan(counts);
+    assert.ok(plan.length <= 4);
+    let actual = 0, expected = 0;
+    for (let i = 0; i < plan.length; i++) actual += plan.counts[i];
+    for (let i = 0; i < counts.length; i++) if (CATEGORIES[i] !== 'waiting') expected += counts[i];
+    assert.equal(actual, expected);
+  }
+});
 function feedElement() {
   const element = {
     children: [],
-    ownerDocument: { createElement: () => ({}) },
+    ownerDocument: { createElement: () => ({ dataset: {} }) },
     prepend(row) { this.children.unshift(row); },
     get lastElementChild() {
       return { remove: () => this.children.pop() };
@@ -24,7 +174,11 @@ test('impulse feed prepends privacy-safe labels and keeps only eight entries', (
   feed.add('completion');
   assert.deepEqual(element.children.map((row) => row.textContent),
     ['Task completed', 'Task step', 'Thinking']);
-  assert.equal(element.children[0].className, 'impulse-entry impulse-completion impulse-orange');
+  assert.equal(element.children[0].className, 'impulse-entry impulse-completion impulse-cat-completion');
+  assert.equal(element.children[0].dataset.category, 'completion');
+  assert.equal(element.children[0].dataset.glyph, CATEGORY_GLYPH.completion);
+  assert.equal(element.children[1].dataset.category, 'tool');
+  assert.equal(element.children[2].dataset.category, 'reasoning');
   for (let i = 0; i < 20; i++) feed.add('thinking');
   assert.equal(element.children.length, 8);
 });
@@ -42,11 +196,13 @@ test('event types determine colors and grouped feed labels without payload inspe
   const feed = createImpulseFeed(element);
   feed.add('activity', 'functions.view', 'tool.execution_progress', 42);
   assert.equal(element.children[0].textContent, 'tool.execution_progress · functions.view ×42');
-  assert.match(element.children[0].className, /impulse-orange/);
+  assert.equal(element.children[0].className, 'impulse-entry impulse-activity impulse-cat-tool');
   feed.add('activity', undefined, 'assistant.message_delta', 1000);
-  assert.match(element.children[0].className, /impulse-blue/);
+  assert.equal(element.children[0].className, 'impulse-entry impulse-activity impulse-cat-reasoning');
   feed.add('activity', undefined, '<PRIVATE>', 5);
   assert.equal(element.children.length, 2);
+  feed.add('activity', undefined, 'future.event', 5);
+  assert.equal(element.children[0].dataset.category, 'unknown');
   for (const count of [0, -1, 1.5, 1_000_000_001, Infinity]) {
     assert.equal(projectActivity({ kind: 'activity', eventType: 'future.event', count }), null);
   }
@@ -61,13 +217,22 @@ test('frame buffer bounds labels and render intensity while accounting for every
   buffer.add({ kind: 'completion' });
   const result = buffer.drain();
   assert.equal(result.blue, 30000);
-  assert.equal(result.orange, 50000);
-  assert.equal(result.completions, 1);
+  assert.equal(result.orange, 50001, 'completion contributes to ordinary activity totals');
+  assert.ok(result.byCategory instanceof Uint32Array);
+  assert.equal(result.byCategory[CATEGORIES.indexOf('reasoning')], 30000);
+  assert.equal(result.byCategory[CATEGORIES.indexOf('unknown')], 50000);
+  assert.equal(result.byCategory[CATEGORIES.indexOf('completion')], 1);
   assert.equal(result.entries.length, 8);
   assert.doesNotMatch(JSON.stringify(result), /PRIVATE|content/);
   assert.equal(impulseIntensity(result.blue), 8);
   assert.equal(impulseIntensity(1), 1);
-  assert.deepEqual(buffer.drain(), { blue: 0, orange: 0, completions: 0, entries: [] });
+  const drained = buffer.drain();
+  assert.equal(drained.byCategory, result.byCategory, 'category totals reuse their typed array');
+  assert.deepEqual([...drained.byCategory], Array(CATEGORIES.length).fill(0));
+  assert.deepEqual([...drained.sceneByCategory], Array(CATEGORIES.length).fill(0));
+  assert.deepEqual({ ...drained, byCategory: undefined, sceneByCategory: undefined }, {
+    blue: 0, orange: 0, entries: [], byCategory: undefined, sceneByCategory: undefined,
+  });
   buffer.add({ kind: 'step' });
   buffer.clear();
   assert.equal(buffer.drain().orange, 0);

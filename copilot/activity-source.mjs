@@ -615,6 +615,8 @@ export class LocalActivitySource extends EventEmitter {
       retired: [],
       eligibleRootTurn: null,
       completedRootTurn: null,
+      // Survives turn_end because session.idle can follow the final assistant turn.
+      pendingIdleTurn: null,
       waitingPermissions: new Set(),
       waitingInputs: new Set(),
       lastEventAt: now,
@@ -889,6 +891,7 @@ export class LocalActivitySource extends EventEmitter {
       if (root) {
         session.eligibleRootTurn = baseline ? null : turnId;
         session.completedRootTurn = null;
+        session.pendingIdleTurn = baseline ? null : turnId;
       }
       return 'thinking';
     }
@@ -1036,12 +1039,20 @@ export class LocalActivitySource extends EventEmitter {
           data.success === true && data.outcome === 'completed' &&
           taskId && this.uniqueKey(state.file, 'completion', taskId)) {
         session.completedRootTurn = agent.turnId;
+        session.pendingIdleTurn = null;
         return 'completion';
       }
       return;
     }
 
     if (type === 'abort' || type === 'session.error' || type === 'session.shutdown' || type === 'session.idle') {
+      if (type === 'session.idle' && !root) return false;
+      const idleCascade = type === 'session.idle' && !baseline &&
+        session.pendingIdleTurn !== null && this.hasCompleteCoverageFor(state) &&
+        session.waitingPermissions.size === 0 && session.waitingInputs.size === 0 &&
+        !session.agents.get('root')?.waiting &&
+        (session.agents.get('root')?.toolCalls.size ?? 0) === 0;
+      session.pendingIdleTurn = null;
       session.ended = type === 'session.shutdown';
       for (const agent of session.agents.values()) {
         agent.active = false;
@@ -1054,6 +1065,7 @@ export class LocalActivitySource extends EventEmitter {
       for (const callId of session.subagents.keys()) this.retireSubagent(session, callId, 'cleared');
       session.subagents.clear();
       session.stats.openTurns.clear();
+      if (type === 'session.idle') return idleCascade ? 'activity' : false;
     }
   }
 
@@ -1071,6 +1083,7 @@ export class LocalActivitySource extends EventEmitter {
   // Staleness only: success eligibility is lost, observed running work is kept
   // (shown as unverified) until a recorded end, wait, cancellation or error.
   expireEligibility(state) {
+    state.session.pendingIdleTurn = null;
     for (const agent of state.session.agents.values()) agent.eligible = false;
     state.session.eligibleRootTurn = null;
     state.session.stats.openTurns.clear();

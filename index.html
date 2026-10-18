@@ -39,6 +39,22 @@
 
   <aside class="hud hud-impulses" aria-label="Recent impulses">
     <h2>Impulse stream</h2>
+    <details id="activity-legend" class="activity-legend">
+      <summary>Activity legend</summary>
+      <ul class="activity-legend-list">
+        <li class="legend-row impulse-cat-completion" data-category="completion"><span class="legend-swatch" data-category="completion" data-glyph="✓">✓</span><span class="legend-name">completion</span></li>
+        <li class="legend-row impulse-cat-error" data-category="error"><span class="legend-swatch" data-category="error" data-glyph="!">!</span><span class="legend-name">error</span></li>
+        <li class="legend-row impulse-cat-waiting" data-category="waiting"><span class="legend-swatch" data-category="waiting" data-glyph="…">…</span><span class="legend-name">waiting</span></li>
+        <li class="legend-row impulse-cat-subagent" data-category="subagent"><span class="legend-swatch" data-category="subagent" data-glyph="⑂">⑂</span><span class="legend-name">subagent</span></li>
+        <li class="legend-row impulse-cat-shell" data-category="shell"><span class="legend-swatch" data-category="shell" data-glyph="$">$</span><span class="legend-name">shell</span></li>
+        <li class="legend-row impulse-cat-edit" data-category="edit"><span class="legend-swatch" data-category="edit" data-glyph="✎">✎</span><span class="legend-name">edit</span></li>
+        <li class="legend-row impulse-cat-read" data-category="read"><span class="legend-swatch" data-category="read" data-glyph="◇">◇</span><span class="legend-name">read</span></li>
+        <li class="legend-row impulse-cat-tool" data-category="tool"><span class="legend-swatch" data-category="tool" data-glyph="›">›</span><span class="legend-name">tool</span></li>
+        <li class="legend-row impulse-cat-reasoning" data-category="reasoning"><span class="legend-swatch" data-category="reasoning" data-glyph="~">~</span><span class="legend-name">reasoning</span></li>
+        <li class="legend-row impulse-cat-lifecycle" data-category="lifecycle"><span class="legend-swatch" data-category="lifecycle" data-glyph="·">·</span><span class="legend-name">lifecycle</span></li>
+        <li class="legend-row impulse-cat-unknown" data-category="unknown"><span class="legend-swatch" data-category="unknown" data-glyph="?">?</span><span class="legend-name">unknown</span></li>
+      </ul>
+    </details>
     <ol id="impulse-feed" aria-live="off"></ol>
   </aside>
 
@@ -56,6 +72,14 @@
     </header>
     <div id="session-stats-content"></div>
   </dialog>
+
+  <aside class="hud hud-timeline" aria-label="Recent aggregate activity">
+    <p id="timeline-description">last 10 min · observed live only · aggregate · no session attribution</p>
+    <canvas id="timeline" width="960" height="48" role="img" aria-label="Stacked category activity counts; right edge is now" aria-describedby="timeline-description timeline-state">
+      Recent activity by category. Hatched buckets indicate unknown coverage, not zero activity.
+    </canvas>
+    <p id="timeline-state" role="status" aria-live="polite">Loading · awaiting live coverage</p>
+  </aside>
 
   <footer class="hud hud-bottom">
     <h1 class="title">SENTIENT</h1>

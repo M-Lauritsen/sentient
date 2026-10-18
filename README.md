@@ -22,185 +22,111 @@ the server fails closed; it does not choose another port or bind to the network.
 Three.js 0.160.0 is pinned and served locally, including its license. The page
 does not load a CDN or send activity outside this machine.
 
-## What the display means
+## What you'll see
 
-- The right-side Active sessions panel uses the same visual treatment as the
-  left activity field and lists only RUNNING and RUNNING · UNVERIFIED sessions.
-  Running means a live start was observed; unverified means that active work
-  has had no journal event for more than 45 seconds. IDs are six-character,
-  per-process opaque handles; titles and local paths are never shown. The panel
-  displays elapsed time, reports omitted active sessions when truncated, and
-  says “No active sessions” when none are running. During a coverage gap it
-  greys out and shows “coverage unknown” instead of stale statuses. Waiting
-  sessions are excluded from the list; bounded waiter handles preserve their
-  scene markers. SENTIENT does not request browser notification permission or
-  display OS notifications.
-- A session with validated statistics has a keyboard-accessible details button;
-  activate it with click, Enter, or Space to open a centered modal overlay.
-  Close it with the close button, Escape, or a backdrop click; keyboard focus
-  returns to the session row, the list, or the source status if no rows remain.
-  The overlay updates live and stays open when the session stops running.
-  Details are marked
-  “since observed · live only” and show record counts by kind, top event types
-  and tool identifiers, subagent/error counts, observed running/unverified/
-  waiting durations, and turn timing. Missing stats in older snapshots omit
-  the button; empty counts are shown as zero or “None observed.” A coverage
-  gap replaces the details with unknown coverage rather than stale statistics.
-- While sessions are observed RUNNING, a continuous blue stream fires six
-  impulse starts per second per session (up to 32 sessions). Running means
-  observed work — thinking, tool execution or delegated (sub)agents — not a
-  claim of hidden cognition. Only work whose start (turn start or
-  `subagent.started`) was observed live counts; startup baselines never pulse.
-  Running work keeps pulsing through long silence (e.g. a
-  multi-minute test run) until a recorded turn end, subagent completion/failure,
-  abort, error, shutdown, session idle, or a permission/user-input/elicitation
-  wait. After 45 seconds without a journal event it is shown as
-  **RUNNING · UNVERIFIED**. Risk: if a task crashes without writing an end
-  event, its pulses can linger until the session writes another terminal
-  event or SENTIENT loses/re-baselines the source. Read errors, truncation,
-  backlog, malformed records and source loss drop running state; it resumes
-  only from a new live start. Pulses also stop for disconnection, unavailable
-  source or hidden tabs (no catch-up). They do not manufacture activity-feed
-  entries; existing trails fade naturally.
-- The scene shows up to 32 observed journal sessions that have live delegated
-  subagents as lattice anchors; an empty tree stays invisible. Live delegates
-  appear as outward branches; completion, failure and coverage-driven clearing
-  use distinct bounded fades. A screen-reader status summary reports bounded
-  branch counts and statuses without identifiers. Tree IDs are
-  process-epoch-keyed opaque four-character values; raw session paths,
-  tool-call IDs and agent descriptions never enter the SSE snapshot. The
-  renderer caps active branches at 512 and fades at 64, and reduced-motion
-  settings skip branch growth animation and can be changed while the page is open.
-- Every valid newly observed journal event except permission, user-input and
-  elicitation wait lifecycle events triggers an impulse, including messages,
-  progress/results, subagents, errors, lifecycle events, and unknown future
-  event types. Waiting is represented in the session HUD and scene without
-  spawning activity pulses. Only event metadata is displayed.
-- Blue activity represents assistant turn starts, message and reasoning event
-  types. Orange represents tools, user messages, non-wait permission events,
-  errors, lifecycle changes and other events. User messages do not start or
-  refresh ongoing cognition. Ongoing blue pulses require a live-observed
-  running interval.
-- The top-left impulse stream shows privacy-safe event titles, newest first.
-  Older entries slide down into a bottom fade; only the latest eight are kept.
-  Labels show exact bounded event types, for example `assistant.message_delta`
-  or `tool.execution_progress · functions.view`. Relevant tool events also
-  show the exact tool identifier when present.
-  Only identifiers of 1-128 ASCII letters, digits, underscores, dots, colons,
-  slashes and hyphens are accepted; missing or invalid tool names are omitted.
-  Commands, file paths, arguments, results and conversation titles stay private.
-  The feed follows observed events, not every rendered pulse/trail.
-- Rapid events with matching type/kind/tool metadata are grouped per source
-  poll. `×N` means N observed records represented by that entry, not N tool calls
-  or N completed tasks. The browser combines counts once per animation frame:
-  stronger impulses (logarithmic intensity, capped at eight), not a token-by-token
-  animation loop. Only the latest eight labels are retained, but all incoming
-  counts contribute to that frame's impulses. Multiple confirmed successes in
-  one frame share one large burst. No synthetic idle activity timer is added.
-- The large burst is reserved for a root `session.task_complete` event whose
-  `success` is exactly `true` and `outcome` is exactly `"completed"`, during a
-  fully observed turn. Turn-end, idle, final messages, errors, cancellations,
-  subagent completion, and missing flags do not qualify.
-- “Quiet · not verified idle” means no fresh active interval was observed. It
-  does not claim every Copilot app/session is idle.
+- **Activity feed:** Recent event types and validated tool names, grouped when
+  events arrive together. Prompts, commands, file paths and results are not shown.
+- **Sessions:** Live-observed work is marked RUNNING, or RUNNING · UNVERIFIED
+  after 45 seconds without a journal event. Coverage gaps are shown as unknown
+  rather than presenting stale status. Session handles are opaque; titles and
+  paths are not displayed.
+- **Activity scene:** Pulses represent observed work, not hidden cognition.
+  Waiting pauses pulses. If work ends without a journal end event, pulses may
+  continue until SENTIENT observes a terminal event or loses/re-baselines the
+  source.
+- **Details and delegates:** Available session statistics are keyboard
+  accessible and marked “since observed”; the scene can show observed delegated
+  work. Reduced-motion settings are respected.
+  The statistics dialog also has a separate **Activity by category · since page
+  load** section: all 11 totals are page-wide, not attributed to the selected
+  session. They count accepted grouped activity received while the page is
+  visible with live coverage, exclude hidden/coverage gaps without backfill,
+  saturate at 4,294,967,295 per category, and reset on reload. No events or totals
+  are persisted.
+- **Colors:** The feed, scene pulses and edges share an 11-category palette and
+  legend. Colors identify activity; pulse kinds still control the existing
+  reasoning/tool/completion motion. At most four category bursts fire per
+  frame (including completion); completion reserves one cascade, then the highest-count categories
+  keep their colors and the remainder coalesces into reasoning/tool motion
+  buckets. Delegated branches use the subagent role, failed branches the error
+  role, and existing waiting cues the waiting role. Status colors are unchanged.
+- **Recent activity:** The HUD strip stacks aggregate received category counts
+  across a rolling 10 minutes (120 × 5-second buckets), with the right edge at
+  now. It has no per-session attribution or server history, and no backfill.
+  It starts loading, then distinguishes no received activity from unknown
+  coverage. Hatching marks pre-observation history, disconnection/source gaps,
+  hidden-tab discard and partial buckets; missing coverage is never zero.
+  Events during a coverage gap are not counted. Counts live only in fixed-size
+  browser memory; the strip redraws at most twice per second.
 
-The current file sample did **not** contain `assistant.reasoning` or
-`session.task_complete` records. Ordinary successful turns may therefore not
-produce reasoning-specific detail or a completion burst in the installed journal format.
-That is reported rather than replaced with an idle/final-message heuristic.
-The file schema is internal and may change with Copilot updates.
+“Quiet · not verified idle” means SENTIENT observed no fresh active interval; it
+does not mean every Copilot session is idle. A successful `session.task_complete`
+event lights up a bright, branching cascade of impulses, nodes and edges within
+the lattice. Grouped completions share one bounded cascade per frame, with no
+shockwave, camera shake, floor ripple or completion-triggered global flash.
+Live main-session `session.idle` events use the same orange network cascade,
+including when idle follows `assistant.turn_end`. Idle remains lifecycle activity
+in the feed, timeline and category statistics; it does not assert task success.
+Only live-observed work with complete coverage qualifies, and idle after an
+accepted task completion does not trigger a second cascade. Historical,
+duplicate, subagent and interrupted-work idle events do not trigger it.
+The current journal sample did not include that event or
+`assistant.reasoning`, so those details may not appear. The journal format is
+internal and can change.
 
-## Privacy and source limits
+## Editing visual settings
 
-The reader only enumerates direct session subdirectories and opens
-`events.jsonl` read-only. At startup it baselines a bounded tail without replaying
-old activity; later it incrementally parses bounded complete lines. The JSON
-record is parsed transiently in memory, but only aggregate counts, bounded
-per-session statistics, fixed statuses, event kinds
-(`thinking`, `step`, `completion`, `activity`), bounded
-`eventType`, optional grouped `count` (1–1,000,000,000), optional bounded
-`toolName` on live tool events, and bounded session-tree snapshots with
-process-epoch-keyed opaque SIDs can cross the loopback SSE stream. Event types
-must be 1–128 ASCII letters, digits, dots, underscores, colons or hyphens:
-enough for journal identifiers, never arbitrary labels/content. Invalid names
-are rejected and mark the poll partial. Missing/null data is safe for lifecycle
-events; malformed non-object data or attribution is rejected conservatively.
-Event-type, tool identifiers and opaque SIDs are the only additional detail;
-prompts, reasoning, tool arguments/results, raw session IDs, tool-call IDs,
-agent IDs/descriptions and file paths are never forwarded or logged.
-Snapshot/reconnect messages contain no event/tool deltas or history. Startup,
-catch-up and source-gap recovery do not replay impulses.
-Hidden tabs discard pending/incoming visuals; connection gaps clear queued
-visuals. Neither replays a backlog on return.
+Edit the numbers in **`visual-settings.mjs`**, save, then refresh the browser
+(hard refresh if it still shows an older module). No build or server restart is
+needed. This is public, browser-loaded configuration: never put secrets in it.
+There are no on-screen sliders or persisted overrides; the file is the only
+source of these visual settings.
 
-The reader caps the scan at 512 journal files, 1 MiB of file reads per poll,
-256 KiB per file per poll, 64 KiB per record, and 64 active agent/tool/wait
-entries per session. Exceeding or losing coverage is shown as partial/unknown.
-Event-ID deduplication retains at most 4,096 keys. Source aggregation retains at
-most 64 metadata groups, flushing rather than dropping on pressure; per-poll
-read limits bound total output. Snapshots are published for changed poll state,
-not once per token. Browser queues retain eight labels and three counters;
-the existing renderer limits remain 1,600 pulses and eight shockwaves.
-After 45 seconds without a journal event, an open turn becomes unknown and is
-not eligible for a success burst (it may still pulse as unverified running
-work, see above). Snapshots carry `runningSessions` and
-`unverifiedRunningSessions` aggregate counts. Per-session statistics count
-validated, deduplicated live records, not the grouped `×N` feed entries; they
-reset when a session is rebaselined or leaves the selected file set, so they
-are “since observed,” not lifetime totals. The stats snapshot includes only
-bounded counters, durations, event types and tool identifiers; it never
-includes event content. Tool identifiers can reveal internal integrations, so
-inspect them before sharing screenshots or recordings. At most 64 running
-subagent calls and 64 user-input waits are tracked per session.
-Missing permission/request IDs collapse to the `unknown` wait ID; therefore a
-completion for one id-less request can clear another id-less request of the
-same kind. The display reports this observed source behavior without guessing
-at missing identifiers.
+The commented sections cover node size/brightness/whiteness; pulse head size,
+trail spacing and speed; local completion spread, hops, branching, seeds and
+intensity; and scene bloom, edge fade and ambient glow. Each number documents
+its default, units and a useful range. Ranges are guidance, not automatic
+clamps: use finite nonnegative numbers, integer hop/count values, and a branch
+chance between 0 and 1. Start with small edits and reload to compare.
+The shipped defaults preserve the current tuning, including completion head
+size **3.0**, active node growth **2.0**, and bright local completion branching
+without shockwaves, camera shake, ripples or completion-triggered global flashes.
 
-This is a **journal-file integration**, not a supported Copilot all-session
-subscription. It cannot prove that every running app session writes to this
-location, enumerate open-but-silent sessions, detect Copilot process health, or
-guarantee the internal file format. The UI intentionally shows the observed
-journal count and coverage caveat instead of claiming universal idle. No app
-sessions are created, resumed, or changed by SENTIENT.
+Category colors remain in **`activity-colors.mjs`**. Structural geometry and
+fixed buffer capacities (including pulse/trail counts) remain in `main.js`'s
+`CFG`; they are deliberately not visual settings. Shader-facing settings are
+passed as uniforms, so tuning these values does not require editing GLSL.
+Activity mapping, statuses, hidden-tab discard and network/privacy behavior
+are unaffected. Reloading still resets the page's in-memory activity totals.
 
-The HTTP server binds only to `127.0.0.1`, checks exact Host and same-origin
-EventSource requests, serves an explicit asset allowlist, and limits concurrent
-SSE clients. It accepts no activity-writer endpoint and stores no activity
-history.
+## Privacy and limitations
 
-## Contributing and publication safety
+SENTIENT reads `events.jsonl` files in local session folders without modifying
+them. It serves the UI on `127.0.0.1` and sends only bounded event metadata,
+aggregate statistics and opaque handles to the browser. It never forwards
+prompts, reasoning content, tool arguments or results, raw session IDs,
+agent descriptions, or file paths. Tool names may still reveal internal
+integrations, so inspect them before sharing screenshots.
 
-Run `npm test` and `npm run check:publication` before sharing changes. The
-publication check flags common credentials, personal home paths, UUID/session
-identifiers, local journals and planning records. It reports filenames/categories,
-not matched values. It checks filenames throughout the project, excluding
-dependencies and Git metadata. Content checks cover dotfiles and these text
-extensions: `.js`, `.mjs`, `.cjs`, `.json`, `.md`, `.html`, `.css`, `.txt`,
-`.yml`, `.yaml`, `.toml`, `.xml`, `.svg`, `.ts`. Other files, including images,
-archives, binaries and extensionless non-dotfiles, require manual inspection.
-It does not inspect Git history, prove that all private content is absent, or
-replace GitHub secret scanning and manual review.
+This is an integration with local journal files, not a supported subscription
+to all Copilot sessions. It cannot verify sessions that do not write to those
+files, detect Copilot process health, or guarantee the journal format. If file
+coverage is incomplete, the display reports that instead of claiming universal
+idle. The server accepts no activity-writing requests and stores no history.
+Do not expose it through a LAN binding, tunnel, or public proxy.
 
-Use synthetic activity fixtures only. Never submit Copilot journals, screenshots
-of private sessions, prompts, commands, outputs, credentials, or machine-specific
-paths. Tool identifiers may reveal internal integrations: inspect what the feed
-shows before sharing screenshots or recordings. Keep the server on loopback;
-do not expose it through a LAN binding, tunnel or public reverse proxy.
+## Contributing and sharing
 
-The ignore file excludes dependencies, local plans, logs, journals, environment
-files and common key/backup files. Ignore rules do not remove already tracked
-files or Git history. Review `git status --short` and the staged diff before
-committing, and enable GitHub secret scanning/push protection where available.
-Ignore rules do not filter a manually created folder ZIP. Build release archives
-from reviewed tracked files and inspect the actual distribution contents rather
-than uploading the working folder (which includes installed dependencies).
-If a credential has already been published, revoke/rotate it; deleting it alone
-is not enough.
+Run `npm test` and `npm run check:publication` before sharing changes. Use
+synthetic activity fixtures only; never share private journals, session
+screenshots, prompts, commands, outputs, credentials, or machine-specific
+paths. Review tool names in screenshots because they may reveal integrations.
 
-No project license has been selected yet. Before calling a public release
-open-source, the copyright owner must choose and add a license. The bundled
-Three.js dependency retains its own MIT license; this does not license SENTIENT.
+The publication check is a useful filter, not a guarantee: it does not inspect
+Git history or every binary/archive. Review `git status --short`, the staged
+diff, and any release archive yourself; ignore rules do not remove tracked files
+or history. If a credential was published, revoke or rotate it.
 
-Stop the local server to stop journal observation. SENTIENT does not install a
-user-wide extension, change Copilot configuration, or modify journal files.
+SENTIENT has no project license yet. A license must be chosen before describing
+a public release as open source. The bundled Three.js dependency retains its
+own MIT license; that does not license SENTIENT.
