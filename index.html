@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SENTIENT</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/vendor/three.module.js",
+        "three/addons/": "/vendor/addons/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div class="vignette" aria-hidden="true"></div>
+  <div class="scanlines" aria-hidden="true"></div>
+
+  <header class="hud hud-top">
+    <span><i class="dot"></i> SOURCE · <b id="status">CONNECTING</b></span>
+    <span>JOURNALS <b id="journals">0</b></span>
+    <span>ACTIVE SESSIONS <b id="sessions">0</b></span>
+    <span>RUNNING <b id="running">0</b></span>
+    <span>UNVERIFIED <b id="unknown">0</b></span>
+    <span>IMPULSES <b id="impulses">0</b></span>
+    <span>LOAD <b id="load">0%</b></span>
+  </header>
+
+  <aside class="hud hud-coverage" id="coverage" aria-live="polite">
+    Local Copilot event files · open-session coverage not verifiable
+  </aside>
+
+  <aside class="hud hud-impulses" aria-label="Recent impulses">
+    <h2>Impulse stream</h2>
+    <ol id="impulse-feed" aria-live="off"></ol>
+  </aside>
+
+  <footer class="hud hud-bottom">
+    <h1 class="title">SENTIENT</h1>
+    <p class="subtitle">neural lattice · <span id="subtitle">connecting to local activity files</span></p>
+    <p class="hint">drag to orbit · scroll to zoom · local metadata only</p>
+  </footer>
+
+  <div id="fallback" class="fallback" hidden>WebGL is not available in this browser.</div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

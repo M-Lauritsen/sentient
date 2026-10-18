@@ -1,0 +1,332 @@
+import test from 'node:test';
+import { createThinkingPulseClock } from '../activity-client.mjs';
+import assert from 'node:assert/strict';
+import { createActivityClient, createImpulseFeed, createImpulseBuffer, activityColor,
+  impulseIntensity, projectActivity } from '../activity-client.mjs';
+
+function feedElement() {
+  const element = {
+    children: [],
+    ownerDocument: { createElement: () => ({}) },
+    prepend(row) { this.children.unshift(row); },
+    get lastElementChild() {
+      return { remove: () => this.children.pop() };
+    },
+  };
+  return element;
+}
+
+test('impulse feed prepends privacy-safe labels and keeps only eight entries', () => {
+  const element = feedElement();
+  const feed = createImpulseFeed(element);
+  feed.add('thinking');
+  feed.add('step');
+  feed.add('completion');
+  assert.deepEqual(element.children.map((row) => row.textContent),
+    ['Task completed', 'Task step', 'Thinking']);
+  assert.equal(element.children[0].className, 'impulse-entry impulse-completion impulse-orange');
+  for (let i = 0; i < 20; i++) feed.add('thinking');
+  assert.equal(element.children.length, 8);
+});
+
+test('event types determine colors and grouped feed labels without payload inspection', () => {
+  for (const eventType of ['assistant.message', 'assistant.message_delta', 'assistant.reasoning',
+    'assistant.reasoning_delta', 'assistant.turn_start']) {
+    assert.equal(activityColor({ kind: 'activity', eventType }), 'blue');
+  }
+  for (const eventType of ['user.message', 'tool.execution_complete', 'permission.requested',
+    'session.error', 'subagent.completed', 'assistant.turn_end', 'future.event']) {
+    assert.equal(activityColor({ kind: 'activity', eventType }), 'orange');
+  }
+  const element = feedElement();
+  const feed = createImpulseFeed(element);
+  feed.add('activity', 'functions.view', 'tool.execution_progress', 42);
+  assert.equal(element.children[0].textContent, 'tool.execution_progress · functions.view ×42');
+  assert.match(element.children[0].className, /impulse-orange/);
+  feed.add('activity', undefined, 'assistant.message_delta', 1000);
+  assert.match(element.children[0].className, /impulse-blue/);
+  feed.add('activity', undefined, '<PRIVATE>', 5);
+  assert.equal(element.children.length, 2);
+  for (const count of [0, -1, 1.5, 1_000_000_001, Infinity]) {
+    assert.equal(projectActivity({ kind: 'activity', eventType: 'future.event', count }), null);
+  }
+});
+
+test('frame buffer bounds labels and render intensity while accounting for every event', () => {
+  const buffer = createImpulseBuffer();
+  for (let i = 0; i < 10000; i++) {
+    buffer.add({ kind: 'activity', eventType: `future.event${i}`, count: 5, content: 'PRIVATE' });
+    buffer.add({ kind: 'activity', eventType: 'assistant.message_delta', count: 3 });
+  }
+  buffer.add({ kind: 'completion' });
+  const result = buffer.drain();
+  assert.equal(result.blue, 30000);
+  assert.equal(result.orange, 50000);
+  assert.equal(result.completions, 1);
+  assert.equal(result.entries.length, 8);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE|content/);
+  assert.equal(impulseIntensity(result.blue), 8);
+  assert.equal(impulseIntensity(1), 1);
+  assert.deepEqual(buffer.drain(), { blue: 0, orange: 0, completions: 0, entries: [] });
+  buffer.add({ kind: 'step' });
+  buffer.clear();
+  assert.equal(buffer.drain().orange, 0);
+});
+
+test('impulse feed rejects unknown kinds instead of displaying arbitrary text', () => {
+  const element = feedElement();
+  const feed = createImpulseFeed(element);
+  for (const kind of ['private tool title', '<script>', 'toString', null, undefined]) feed.add(kind);
+  assert.equal(element.children.length, 0);
+});
+
+test('step feed shows exact bounded tool names as text, with safe fallbacks', () => {
+  const element = feedElement();
+  const feed = createImpulseFeed(element);
+  feed.add('step', 'functions.view');
+  assert.equal(element.children[0].textContent, 'Task step · functions.view');
+  feed.add('step', '<img src=x onerror=alert(1)>');
+  assert.equal(element.children[0].textContent, 'Task step');
+  feed.add('step', 'x'.repeat(129));
+  assert.equal(element.children[0].textContent, 'Task step');
+  feed.add('step', 'functions.view\n');
+  assert.equal(element.children[0].textContent, 'Task step');
+  feed.add('thinking', 'functions.view');
+  assert.equal(element.children[0].textContent, 'Thinking');
+});
+
+class FakeEventSource {
+  static instances = [];
+  constructor(url) {
+    this.url = url;
+    this.listeners = new Map();
+    FakeEventSource.instances.push(this);
+  }
+  addEventListener(name, fn) { this.listeners.set(name, fn); }
+  close() { this.closed = true; }
+  emit(name, data) { this.listeners.get(name)?.({ data: JSON.stringify(data) }); }
+}
+
+test('client validates grouped generic metadata and never forwards private fields or replays after gaps', () => {
+      FakeEventSource.instances = [];
+      const activities = [];
+      const buffer = createImpulseBuffer();
+      const client = createActivityClient({
+        EventSourceImpl: FakeEventSource,
+        onState: (state) => { if (state.connection !== 'connected') buffer.clear(); },
+        onActivity: (value) => { activities.push(value); buffer.add(value); },
+      });
+      client.connect();
+    const stream = FakeEventSource.instances[0];
+    const snapshot = {
+      source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only',
+      activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 1, steps: 0,
+    };
+    const epoch = 'grouped-live-epoch';
+    stream.emit('snapshot', { epoch, sequence: 0, snapshot, eventType: 'PRIVATE' });
+    const value = { epoch, sequence: 1, snapshot, kind: 'activity',
+      eventType: 'tool.execution_complete', toolName: 'functions.view', count: 50, result: 'PRIVATE' };
+    stream.emit('activity', value);
+    stream.emit('activity', value);
+    assert.deepEqual(activities, [{
+      kind: 'activity', eventType: 'tool.execution_complete', toolName: 'functions.view', count: 50,
+    }]);
+    stream.emit('activity', { ...value, sequence: 3 });
+    assert.equal(buffer.drain().orange, 0);
+    stream.emit('snapshot', { epoch, sequence: 3, snapshot, eventType: 'PRIVATE' });
+    assert.equal(activities.length, 1);
+    stream.emit('activity', { ...value, sequence: 4, eventType: 'future.event', toolName: 'ignored', count: 2 });
+    assert.deepEqual(activities.at(-1), { kind: 'activity', eventType: 'future.event', count: 2 });
+    stream.onerror();
+    assert.equal(buffer.drain().orange, 0);
+    client.disconnect();
+  });
+
+test('activity client forwards tool names only for valid live step events', () => {
+  FakeEventSource.instances = [];
+  const activities = [];
+  const client = createActivityClient({
+    EventSourceImpl: FakeEventSource, onActivity: (activity) => activities.push(activity),
+  });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  const snapshot = {
+    source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only',
+    activeSessions: 1, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 1, steps: 1,
+  };
+  const epoch = 'tool-detail-epoch';
+  stream.emit('snapshot', { epoch, sequence: 0, snapshot, toolName: 'ignored' });
+  stream.emit('activity', { epoch, sequence: 1, snapshot, kind: 'step', toolName: 'functions.view', arguments: 'PRIVATE' });
+  stream.emit('activity', { epoch, sequence: 1, snapshot, kind: 'step', toolName: 'duplicate' });
+  stream.emit('activity', { epoch, sequence: 2, snapshot, kind: 'thinking', toolName: 'ignored' });
+  stream.emit('activity', { epoch, sequence: 3, snapshot, kind: 'step', toolName: '<script>' });
+  stream.emit('activity', { epoch, sequence: 4, snapshot, kind: 'step', toolName: 'functions.view\n' });
+  assert.deepEqual(activities, [
+    { kind: 'step', toolName: 'functions.view' }, { kind: 'thinking' }, { kind: 'step' }, { kind: 'step' },
+  ]);
+  client.disconnect();
+});
+
+test('snapshots do not replay deltas, live sequences apply once, gaps become unknown', () => {
+  FakeEventSource.instances = [];
+  const states = [];
+  const activities = [];
+  const client = createActivityClient({
+    EventSourceImpl: FakeEventSource,
+    onState: (state) => states.push(state),
+    onActivity: (activity) => activities.push(activity),
+  });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  stream.emit('snapshot', {
+    epoch: 'boot-instance-aa',
+    sequence: 20,
+    snapshot: { source: 'local-activity-files', sourceStatus: 'available', coverage: 'partial', activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 4, steps: 0 },
+  });
+  assert.equal(activities.length, 0);
+  stream.emit('activity', { epoch: 'boot-instance-aa', sequence: 21, kind: 'step', snapshot: { source: 'local-activity-files', sourceStatus: 'available', coverage: 'partial', activeSessions: 1, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 4, steps: 1 } });
+  stream.emit('activity', { epoch: 'boot-instance-aa', sequence: 21, kind: 'step', snapshot: { source: 'local-activity-files', sourceStatus: 'available', coverage: 'partial', activeSessions: 1, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 4, steps: 1 } });
+  assert.equal(activities.length, 1);
+  stream.emit('activity', { epoch: 'boot-instance-aa', sequence: 23, kind: 'completion', snapshot: { source: 'local-activity-files', sourceStatus: 'available', coverage: 'partial', activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 4, steps: 1 } });
+  assert.equal(activities.length, 1);
+  assert.equal(states.at(-1).connection, 'unknown');
+  stream.emit('snapshot', {
+    epoch: 'boot-instance-aa',
+    sequence: 23,
+    snapshot: { source: 'local-activity-files', sourceStatus: 'available', coverage: 'partial', activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 4, steps: 1 },
+  });
+  stream.emit('activity', { epoch: 'boot-instance-aa', sequence: 24, kind: 'step', snapshot: { source: 'local-activity-files', sourceStatus: 'available', coverage: 'partial', activeSessions: 1, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 4, steps: 2 } });
+  assert.equal(activities.length, 2);
+  client.disconnect();
+});
+
+test('accepts only bounded metadata and reports reconnecting as unknown rather than idle', () => {
+  FakeEventSource.instances = [];
+  const states = [];
+  const client = createActivityClient({ EventSourceImpl: FakeEventSource, onState: (state) => states.push(state) });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  stream.emit('snapshot', { epoch: 'boot-instance-bb', sequence: 0, snapshot: { source: 'local-activity-files', sourceStatus: 'available', coverage: 'partial', activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 0, steps: 0 } });
+  stream.onerror();
+  assert.equal(states.at(-1).connection, 'retrying');
+  assert.equal(states.at(-1).coverage, 'unknown');
+  client.disconnect();
+});
+
+test('server restart epoch resets sequence without replaying old deltas', () => {
+  FakeEventSource.instances = [];
+  const activities = [];
+  const states = [];
+  const client = createActivityClient({
+    EventSourceImpl: FakeEventSource,
+    onState: (state) => states.push(state),
+    onActivity: (activity) => activities.push(activity),
+  });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  const snapshot = (epoch, sequence) => ({
+    epoch,
+    sequence,
+    snapshot: { source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only', activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 2, steps: 0 },
+  });
+  stream.emit('snapshot', snapshot('boot-instance-aa', 42));
+  stream.onerror();
+  stream.emit('snapshot', snapshot('boot-instance-bb', 0));
+  assert.equal(client.getState().connection, 'connected');
+  stream.emit('activity', {
+    epoch: 'boot-instance-bb',
+    sequence: 1,
+    kind: 'step',
+    snapshot: { source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only', activeSessions: 1, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 2, steps: 1 },
+  });
+  assert.equal(activities.length, 1);
+  assert.equal(states.at(-1).activeSessions, 1);
+  client.disconnect();
+});
+test('thinking clock sustains six pulses per second per session without new events', () => {
+  const clock = createThinkingPulseClock();
+  const state = { connection: 'connected', sourceStatus: 'available', thinkingSessions: 1 };
+  let pulses = 0;
+  for (let i = 0; i < 120; i++) pulses += clock.tick(1 / 60, state, false);
+  assert.equal(pulses, 12);
+  clock.reset();
+  pulses = 0;
+  for (let i = 0; i < 60; i++) pulses += clock.tick(1 / 60, { ...state, thinkingSessions: 3 }, false);
+  assert.equal(pulses, 18);
+});
+
+test('thinking clock stops and clears accumulated time on inactive or unavailable states', () => {
+  const state = { connection: 'connected', sourceStatus: 'available', thinkingSessions: 1 };
+  for (const [change, hidden] of [
+    [{ thinkingSessions: 0 }, false], [{ connection: 'retrying' }, false],
+    [{ sourceStatus: 'unavailable' }, false], [{}, true],
+  ]) {
+    const clock = createThinkingPulseClock();
+    for (let i = 0; i < 3; i++) assert.equal(clock.tick(0.05, state, false), 0);
+    assert.equal(clock.tick(1, { ...state, ...change }, hidden), 0);
+    assert.equal(clock.tick(0.05, state, false), 0);
+    for (let i = 0; i < 2; i++) assert.equal(clock.tick(0.05, state, false), 0);
+    clock.reset();
+    assert.equal(clock.tick(0.05, state, false), 0);
+  }
+});
+
+test('thinking clock bounds long frames and concurrent-session load', () => {
+  const clock = createThinkingPulseClock();
+  const state = { connection: 'connected', sourceStatus: 'available', thinkingSessions: 1000 };
+  assert.equal(clock.tick(1000, state, false), 9);
+  assert.equal(clock.tick(-1, state, false), 0);
+  assert.equal(clock.tick(NaN, state, false), 0);
+});
+
+const runningSnapshot = (extra = {}) => ({
+  source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only',
+  activeSessions: 0, thinkingSessions: 0, unknownSessions: 1, backlogFiles: 0, journalFiles: 2, steps: 3,
+  runningSessions: 1, unverifiedRunningSessions: 1, ...extra,
+});
+
+test('client validates optional bounded running counts and clears them on gaps', () => {
+  FakeEventSource.instances = [];
+  const states = [];
+  const client = createActivityClient({ EventSourceImpl: FakeEventSource, onState: (state) => states.push(state) });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  stream.emit('snapshot', { epoch: 'running-epoch-aaaa', sequence: 0, snapshot: runningSnapshot() });
+  assert.equal(states.at(-1).runningSessions, 1);
+  assert.equal(states.at(-1).unverifiedRunningSessions, 1);
+  for (const invalid of [
+    { runningSessions: -1 }, { runningSessions: 1.5 }, { runningSessions: '1' },
+    { unverifiedRunningSessions: 2 }, { runningSessions: undefined },
+    { unverifiedRunningSessions: undefined }, { runningSessions: 1_000_000_001, unverifiedRunningSessions: 0 },
+  ]) {
+    const count = states.length;
+    stream.emit('snapshot', { epoch: 'running-epoch-aaaa', sequence: 1, snapshot: runningSnapshot(invalid) });
+    assert.equal(states.length, count, JSON.stringify(invalid));
+  }
+  const legacy = runningSnapshot({ thinkingSessions: 2, activeSessions: 2, unknownSessions: 0 });
+  delete legacy.runningSessions;
+  delete legacy.unverifiedRunningSessions;
+  stream.emit('snapshot', { epoch: 'running-epoch-aaaa', sequence: 2, snapshot: legacy });
+  assert.equal(states.at(-1).runningSessions, 2, 'legacy servers keep thinking-based pulses');
+  assert.equal(states.at(-1).unverifiedRunningSessions, 0);
+  stream.onerror();
+  assert.equal(states.at(-1).runningSessions, 0);
+  assert.equal(states.at(-1).unverifiedRunningSessions, 0);
+  client.disconnect();
+  assert.equal(client.getState().runningSessions, 0);
+});
+
+test('running clock pulses for observed tool/delegated work, including unverified long silence', () => {
+  const clock = createThinkingPulseClock();
+  const state = { connection: 'connected', sourceStatus: 'available', thinkingSessions: 0,
+    runningSessions: 1, unverifiedRunningSessions: 1 };
+  let pulses = 0;
+  for (let i = 0; i < 60; i++) pulses += clock.tick(1 / 60, state, false);
+  assert.equal(pulses, 6);
+  assert.equal(clock.tick(1, { ...state, runningSessions: 0, thinkingSessions: 3 }, false), 0,
+    'an explicit zero running count wins over thinking');
+  assert.equal(clock.tick(0.05, { ...state, connection: 'unknown' }, false), 0);
+  assert.equal(clock.tick(0.05, { ...state, sourceStatus: 'unavailable' }, false), 0);
+  assert.equal(clock.tick(10, state, true), 0, 'hidden tabs pause without catch-up');
+  assert.equal(clock.tick(10, state, false), 0, 'long frames are capped (0.05s => 0.3 pulse)');
+});
