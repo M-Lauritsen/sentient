@@ -1,25 +1,88 @@
+import { Color, LinearSRGBColorSpace, SRGBColorSpace } from 'three';
 import {
   VISUAL_PRESETS,
   VISUAL_SETTING_DEFINITIONS,
   createVisualSettingsModuleSource,
   mergeVisualOverrides,
   resolveVisualSettings,
+  validateVisualSettings,
   visualConfigurationSignature,
 } from './visual-config.mjs';
 
 const RELOAD_INTERVAL_MS = 5000;
+const PERSONAL_PRESETS_STORAGE_KEY = 'sentient-os.visual-presets.v1';
+const PERSONAL_PRESET_PREFIX = 'user:';
+const PERSONAL_PRESET_NAME_MAX_LENGTH = 48;
 
 function clone(value) {
   return structuredClone(value);
+}
+
+function isPlainRecord(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function personalPresetKey(name) {
+  return `${PERSONAL_PRESET_PREFIX}${name}`;
+}
+
+function personalPresetNameFromKey(key) {
+  return key.startsWith(PERSONAL_PRESET_PREFIX)
+    ? key.slice(PERSONAL_PRESET_PREFIX.length) : null;
+}
+
+function readPersonalPresets(storage) {
+  const source = storage.getItem(PERSONAL_PRESETS_STORAGE_KEY);
+  if (source === null) return [];
+
+  let data;
+  try {
+    data = JSON.parse(source);
+  } catch {
+    throw new Error('Saved preset data is not valid JSON. Clear this site’s stored data to reset it.');
+  }
+  if (!isPlainRecord(data) || data.version !== 1 || !Array.isArray(data.presets)) {
+    throw new Error('Saved preset data has an unsupported format. Clear this site’s stored data to reset it.');
+  }
+
+  const names = new Set();
+  const presets = [];
+  for (const preset of data.presets) {
+    if (!isPlainRecord(preset) || typeof preset.name !== 'string' ||
+        !isPlainRecord(preset.settings)) {
+      throw new Error('A saved preset is malformed. Clear this site’s stored data to reset it.');
+    }
+    const name = preset.name.trim();
+    const normalizedName = name.toLowerCase();
+    if (!name || name.length > PERSONAL_PRESET_NAME_MAX_LENGTH ||
+        /[\u0000-\u001f\u007f]/.test(name) || Object.hasOwn(VISUAL_PRESETS, normalizedName) ||
+        names.has(normalizedName)) {
+      throw new Error('Saved preset names are invalid or duplicated. Clear this site’s stored data to reset it.');
+    }
+    const errors = validateVisualSettings(preset.settings);
+    if (errors.length) {
+      throw new Error(`Saved preset "${name}" is invalid (${errors[0].path}: ${errors[0].message}).`);
+    }
+    names.add(normalizedName);
+    presets.push({ name, settings: clone(preset.settings) });
+  }
+  return presets;
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function valueAt(settings, path) {
   return path.split('.').reduce((value, key) => value?.[key], settings);
 }
 
-function setValueAt(settings, path, value) {
-  const [group, name] = path.split('.');
-  settings[group][name] = clone(value);
+function pickerValue(definition, value) {
+  return `#${definition.type === 'rgb'
+    ? new Color().setRGB(...value, LinearSRGBColorSpace).getHexString(SRGBColorSpace)
+    : value.toString(16).padStart(6, '0')}`;
 }
 
 function pathForError(path) {
@@ -103,8 +166,14 @@ export function createVisualSettingsPanel({
   exportButton,
   reloadButton,
   autoReloadInput,
+  presetNameInput,
+  saveAsPresetButton,
+  savePresetButton,
+  deletePresetButton,
   initialConfiguration,
   applySettings,
+  getStorage = () => globalThis.localStorage,
+  confirmAction = (message) => globalThis.confirm(message),
   loadFile = loadConfiguration,
   requestFrame = (callback) => requestAnimationFrame(callback),
   cancelFrame = (handle) => cancelAnimationFrame(handle),
@@ -124,6 +193,18 @@ export function createVisualSettingsPanel({
   let stagedPreset = null;
   let fieldErrors = new Map();
   let invalidDraftPaths = new Set();
+  let previewSettings = clone(initialConfiguration.settings);
+  let presetStorage = null;
+  let personalPresets = [];
+  let presetStorageError = null;
+  try {
+    presetStorage = getStorage();
+    if (!presetStorage) throw new Error('Browser local storage is unavailable.');
+    personalPresets = readPersonalPresets(presetStorage);
+  } catch (error) {
+    presetStorage = null;
+    presetStorageError = errorMessage(error);
+  }
   let pendingConflict = null;
   let ignoredSignature = null;
   let reloadPromise = null;
@@ -136,8 +217,7 @@ export function createVisualSettingsPanel({
   for (const definition of VISUAL_SETTING_DEFINITIONS) {
     const wrapper = createElement(document, 'label', 'visual-field');
     wrapper.setAttribute('data-setting-path', definition.path);
-    const suffix = definition.type === 'hex' ? 'sRGB color'
-      : definition.type === 'rgb' ? 'linear RGB'
+    const suffix = definition.editor === 'color' ? 'sRGB color'
         : definition.unit === 'unitless' ? '' : definition.unit;
     const title = createElement(document, 'span', 'visual-field-label',
       suffix ? `${definition.label} (${suffix})` : definition.label);
@@ -145,14 +225,26 @@ export function createVisualSettingsPanel({
     wrapper.append(title);
     const inputs = [];
     const initialValue = valueAt(fileConfiguration.settings, definition.path);
-    if (definition.type === 'boolean') {
+    if (definition.type === 'enum') {
+      const input = createElement(document, 'select');
+      input.setAttribute('aria-label', definition.label);
+      const labels = { always: 'Always visible', active: 'Activity only', hidden: 'Hidden' };
+      for (const value of definition.options) {
+        const option = createElement(document, 'option', '', labels[value]);
+        option.value = value;
+        input.append(option);
+      }
+      input.value = initialValue;
+      wrapper.append(input);
+      inputs.push(input);
+    } else if (definition.type === 'boolean') {
       const input = createElement(document, 'input');
       input.type = 'checkbox';
       input.checked = initialValue;
       input.setAttribute('aria-label', definition.label);
       wrapper.append(input);
       inputs.push(input);
-    } else if (definition.type === 'vector3' || definition.type === 'rgb') {
+    } else if (definition.type === 'vector3') {
       const tuple = createElement(document, 'span', 'visual-tuple');
       for (let index = 0; index < 3; index++) {
         const input = createElement(document, 'input');
@@ -164,10 +256,10 @@ export function createVisualSettingsPanel({
         inputs.push(input);
       }
       wrapper.append(tuple);
-    } else if (definition.type === 'hex') {
+    } else if (definition.editor === 'color') {
       const input = createElement(document, 'input');
       input.type = 'color';
-      input.value = `#${initialValue.toString(16).padStart(6, '0')}`;
+      input.value = pickerValue(definition, initialValue);
       input.setAttribute('aria-label', `${definition.label} (sRGB color)`);
       wrapper.append(input);
       inputs.push(input);
@@ -193,11 +285,34 @@ export function createVisualSettingsPanel({
     controls.set(definition.path, { definition, inputs, error });
   }
 
-  for (const [preset] of Object.entries(VISUAL_PRESETS)) {
-    const option = createElement(document, 'option', '', titleCase(preset));
-    option.value = preset;
-    presetSelect.append(option);
+  function syncPresetOptions() {
+    const options = Object.keys(VISUAL_PRESETS).map((preset) => {
+      const option = createElement(document, 'option', '', titleCase(preset));
+      option.value = preset;
+      return option;
+    });
+    for (const preset of personalPresets) {
+      const option = createElement(document, 'option', '', preset.name);
+      option.value = personalPresetKey(preset.name);
+      options.push(option);
+    }
+    presetSelect.replaceChildren(...options);
   }
+
+  function selectedPersonalPreset(key = activePreset) {
+    const name = personalPresetNameFromKey(key);
+    return name === null ? null : personalPresets.find((preset) => preset.name === name) ?? null;
+  }
+
+  function syncPersonalPresetActions() {
+    const selected = selectedPersonalPreset();
+    const unavailable = presetStorageError !== null || presetStorage === null;
+    saveAsPresetButton.disabled = unavailable;
+    savePresetButton.disabled = unavailable || !selected;
+    deletePresetButton.disabled = unavailable || !selected;
+  }
+
+  syncPresetOptions();
   presetSelect.value = activePreset;
   opener.setAttribute('aria-expanded', 'false');
   presetSelect.addEventListener('change', () => {
@@ -208,6 +323,10 @@ export function createVisualSettingsPanel({
 
   function setStatus(message) {
     status.textContent = message;
+  }
+
+  function applyLiveSettings(settings) {
+    if (applySettings(clone(settings)) === false) throw new Error('The scene rejected the visual update.');
   }
 
   function clearErrors() {
@@ -251,24 +370,37 @@ export function createVisualSettingsPanel({
       const value = valueAt(settings, path);
       if (control.definition.type === 'boolean') {
         control.inputs[0].checked = value;
-      } else if (control.definition.type === 'vector3' || control.definition.type === 'rgb') {
+      } else if (control.definition.type === 'vector3') {
         control.inputs.forEach((input, index) => { input.value = String(value[index]); });
-      } else if (control.definition.type === 'hex') {
-        control.inputs[0].value = `#${value.toString(16).padStart(6, '0')}`;
+      } else if (control.definition.editor === 'color') {
+        control.inputs[0].value = pickerValue(control.definition, value);
       } else {
         control.inputs[0].value = String(value);
       }
     }
     presetSelect.value = activePreset;
+    syncPersonalPresetActions();
   }
 
   function updateFromControl(definition, inputs) {
     let value;
-    if (definition.type === 'boolean') {
+    if (definition.type === 'enum') {
+      value = inputs[0].value;
+    } else if (definition.type === 'boolean') {
       value = inputs[0].checked;
-    } else if (definition.type === 'hex') {
-      value = Number.parseInt(inputs[0].value.slice(1), 16);
-    } else if (definition.type === 'vector3' || definition.type === 'rgb') {
+    } else if (definition.editor === 'color') {
+      const hex = inputs[0].value;
+      if (!/^#[0-9a-f]{6}$/i.test(hex)) {
+        invalidDraftPaths.add(definition.path);
+        fieldErrors.set(definition.path, ['Choose a valid sRGB colour (#RRGGBB).']);
+        showErrors([...fieldErrors].flatMap(([path, messages]) =>
+          messages.map((message) => ({ path, message }))));
+        return;
+      }
+      const number = Number.parseInt(hex.slice(1), 16);
+      value = definition.type === 'rgb'
+        ? new Color().setHex(number, SRGBColorSpace).toArray() : number;
+    } else if (definition.type === 'vector3') {
       value = inputs.map((input) => input.value === '' ? Number.NaN : Number(input.value));
     } else {
       value = inputs[0].value === '' ? Number.NaN : Number(inputs[0].value);
@@ -300,29 +432,41 @@ export function createVisualSettingsPanel({
 
   function applyStagedPreview() {
     const preset = stagedPreset ?? activePreset;
-    const overrides = mergeVisualOverrides(previewOverrides, stagedOverrides);
-    const resolved = resolveVisualSettings(
-      fileConfiguration.defaults, preset, fileConfiguration.overrides, overrides);
+    const switchingPersonalPreset = stagedPreset !== null && stagedPreset !== activePreset &&
+      (personalPresetNameFromKey(stagedPreset) !== null ||
+        personalPresetNameFromKey(activePreset) !== null);
+    const overrides = mergeVisualOverrides(
+      switchingPersonalPreset ? {} : previewOverrides, stagedOverrides);
+    const personalPreset = selectedPersonalPreset(preset);
+    const resolved = personalPreset
+      ? (() => {
+        const settings = mergeVisualOverrides(personalPreset.settings, overrides);
+        const errors = validateVisualSettings(settings);
+        return { settings: errors.length ? null : settings, errors };
+      })()
+      : personalPresetNameFromKey(preset) !== null
+        ? { settings: null, errors: [{ path: 'preset', message: 'The personal preset no longer exists.' }] }
+        : resolveVisualSettings(
+          fileConfiguration.defaults, preset, fileConfiguration.overrides, overrides);
     if (resolved.errors.length) {
       showErrors(resolved.errors);
       setStatus('Preview not applied; correct the highlighted settings.');
       return false;
     }
     try {
-      if (applySettings(clone(resolved.settings)) === false) {
-        throw new Error('The scene rejected the visual update.');
-      }
+      applyLiveSettings(resolved.settings);
     } catch (error) {
       setStatus(`Preview not applied: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
     activePreset = preset;
     previewOverrides = overrides;
+    previewSettings = clone(resolved.settings);
     stagedOverrides = {};
     stagedPreset = null;
     clearErrors();
     syncControls(resolved.settings);
-    setStatus('Preview applied. Changes are temporary until exported and saved.');
+    setStatus('Live preview applied. Changes are temporary until exported and saved.');
     return true;
   }
 
@@ -336,9 +480,7 @@ export function createVisualSettingsPanel({
 
   function installFileConfiguration(next) {
     try {
-      if (applySettings(clone(next.settings)) === false) {
-        throw new Error('The scene rejected the file configuration.');
-      }
+      applyLiveSettings(next.settings);
     } catch (error) {
       setStatus(`File configuration was not applied: ${error instanceof Error ? error.message : String(error)}`);
       return false;
@@ -346,6 +488,7 @@ export function createVisualSettingsPanel({
     fileConfiguration = next;
     activePreset = next.preset;
     previewOverrides = {};
+    previewSettings = clone(next.settings);
     stagedOverrides = {};
     stagedPreset = null;
     pendingConflict = null;
@@ -443,14 +586,115 @@ export function createVisualSettingsPanel({
       setStatus('Preview reset to the current file configuration.');
     }
   });
+  function validateNewPresetName(rawName, ignoreName = null) {
+    if (typeof rawName !== 'string' || !rawName.trim()) return 'Enter a preset name.';
+    const name = rawName.trim();
+    if (name.length > PERSONAL_PRESET_NAME_MAX_LENGTH) {
+      return `Preset names must be ${PERSONAL_PRESET_NAME_MAX_LENGTH} characters or fewer.`;
+    }
+    if (/[\u0000-\u001f\u007f]/.test(name)) return 'Preset names cannot contain control characters.';
+    if (Object.hasOwn(VISUAL_PRESETS, name.toLowerCase())) {
+      return 'That name is reserved for a built-in preset.';
+    }
+    if (personalPresets.some((preset) =>
+      preset.name.toLowerCase() === name.toLowerCase() && preset.name !== ignoreName)) {
+      return 'A personal preset with that name already exists.';
+    }
+    return null;
+  }
+
+  function persistPersonalPresets(next) {
+    try {
+      presetStorage.setItem(PERSONAL_PRESETS_STORAGE_KEY, JSON.stringify({
+        version: 1,
+        presets: next,
+      }));
+    } catch (error) {
+      setStatus(`Personal preset could not be saved: ${errorMessage(error)}`);
+      return false;
+    }
+    personalPresets = next;
+    syncPresetOptions();
+    syncControls(previewSettings);
+    return true;
+  }
+
+  function pendingEdits() {
+    return invalidDraftPaths.size || Object.keys(stagedOverrides).length ||
+      stagedPreset !== null || applyFrame !== 0;
+  }
+
+  saveAsPresetButton.addEventListener('click', () => {
+    if (presetStorageError || !presetStorage) {
+      setStatus(`Personal presets are unavailable: ${presetStorageError ?? 'browser local storage is unavailable.'}`);
+      return;
+    }
+    if (pendingEdits()) {
+      setStatus('Apply or correct pending edits before saving a preset.');
+      return;
+    }
+    const name = presetNameInput.value.trim();
+    const nameError = validateNewPresetName(name);
+    if (nameError) {
+      setStatus(nameError);
+      return;
+    }
+    if (!persistPersonalPresets([...personalPresets, { name, settings: clone(previewSettings) }])) return;
+    activePreset = personalPresetKey(name);
+    previewOverrides = {};
+    presetNameInput.value = '';
+    syncControls(previewSettings);
+    setStatus(`Personal preset "${name}" saved in this browser.`);
+  });
+
+  savePresetButton.addEventListener('click', () => {
+    const selected = selectedPersonalPreset();
+    if (!selected) {
+      setStatus('Select one of your personal presets before saving changes.');
+      return;
+    }
+    if (pendingEdits()) {
+      setStatus('Apply or correct pending edits before saving a preset.');
+      return;
+    }
+    const updated = personalPresets.map((preset) =>
+      preset.name === selected.name ? { ...preset, settings: clone(previewSettings) } : preset);
+    if (!persistPersonalPresets(updated)) return;
+    setStatus(`Changes to "${selected.name}" saved in this browser.`);
+  });
+
+  deletePresetButton.addEventListener('click', () => {
+    const selected = selectedPersonalPreset();
+    if (!selected) {
+      setStatus('Select one of your personal presets before deleting it.');
+      return;
+    }
+    if (pendingEdits()) {
+      setStatus('Apply or correct pending edits before deleting a preset.');
+      return;
+    }
+    if (!confirmAction(`Delete personal preset "${selected.name}"?`)) return;
+    if (!persistPersonalPresets(personalPresets.filter((preset) => preset.name !== selected.name))) return;
+    activePreset = fileConfiguration.preset;
+    previewOverrides = clone(previewSettings);
+    stagedOverrides = {};
+    stagedPreset = null;
+    syncControls(previewSettings);
+    setStatus(`Personal preset "${selected.name}" deleted. The current preview is unchanged.`);
+  });
+
   exportButton.addEventListener('click', () => {
-    if (invalidDraftPaths.size || Object.keys(stagedOverrides).length || stagedPreset !== null) {
+    if (pendingEdits()) {
       setStatus('Resolve pending or invalid edits before exporting.');
       return;
     }
-    const overrides = mergeVisualOverrides(fileConfiguration.overrides, previewOverrides);
+    const isPersonalPreset = personalPresetNameFromKey(activePreset) !== null;
+    const preset = isPersonalPreset ? 'balanced' : activePreset;
+    const overrides = isPersonalPreset
+      ? clone(previewSettings)
+      : mergeVisualOverrides(fileConfiguration.overrides, previewOverrides);
     const source = createVisualSettingsModuleSource({
-      defaults: fileConfiguration.defaults, preset: activePreset, overrides,
+      defaults: fileConfiguration.defaults, preset, overrides,
     });
     const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
     const link = createElement(document, 'a');
@@ -485,12 +729,16 @@ export function createVisualSettingsPanel({
     setStatus('Preview kept. Automatic application is suspended for this file version.');
   });
   syncControls(fileConfiguration.settings);
+  if (presetStorageError) {
+    setStatus(`Personal presets are unavailable: ${presetStorageError}`);
+  }
   return {
     reload: reloadFile,
     get state() {
       return {
         preset: activePreset,
         overrides: clone(previewOverrides),
+        personalPresets: clone(personalPresets),
         dirty: isDirty(),
         fileSignature: fileConfiguration.signature,
       };

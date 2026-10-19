@@ -1,12 +1,15 @@
 import { resolveVisualSettings } from './visual-config.mjs';
 
-// Visual-only browser settings: edit values, save, then refresh the page.
+// Visual-only browser settings: edit values, save, then reload from the panel.
 // Values below ARE the defaults (all environments); ranges are useful tuning
 // suggestions, not clamps. Use finite numbers (nonnegative unless signed below) and integer hop/count
 // values. No sliders, storage, server configuration or activity semantics here.
-// Palette authority: activity-colors.mjs. Geometry/pool capacities: main.js CFG.
+// nodes.count rebuilds the network live; in-flight visual pulses are cleared.
+// Palette authority: activity-colors.mjs. Other geometry/pool capacities: main.js CFG.
 // Colors below are decorative, not activity categories. RGB arrays use linear
 // 0–1 channels; hex colors use Three.js's existing sRGB conversion.
+// The Visual settings panel uses sRGB colour pickers for both formats and
+// converts RGB arrays automatically; keep arrays linear when editing this file.
 // Camera positions/targets use signed world units. Frequencies use radians/second.
 export const VISUAL = {
 	camera: {
@@ -23,7 +26,8 @@ export const VISUAL = {
 	// NODES — point size, light output and how much excited nodes approach white.
 	// Size is perspective-scaled, so it also depends on camera distance and DPR.
 	nodes: {
-		scale: 95, // Default 95; point projection scale, try 50–150.
+		count: 4000, // Actual network nodes, integer 2–4000; rebuilds the network live.
+		scale: 120, // Default 95; point projection scale, try 50–150.
 		size: 1, // Default 1; multiplier on all base node sizes, try 0.5–2.
 		activeGrowth: 2.0, // Default 2; extra size per unit of node energy, try 0–4.
 		idleBrightness: 0.4, // Default 0.4; idle light before twinkle, try 0–1.
@@ -200,6 +204,7 @@ export const VISUAL = {
 	// Edge fade is exponential decay per second; larger means shorter afterglow.
 	scene: {
 		background: 0x020409, // Decorative sRGB hex color.
+		edgeVisibility: 'always', // 'always', 'active' (activity only), or 'hidden'; pulses unaffected.
 		categoryBrightness: 0.9, // Linear scene category light multiplier, try 0–2.
 		edgeBaseColor: [0.012, 0.04, 0.13], // Idle edge linear RGB.
 		edgeVariationMin: 0.45, // Minimum random idle edge brightness, try 0–1.

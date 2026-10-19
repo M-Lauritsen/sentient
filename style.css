@@ -118,7 +118,7 @@ html, body {
 .visual-settings-dialog::backdrop { background: rgba(0, 2, 8, 0.78); }
 .visual-settings-dialog .stats-dialog-header { margin-bottom: 14px; }
 .visual-settings-dialog form { display: flex; flex-direction: column; max-height: calc(88vh - 64px); }
-.visual-settings-toolbar, .visual-settings-actions {
+.visual-settings-toolbar, .visual-settings-personal-presets, .visual-settings-actions {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -151,6 +151,95 @@ html, body {
   outline-offset: 2px;
 }
 .visual-settings-toolbar label { display: flex; align-items: center; gap: 7px; }
+.visual-settings-personal-presets label { color: #8eadd8; }
+.visual-settings-personal-presets input { min-width: 120px; }
+.visual-settings-dialog button:disabled { cursor: not-allowed; opacity: 0.55; }
+
+/* Library is an opaque reading surface: no HUD casing, scanlines or glow. */
+.library-dialog {
+  box-sizing: border-box;
+  width: min(1200px, 94vw);
+  max-width: 94vw;
+  max-height: 90dvh;
+  padding: 18px;
+  overflow: auto;
+  border: 1px solid var(--blue);
+  background: #030812;
+  color: var(--text);
+  font: 1rem/1.5 Consolas, "Liberation Mono", monospace;
+  text-transform: none;
+  letter-spacing: normal;
+  overflow-wrap: anywhere;
+  color-scheme: dark;
+}
+.library-dialog::backdrop { background: rgba(0, 2, 8, 0.78); }
+.library-dialog [hidden] { display: none !important; }
+.library-dialog *, .library-dialog *::before, .library-dialog *::after { box-sizing: border-box; }
+.library-dialog h2, .library-dialog h3 { color: #d8e7ff; line-height: 1.5; }
+.library-header, .library-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.library-header { justify-content: space-between; }
+.library-header h2 { margin: 0; }
+.library-dialog button, .library-dialog input, .library-dialog select {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 32px;
+  border: 1px solid var(--blue);
+  border-radius: 2px;
+  background: #071121;
+  color: #d8e7ff;
+  padding: 6px 8px;
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.library-dialog button { cursor: pointer; white-space: normal; overflow-wrap: anywhere; }
+.library-dialog button:disabled { cursor: not-allowed; color: #9caec8; border-style: dashed; }
+.library-dialog button[aria-pressed="true"] { border: 2px solid var(--orange); font-weight: bold; }
+.library-dialog button[aria-pressed="true"]::before { content: "Selected · "; }
+.library-open:focus-visible, .library-dialog :focus-visible {
+  outline: 2px solid var(--blue); outline-offset: 2px;
+}
+.library-browser { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 20px; margin-top: 16px; }
+.library-browser > * { min-width: 0; }
+#library-navigation, .library-detail { max-height: 55dvh; overflow: auto; padding: 6px; scroll-padding: 8px; }
+#library-navigation select, #library-add-form > input, #library-add-form > select { display: block; width: 100%; margin: 6px 0 12px; }
+#library-files { list-style: none; margin: 12px 0; padding: 0; }
+#library-files li { margin-bottom: 8px; }
+#library-files button { width: 100%; text-align: left; }
+.library-detail { border: 1px solid var(--blue); }
+#library-back { display: none; }
+#library-error, #library-form-error { color: #ff9b8d; }
+#library-warnings, #library-detail-warnings { color: #ffc28a; }
+#library-add-form, #library-remove-confirmation { border: 1px solid var(--blue); padding: 12px; margin-top: 12px; }
+.library-confirm { display: flex; gap: 10px; align-items: center; }
+.library-dialog a { color: #9fc3ff; text-decoration: underline; }
+#library-content { color: #d8e7ff; text-shadow: none; }
+#library-content :is(pre, code) { font: inherit; }
+#library-content pre { white-space: pre; margin: 0; }
+#library-content table { border-collapse: collapse; }
+#library-content :is(td, th) { padding: 6px; border: 1px solid var(--blue); }
+#library-content dd { margin-inline-start: 1rem; }
+.library-scroll-region { max-width: 100%; overflow: auto; margin-block: 12px; padding: 4px; }
+@media (max-width: 700px) {
+  .library-dialog { width: 94vw; padding: 12px; }
+  .library-browser { grid-template-columns: minmax(0, 1fr); }
+  #library-navigation, .library-detail { max-height: none; overflow: visible; }
+  .library-detail { display: none; }
+  .library-document-open #library-navigation { display: none; }
+  .library-document-open .library-detail { display: block; }
+  #library-back { display: inline-block; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .library-dialog *, .library-open { animation: none; transition: none; scroll-behavior: auto; }
+}
+@media (forced-colors: active) {
+  .library-dialog, .library-dialog :is(button, input, select), .library-detail {
+    background: Canvas; color: CanvasText; border-color: ButtonText; box-shadow: none;
+  }
+  .library-dialog :focus-visible { outline-color: Highlight; }
+  .library-dialog button[aria-pressed="true"] { border-color: Highlight; }
+  .library-dialog a { color: LinkText; }
+}
 .visual-auto-reload input { accent-color: var(--blue); }
 #visual-settings-help { margin: 8px 0 4px; color: #8eadd8; text-transform: none; letter-spacing: 0; }
 #visual-settings-status { margin: 8px 0; text-transform: none; letter-spacing: 0; }

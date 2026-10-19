@@ -8,12 +8,41 @@ or change Copilot settings.
 
 ## Run
 
-Requires Node.js 22 or newer.
+Requires Node.js 22 or newer. The optional Copilot Library additionally requires
+x64 Windows and the verified local fixed-NTFS safety boundary described below.
 
 ```powershell
 npm install
 npm start
 ```
+
+For **Library support on supported x64 Windows**, install dependencies first,
+then run these opt-in builds **before** `npm start`:
+
+```powershell
+npm run build:library-helper
+npm run build:library-renderer
+```
+
+The two Library builds are explicit, not install/start hooks. The helper build
+uses the existing Windows .NET Framework 4.x x64 compiler; it does not install
+an SDK or change execution policy. Stop your own Library-using server before
+rebuilding its executable: Windows will refuse to overwrite an in-use helper.
+Do not stop an unrelated process to unblock a build.
+
+**Source alone is not a Library distribution.** Build and package the ignored
+`native/bin/LibraryHelper.exe` and
+`copilot/generated/library-markdown-worker.mjs` at those relative locations,
+alongside the app and its locally served dependencies/licenses. Build the worker
+with development dependencies installed (`npm ci --include=dev` for a lockfile
+installation); esbuild is build-only, not a browser download. The worker bundles
+marked 15.0.12 (MIT) and yaml 2.8.3 (ISC); the app serves their licenses locally.
+`node scripts/build-library-renderer.mjs --check` checks generated-worker
+freshness. See [native build/distribution details](native/README.md) and
+[`scripts/build-library-renderer.mjs`](scripts/build-library-renderer.mjs).
+There is no runtime helper compilation, parser download or CDN fallback.
+On an unsupported platform, ordinary activity can run without the Windows
+helper build; Library support must not be inferred from activity availability.
 
 Open <http://127.0.0.1:43187/>. Stop with Ctrl+C. If the port is already in use,
 the server fails closed; it does not choose another port or bind to the network.
@@ -91,11 +120,15 @@ internal and can change.
 
 Open **Visual settings** in the HUD to preview the `balanced`, `subtle` or
 `intense` preset and edit any in-scope setting. Valid edits apply to the running
-scene; invalid or incomplete values do not. **Reset preview** returns to the
+scene, including node count; invalid or incomplete values do not. **Reset preview** returns to the
 last loaded file configuration. Changes remain temporary until **Export
 settings** downloads a replacement `visual-settings.mjs` and you save it over
-the source file. The page never writes that file or stores overrides in browser
-storage.
+the source file. Create personal presets from the current preview, select them
+later, save edits, or delete them. Personal preset definitions are stored only
+in this browser's local storage for this site; they are not written to
+`visual-settings.mjs`, shared with other browsers, or sent to the server.
+Clearing this site's browser data removes them. Preview changes remain temporary
+until exported and saved to the source file.
 
 Use **Reload from file** to read the current repository-authored
 `visual-settings.mjs` without refreshing the page. Automatic reload is optional,
@@ -114,7 +147,7 @@ All 3D appearance and animation tuning lives in these sections:
 | Section | Controls |
 | --- | --- |
 | `camera` | Field of view, initial position, orbit center, damping, zoom limits and automatic rotation |
-| `nodes` | Base sizes, brightness, colors, twinkle, whitening, excitation cap and decay |
+| `nodes` | Live network count; base sizes, brightness, colors, twinkle, whitening, excitation cap and decay |
 | `pulses` | Head/trail appearance, speed, arrival energy and ordinary edge light |
 | `running` | Per-session background rate, session cap, hops, spread and seed energy |
 | `activity` | Grouped-burst intensity cap, spread, hops, seed energy and heat |
@@ -123,7 +156,7 @@ All 3D appearance and animation tuning lives in these sections:
 | `dust` | Point appearance, twinkle and rotation/sway |
 | `floor` | Fine/coarse grid spacing, colors and ambient light pool |
 | `completion`, `impact` | Existing local cascades and duration-scaled bursts |
-| `scene` | Background, category light multiplier, idle edges, breathing, load response, bloom and glows |
+| `scene` | Background, category light multiplier, edge visibility/idle colour, breathing, load response, bloom and glows |
 | `effects` | Independent dust, floor, breathing, waiting glow/markers and subagent-transition switches |
 
 The shipped values preserve the existing appearance. Inline comments describe
@@ -131,7 +164,10 @@ units, constraints and suggested ranges. Ranges are guidance, not automatic
 clamps: use finite numbers, nonnegative except signed positions/rotation,
 integer hop/count values, positive durations/grid spacing/load divisors, and
 probabilities between 0 and 1. Decorative RGB arrays use linear 0–1 channels;
-hex colors use sRGB. Start with small edits and preview to compare.
+hex colors use sRGB. All colour fields in the panel use an sRGB colour picker;
+linear RGB settings convert automatically for display and editing. Exports
+retain the existing arrays/hex-value formats, and untouched colours retain
+their original precision. Start with small edits and preview to compare.
 `running.pulsesPerSecondPerSession` defaults to 6 and `running.maxSessions`
 defaults to 32. Raising the rate makes the background stream denser; the cap
 limits how many running sessions multiply that rate. Setting either to 0
@@ -140,11 +176,28 @@ The shipped defaults preserve the current tuning, including completion head
 size **3.0**, active node growth **2.0**, and bright local completion branching
 without shockwaves, camera shake, ripples or completion-triggered global flashes.
 
-Category colors remain in **`activity-colors.mjs`**. Structural geometry and
+`nodes.count` sets the **actual network size**, not a visible-point filter.
+It accepts integers **2–4000**; higher counts cost more
+rebuild work because each node searches the network for nearest neighbours.
+Count changes from panel edits, personal presets, reset, or file reload rebuild
+nodes, connections and adjacency immediately, without reloading the application.
+The rebuild clears in-flight visual pulses and node/edge excitation, re-anchors
+session branches and waiting markers, and releases the old network geometry.
+The activity connection, feed, timeline history and statistics are preserved.
+An invalid value or failed rebuild leaves the previous valid network active.
+
+`scene.edgeBaseColor` controls the idle connecting-line colour (linear RGB).
+`scene.edgeVisibility` supports `'always'` (default: idle lines plus activity),
+`'active'` (activity highlights and their afterglow only), and `'hidden'`
+(no connecting lines). Both controls preview live. Hiding lines does not remove
+connections or stop travelling pulses, node excitation, or separate subagent
+branches. Active highlights keep their activity-category colours.
+
+Category colors remain in **`activity-colors.mjs`**. Other structural geometry and
 fixed buffer capacities (including pulse/trail counts) remain in `main.js`'s
 `CFG`; they are deliberately not visual settings. Shader-facing settings are
 passed as uniforms, so tuning these values does not require editing GLSL.
-Topology, node/dust placement, branch geometry, floor mesh dimensions,
+Topology rules, node/dust placement, branch geometry, floor mesh dimensions,
 renderer resource limits, accessibility safeguards and HUD/CSS styling are
 also unchanged and remain outside this file. Numeric shader math constants
 (such as normalized point coordinates) are implementation details, not tuning.
@@ -155,10 +208,13 @@ totals and timeline history; a full document refresh still resets them.
 ## Privacy and limitations
 
 SENTIENT OS reads `events.jsonl` files in local session folders without modifying
-them. It serves the UI on `127.0.0.1` and sends only bounded event metadata,
+them. It serves the UI on `127.0.0.1`. **The activity feed/SSE boundary** sends
+only bounded event metadata,
 aggregate statistics and opaque handles to the browser. It never forwards
 prompts, reasoning content, tool arguments or results, raw session IDs,
-agent descriptions, or file paths. Tool names may still reveal internal
+agent descriptions, or file paths through activity. The separate, intentional
+Library viewing exception below is not an anonymized activity projection.
+Tool names may still reveal internal
 integrations, so inspect them before sharing screenshots.
 
 This is an integration with local journal files, not a supported subscription
@@ -174,12 +230,165 @@ Existing history alone is not proof that a session is still running.
 The server accepts no activity-writing requests and stores no history.
 Do not expose it through a LAN binding, tunnel, or public proxy.
 
+## Copilot Library · intentional read-only viewing
+
+Open **Library** in the HUD to browse local Markdown. It is a viewer of files,
+**not active, installed or effective Copilot configuration**. Nothing runs:
+agent instructions, skill code, commands and metadata such as `tools`, `model`
+or `applyTo` remain inert text. Opening the dialog does not select a document
+automatically. The existing scene, feed, palette, timeline, statistics and visual
+settings remain separate; Library errors do not stop activity/SSE.
+
+### Scope and privacy exception
+
+The default **Default Copilot** source is the server user's
+`%USERPROFILE%\.copilot`. It is implicit and cannot be unregistered. Missing or
+unsafe sources show a state/warning rather than being silently removed.
+**Add folder** requires deliberate path entry, mode selection and confirmation:
+
+- **Copilot root:** inspect only that root's immediate `agents`, `skills` and
+  `instructions` directories, not the rest of the root.
+- **Category folder:** treat the chosen folder itself as Agents, Skills or
+  Instructions; its name need not match the category.
+
+Only case-insensitive `.md` regular files are included. Agents and instructions
+recurse within their category. Each `SKILL.md` starts a skill; Markdown below
+it is support material belonging to the nearest ancestor skill. Nested skills
+start their own scope; Markdown without an ancestor skill appears as an
+unassociated skill document. Non-Markdown assets/executables are excluded.
+`session-state`, `.git`, `node_modules`, directory links/reparse targets and
+unsafe files are not scanned. Paths containing a `session-state` segment cannot
+be registered. Canonical duplicates and overlapping registrations are rejected,
+including registering a category underneath the default source.
+
+**This is a scoped privacy exception:** discovery reads eligible document bytes
+to derive bounded titles/descriptions and lists category-relative paths. Selecting
+a document intentionally sends its original Markdown/front matter to this
+browser's Library pane. These may contain sensitive text or paths: they are
+**not anonymized**. Titles prefer metadata `name`, then `title`, then the first
+H1, then the basename (200 display characters); descriptions are bounded to 500
+characters with shortening indicated. Saved absolute root paths are not restored
+into the UI or included in normal API responses; only the path you deliberately
+type into Add folder is displayed, then cleared on success/cancel/close.
+
+Library content, metadata and registration settings are not added to activity,
+SSE, metrics, logs, browser storage or exports. No Markdown/metadata/snapshot
+cache is persisted. Do not copy them into screenshots, publication artifacts or
+shared recordings; deliberate viewing is not permission to publish. The only
+Library write exception is SENTIENT-owned registration settings and their
+protected atomic-write/concurrency artifacts, never Copilot sources or journals.
+
+### Reading, limits and refresh
+
+Valid restricted YAML front matter, including unknown fields and nested inert
+values, appears in **Metadata** above the body. Aliases, anchors, custom tags,
+merge keys and duplicate keys are rejected. Malformed metadata shows a warning
+and escaped source; an unclosed/oversized prefix retains bounded escaped source
+rather than pretending it parsed successfully. Common Markdown and code are
+readable but never executable. Raw HTML, images/media and embeds stay inert.
+No remote resources/previews are fetched. Only pane-local heading fragments and
+mapped links to already-discovered, revalidated Markdown in the same registered
+category are interactive. External URLs, absolute paths, `file:` links and
+unmapped/unsafe targets remain text; links cannot browse arbitrary files.
+
+The first open scans; later opens reuse the process snapshot and its timestamp.
+There are **no watchers or automatic refreshes**. Use **Refresh** after changing
+files: it scans registered sources, replaces IDs and clears detail so you select
+again. Pending/failed refresh keeps prior results visibly stale; changed,
+missing, unsafe or expired detail cannot be treated as current and offers refresh.
+Add/remove also replace the snapshot. Counts are files **shown**, not a promise
+that every file was found; partial/error states and limit reasons remain visible.
+
+Current default bounds:
+
+| Resource | Limit |
+|---|---|
+| Registrations | 16 additional sources plus the default |
+| Input/settings | Path 1,024 UTF-16 units; request 8 KiB; settings 64 KiB |
+| Scan | Depth 12 below category; 10,000 visited entries/source; 2,000 documents total |
+| Scan time/work | 5 s/source, 15 s/request; one scan/mutation and at most two active detail requests/process |
+| Document/responses | 256 KiB UTF-8/document, 512 KiB detail JSON, 2 MiB snapshot JSON |
+| Metadata/rendering | 16 KiB front matter, depth 32, 1,000 metadata nodes, 20,000 render-work nodes; 250 ms parse/render work budget |
+
+Oversized documents are rejected whole, not parsed from cut-off bytes. Invalid
+UTF-8, NUL/binary content, permission failures and budget exhaustion can leave
+partial results while other safe sources remain usable. Busy/time-limited work
+is bounded and may need retry; a successful partial scan is not a complete scan.
+
+### Settings, confidentiality and recovery
+
+Additional registrations persist across server restarts in
+`%LOCALAPPDATA%\SENTIENT\library\settings.json` (schema version 1). They contain
+canonical absolute paths, registration modes/categories and an opaque revision.
+The default source is not stored. Document bytes, metadata, tokens, snapshot
+IDs, labels and timestamps are not saved there. Absolute registrations are
+sensitive. Dedicated settings directories/files, stable lock and private atomic
+temporary files require verified current-user/SYSTEM access; administrators,
+backups and compromised same-user applications are outside that boundary.
+Settings are not served as static files. If the trusted app-data location or
+permissions cannot be verified, there is no repository/home fallback.
+
+Missing settings mean no additional registrations. Corrupt, unsupported or
+unsafe settings are **preserved**, not silently reset; safe default viewing may
+remain available while registration mutations are disabled. Valid registrations
+can remain readable when a write fails. Missing/changed saved sources stay
+registered with an error. Repair settings/permissions externally, with the
+server stopped, then restart. Do not assume a failed or timed-out mutation was
+saved: after an ambiguous acknowledgement, restart and inspect the resulting
+registration list before trying again.
+
+Writes are atomic and revision-protected across processes. If another instance
+changes settings, a conflict requires restart/reload guidance rather than
+overwriting it; Refresh is not a conflict-reset mechanism. Restart revalidates
+saved roots and makes a new snapshot on first Library open. There is no
+destructive Reset button. **Remove folder means unregister only**, requires
+confirmation, and never deletes or edits the source directory or its files.
+
+Library safety is currently supported only on x64 Windows with the maintained
+native helper and a local fixed NTFS volume with a real drive mapping. Network,
+removable, SUBST/unsupported mappings, reparse points/junctions and hard-linked
+documents are refused. Complete opened-handle ancestor/identity checks and
+content digests are revalidated at detail read. Missing/incompatible helpers or
+unprovable containment/ACL/race safety fail closed for affected sources/settings,
+not into a best-effort path reader. A successful activity connection does not
+certify Library safety.
+
+### Rollback without deleting user data
+
+There is no runtime Library-disable switch. For a code rollback, stop the server
+and Library work, remove/disable the Library trigger and its initialization,
+routes and new asset/module mappings as a coordinated change, then restart the
+original activity application. Preserve source files, journals, scene/activity
+code and visual settings; ignore the versioned Library settings instead of
+auto-deleting or resetting them. Unregistering sources is not required for
+rollback. If you explicitly choose to remove SENTIENT's local Library settings,
+stop all of your Library-using instances first, review/back up that sensitive
+settings location privately, and remove only its dedicated Library settings/
+artifacts yourself—not source roots, journals or visual settings. No automatic
+wildcard cleanup is performed; a crash may leave a protected temporary artifact.
+
+Release acceptance is not implied by this documentation. Run the synthetic
+tests and sharing checks below; unresolved test/publication/build or manual
+acceptance items block a release claim.
+
 ## Contributing and sharing
 
 Run `npm test` and `npm run check:publication` before sharing changes. Use
 synthetic activity fixtures only; never share private journals, session
 screenshots, prompts, commands, outputs, credentials, or machine-specific
 paths. Review tool names in screenshots because they may reveal integrations.
+Library document text, metadata and saved registration paths are also sensitive;
+do not include real ones in a test, screenshot, log or release archive.
+
+Library acceptance uses `node tests/helpers/library-preview.mjs`, **not**
+`npm start` or an existing user's server. It prints its own ephemeral loopback
+URL and synthetic Add-folder path, explicitly isolates journals/default roots/
+settings, and keeps that disposable fixture through the terminal `restart`
+command. Open only that printed URL; close with Ctrl+C to stop and clean its
+exact fixture. Automated regression coverage is in
+`tests/library-regressions.test.mjs`; its dormant/unavailable-Library seam tests
+original HTTP/SSE availability and preserved bytes, not an automatic code rollback
+or a substitute for manual keyboard, screen-reader, zoom/reflow and contrast checks.
 
 The publication check is a useful filter, not a guarantee: it does not inspect
 Git history or every binary/archive. Review `git status --short`, the staged

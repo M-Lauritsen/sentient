@@ -13,11 +13,11 @@ import { VISUAL as VISUAL_DEFAULTS, VISUAL_PRESET, VISUAL_OVERRIDES,
   EFFECTIVE_VISUAL as VISUAL } from './visual-settings.mjs';
 import { validateVisualSettings } from './visual-config.mjs';
 import { createVisualSettingsPanel } from './visual-settings-ui.mjs';
+import { createLibraryDialog } from './copilot-library-ui.mjs';
 
-// Structural geometry and fixed buffer capacities, not visual tuning.
+// Structural geometry and fixed buffer capacities; node count can rebuild the network.
 const CFG = {
   radius: 10,
-  nodes: 1200,
   neighbours: 3,
   maxEdgeLen: 4.5,
   dust: 4000,
@@ -62,6 +62,9 @@ controls.autoRotate = VISUAL.camera.autoRotate;
 controls.autoRotateSpeed = VISUAL.camera.autoRotateSpeed;
 controls.target.set(...VISUAL.camera.target);
 
+let libraryModalOpen = false;
+let controlsEnabledBeforeLibrary = true;
+
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight),
@@ -73,12 +76,12 @@ const brain = new THREE.Group();
 scene.add(brain);
 
 // ---------- nodes ----------
-const N = CFG.nodes;
-const nodePos = new Float32Array(N * 3);
-const nodeEnergy = new Float32Array(N);
-const nodeHot = new Float32Array(N);
-const nodeSize = new Float32Array(N);
-{
+function buildNetwork(settings) {
+  const N = settings.nodes.count;
+  const nodePos = new Float32Array(N * 3);
+  const nodeEnergy = new Float32Array(N);
+  const nodeHot = new Float32Array(N);
+  const nodeSize = new Float32Array(N);
   const golden = Math.PI * (3 - Math.sqrt(5));
   const dir = new THREE.Vector3();
   for (let i = 0; i < N; i++) {
@@ -92,18 +95,16 @@ const nodeSize = new Float32Array(N);
     dir.normalize();
     const shell = CFG.radius * (0.3 + 0.7 * Math.pow(Math.random(), 0.28));
     dir.multiplyScalar(shell).toArray(nodePos, i * 3);
-    nodeSize[i] = Math.random() < VISUAL.nodes.largeChance
-      ? VISUAL.nodes.largeSizeMin + Math.random() * VISUAL.nodes.largeSizeRange
-      : VISUAL.nodes.baseSizeMin + Math.random() * VISUAL.nodes.baseSizeRange;
+    nodeSize[i] = Math.random() < settings.nodes.largeChance
+      ? settings.nodes.largeSizeMin + Math.random() * settings.nodes.largeSizeRange
+      : settings.nodes.baseSizeMin + Math.random() * settings.nodes.baseSizeRange;
   }
-}
 
-// ---------- edges (k nearest neighbours) ----------
-const edgeA = [];
-const edgeB = [];
-const edgeLen = [];
-const adjacency = Array.from({ length: N }, () => []);
-{
+  // Edges connect the k nearest neighbours; always keep at least one link.
+  const edgeA = [];
+  const edgeB = [];
+  const edgeLen = [];
+  const adjacency = Array.from({ length: N }, () => []);
   const seen = new Set();
   const k = CFG.neighbours;
   const maxLen2 = CFG.maxEdgeLen * CFG.maxEdgeLen;
@@ -134,28 +135,48 @@ const adjacency = Array.from({ length: N }, () => []);
       adjacency[j].push(e);
     }
   }
-}
-const E = edgeA.length;
-const edgeR = new Float32Array(E);
-const edgeG = new Float32Array(E);
-const edgeBColor = new Float32Array(E);
-const edgeBase = new Float32Array(E);
-let maxNodeDegree = 0;
-for (let i = 0; i < N; i++) maxNodeDegree = Math.max(maxNodeDegree, adjacency[i].length);
-const fireEdges = new Int32Array(maxNodeDegree);
-
-const edgeGeo = new THREE.BufferGeometry();
-const edgePositions = new Float32Array(E * 6);
-const edgeColors = new Float32Array(E * 6);
-for (let e = 0; e < E; e++) {
-  for (let c = 0; c < 3; c++) {
-    edgePositions[e * 6 + c] = nodePos[edgeA[e] * 3 + c];
-    edgePositions[e * 6 + 3 + c] = nodePos[edgeB[e] * 3 + c];
+  const E = edgeA.length;
+  const edgeR = new Float32Array(E);
+  const edgeG = new Float32Array(E);
+  const edgeBColor = new Float32Array(E);
+  const edgeBase = new Float32Array(E);
+  let maxNodeDegree = 0;
+  for (let i = 0; i < N; i++) maxNodeDegree = Math.max(maxNodeDegree, adjacency[i].length);
+  const fireEdges = new Int32Array(maxNodeDegree);
+  const edgePositions = new Float32Array(E * 6);
+  const edgeColors = new Float32Array(E * 6);
+  for (let e = 0; e < E; e++) {
+    for (let c = 0; c < 3; c++) {
+      edgePositions[e * 6 + c] = nodePos[edgeA[e] * 3 + c];
+      edgePositions[e * 6 + 3 + c] = nodePos[edgeB[e] * 3 + c];
+    }
+    edgeBase[e] = settings.scene.edgeVariationMin + Math.random() * settings.scene.edgeVariationRange;
   }
-  edgeBase[e] = VISUAL.scene.edgeVariationMin + Math.random() * VISUAL.scene.edgeVariationRange;
+  let edgeGeo, nodeGeo;
+  try {
+    edgeGeo = new THREE.BufferGeometry();
+    edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgePositions, 3));
+    edgeGeo.setAttribute('color', new THREE.BufferAttribute(edgeColors, 3).setUsage(THREE.DynamicDrawUsage));
+    nodeGeo = new THREE.BufferGeometry();
+    nodeGeo.setAttribute('position', new THREE.BufferAttribute(nodePos, 3));
+    nodeGeo.setAttribute('aEnergy', new THREE.BufferAttribute(nodeEnergy, 1).setUsage(THREE.DynamicDrawUsage));
+    nodeGeo.setAttribute('aHot', new THREE.BufferAttribute(nodeHot, 1).setUsage(THREE.DynamicDrawUsage));
+    nodeGeo.setAttribute('aSize', new THREE.BufferAttribute(nodeSize, 1));
+  } catch (error) {
+    edgeGeo?.dispose();
+    nodeGeo?.dispose();
+    throw error;
+  }
+  return {
+    N, nodePos, nodeEnergy, nodeHot, nodeSize, E, edgeA, edgeB, edgeLen, adjacency,
+    edgeR, edgeG, edgeBColor, edgeBase, fireEdges, edgeColors, edgeGeo, nodeGeo,
+  };
 }
-edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgePositions, 3));
-edgeGeo.setAttribute('color', new THREE.BufferAttribute(edgeColors, 3).setUsage(THREE.DynamicDrawUsage));
+
+let {
+  N, nodePos, nodeEnergy, nodeHot, nodeSize, E, edgeA, edgeB, edgeLen, adjacency,
+  edgeR, edgeG, edgeBColor, edgeBase, fireEdges, edgeColors, edgeGeo, nodeGeo,
+} = buildNetwork(VISUAL);
 const edgeLines = new THREE.LineSegments(
   edgeGeo,
   new THREE.LineBasicMaterial({
@@ -166,13 +187,9 @@ const edgeLines = new THREE.LineSegments(
   })
 );
 brain.add(edgeLines);
+edgeLines.visible = VISUAL.scene.edgeVisibility !== 'hidden';
 
 // ---------- node points ----------
-const nodeGeo = new THREE.BufferGeometry();
-nodeGeo.setAttribute('position', new THREE.BufferAttribute(nodePos, 3));
-nodeGeo.setAttribute('aEnergy', new THREE.BufferAttribute(nodeEnergy, 1).setUsage(THREE.DynamicDrawUsage));
-nodeGeo.setAttribute('aHot', new THREE.BufferAttribute(nodeHot, 1).setUsage(THREE.DynamicDrawUsage));
-nodeGeo.setAttribute('aSize', new THREE.BufferAttribute(nodeSize, 1));
 const nodeMat = new THREE.ShaderMaterial({
   uniforms: {
     uScale: { value: VISUAL.nodes.scale * pixelRatio }, uTime: { value: 0 },
@@ -239,7 +256,35 @@ const nodeMat = new THREE.ShaderMaterial({
   blending: THREE.AdditiveBlending,
   depthWrite: false,
 });
-brain.add(new THREE.Points(nodeGeo, nodeMat));
+const nodePoints = new THREE.Points(nodeGeo, nodeMat);
+brain.add(nodePoints);
+
+function installNetwork(next) {
+  const previousNodeGeo = nodeGeo, previousEdgeGeo = edgeGeo;
+  ({
+    N, nodePos, nodeEnergy, nodeHot, nodeSize, E, edgeA, edgeB, edgeLen, adjacency,
+    edgeR, edgeG, edgeBColor, edgeBase, fireEdges, edgeColors, edgeGeo, nodeGeo,
+  } = next);
+  nodePoints.geometry = nodeGeo;
+  edgeLines.geometry = edgeGeo;
+  previousNodeGeo.dispose();
+  previousEdgeGeo.dispose();
+
+  // Old pulse endpoints refer to the previous graph, not observed activity.
+  pActive.fill(0);
+  pulseSize.fill(0);
+  pulseCol.fill(0);
+  pulsePos.fill(0);
+  pulseGeo.attributes.position.needsUpdate = true;
+  pulseGeo.attributes.aSize.needsUpdate = true;
+  pulseGeo.attributes.aColor.needsUpdate = true;
+  pCursor = 0;
+  activePulses = 0;
+  for (const session of subagentAnchors) session.anchorIndex = hashTreeSid(session.sid) % N;
+  for (const branch of [...activeSubagentBranches, ...fadingSubagentBranches]) {
+    branch.anchorIndex = hashTreeSid(branch.sessionSid) % N;
+  }
+}
 
 // ---------- dust ----------
 {
@@ -833,12 +878,13 @@ function writePulseBuffers() {
 }
 
 function writeEdgeColors(dt) {
+  edgeLines.visible = VISUAL.scene.edgeVisibility !== 'hidden';
   const decay = Math.exp(-dt * VISUAL.scene.edgeFade);
   for (let e = 0; e < E; e++) {
     edgeR[e] *= decay;
     edgeG[e] *= decay;
     edgeBColor[e] *= decay;
-    const b = edgeBase[e];
+    const b = VISUAL.scene.edgeVisibility === 'always' ? edgeBase[e] : 0;
     const r = VISUAL.scene.edgeBaseColor[0] * b + edgeR[e];
     const g = VISUAL.scene.edgeBaseColor[1] * b + edgeG[e];
     const bl = VISUAL.scene.edgeBaseColor[2] * b + edgeBColor[e];
@@ -1336,7 +1382,7 @@ function frame() {
     tickSessionTimes(performance.now());
   }
 
-  controls.update();
+  if (!libraryModalOpen) controls.update();
   composer.render();
   requestAnimationFrame(frame);
 }
@@ -1355,25 +1401,33 @@ function applyVisualSettings(candidate) {
   if (errors.length) throw new Error(errors.map(({ path, message }) => `${path}: ${message}`).join(' '));
 
   const previous = structuredClone(VISUAL);
+  const topologyChanged = candidate.nodes.count !== N;
   const changed = (path) =>
     JSON.stringify(path.split('.').reduce((value, key) => value[key], previous)) !==
     JSON.stringify(path.split('.').reduce((value, key) => value[key], candidate));
   const nextSceneRgb = Float32Array.from(CATEGORY_RGB, (channel) =>
     candidate.scene.categoryBrightness *
       (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
-  const nextNodeSize = changed('nodes.largeChance') || changed('nodes.largeSizeMin') ||
-    changed('nodes.largeSizeRange') || changed('nodes.baseSizeMin') || changed('nodes.baseSizeRange')
+  const nextNodeSize = !topologyChanged && (changed('nodes.largeChance') || changed('nodes.largeSizeMin') ||
+    changed('nodes.largeSizeRange') || changed('nodes.baseSizeMin') || changed('nodes.baseSizeRange'))
     ? Float32Array.from({ length: N }, () => Math.random() < candidate.nodes.largeChance
       ? candidate.nodes.largeSizeMin + Math.random() * candidate.nodes.largeSizeRange
       : candidate.nodes.baseSizeMin + Math.random() * candidate.nodes.baseSizeRange)
     : null;
-  const nextEdgeBase = changed('scene.edgeVariationMin') || changed('scene.edgeVariationRange')
+  const nextEdgeBase = !topologyChanged && (changed('scene.edgeVariationMin') || changed('scene.edgeVariationRange'))
     ? Float32Array.from({ length: E }, () =>
       candidate.scene.edgeVariationMin + Math.random() * candidate.scene.edgeVariationRange)
     : null;
   const nextGlowTexture = changed('scene.glowKnee') || changed('scene.glowKneeOpacity')
     ? radialTexture(candidate) : null;
   const nextBackground = changed('scene.background') ? new THREE.Color(candidate.scene.background) : null;
+  let nextNetwork;
+  try {
+    nextNetwork = topologyChanged ? buildNetwork(candidate) : null;
+  } catch (error) {
+    nextGlowTexture?.dispose();
+    throw error;
+  }
 
   if (changed('camera.fov')) camera.fov = candidate.camera.fov;
   if (changed('camera.position')) camera.position.set(...candidate.camera.position);
@@ -1391,12 +1445,14 @@ function applyVisualSettings(candidate) {
     }
   }
 
+  if (nextNetwork) installNetwork(nextNetwork);
   if (nextBackground) scene.background = nextBackground;
   if (nextNodeSize) {
     nodeSize.set(nextNodeSize);
     nodeGeo.attributes.aSize.needsUpdate = true;
   }
   if (nextEdgeBase) edgeBase.set(nextEdgeBase);
+  edgeLines.visible = VISUAL.scene.edgeVisibility !== 'hidden';
   SCENE_RGB.set(nextSceneRgb);
 
   const nodeUniforms = nodeMat.uniforms;
@@ -1485,7 +1541,7 @@ function applyVisualSettings(candidate) {
   bloom.threshold = VISUAL.scene.bloomThreshold;
   renderWaitingMarkers(activityState.connection === 'connected' && activityState.sourceStatus !== 'unavailable'
     ? activityState.waitingSessionIds : []);
-  controls.update();
+  if (!libraryModalOpen) controls.update();
   return true;
 }
 
@@ -1506,6 +1562,10 @@ createVisualSettingsPanel({
   exportButton: document.getElementById('visual-settings-export'),
   reloadButton: document.getElementById('visual-settings-reload'),
   autoReloadInput: document.getElementById('visual-settings-auto-reload'),
+  presetNameInput: document.getElementById('visual-settings-preset-name'),
+  saveAsPresetButton: document.getElementById('visual-settings-preset-save-as'),
+  savePresetButton: document.getElementById('visual-settings-preset-save'),
+  deletePresetButton: document.getElementById('visual-settings-preset-delete'),
   initialConfiguration: {
     defaults: VISUAL_DEFAULTS,
     preset: VISUAL_PRESET,
@@ -1513,6 +1573,19 @@ createVisualSettingsPanel({
     settings: VISUAL,
   },
   applySettings: applyVisualSettings,
+});
+
+createLibraryDialog({
+  document,
+  onModalChange(open) {
+    libraryModalOpen = open;
+    if (open) {
+      controlsEnabledBeforeLibrary = controls.enabled;
+      controls.enabled = false;
+    } else {
+      controls.enabled = controlsEnabledBeforeLibrary;
+    }
+  },
 });
 
 frame();

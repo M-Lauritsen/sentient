@@ -272,6 +272,18 @@ test('page identity is SENTIENT OS in the browser title and visible heading', ()
   assert.match(html, /<h1 class="title">SENTIENT OS<\/h1>/);
 });
 
+test('personal visual preset controls are labelled, wired, and storage is disclosed', () => {
+  assert.match(html, /aria-label="Personal visual presets"/);
+  assert.match(html, /id="visual-settings-preset-name"/);
+  assert.match(html, /id="visual-settings-preset-save-as"/);
+  assert.match(html, /id="visual-settings-preset-save"/);
+  assert.match(html, /id="visual-settings-preset-delete"/);
+  assert.match(main, /saveAsPresetButton: document\.getElementById\('visual-settings-preset-save-as'\)/);
+  assert.match(main, /savePresetButton: document\.getElementById\('visual-settings-preset-save'\)/);
+  assert.match(main, /deletePresetButton: document\.getElementById\('visual-settings-preset-delete'\)/);
+  assert.match(html, /stored in this browser/);
+});
+
 test('live UI has no fabricated/demo activity controls or external dependency URL', () => {
   assert.doesNotMatch(html, /https?:\/\//);
   assert.doesNotMatch(html, /data-mode|Calm|Storm|click a node/i);
@@ -299,7 +311,7 @@ test('category activity and accepted completion preserve ordinary motion and hid
 });
 
 test('blue running stream follows observed running work and discloses unverified lingering', () => {
-  assert.match(html, /RUNNING <b id="running">/);
+  assert.match(html, /RUNNING\s+<b\s+id="running">/);
   assert.match(main, /Math\.min\(activityState\.runningSessions \?\? 0, VISUAL\.running\.maxSessions\)/);
   assert.match(main, /!\(state\.runningSessions > 0\)\) thinkingPulseClock\.reset\(\)/);
   assert.match(main, /RUNNING · UNVERIFIED/);
@@ -327,7 +339,7 @@ test('subagent trees use bounded preallocated scene buffers and reset safely', (
   assert.match(main, /updateSubagentSummary\(tree\.sessions\)/);
   assert.match(main, /activityState\.coverage === 'partial'/);
   assert.match(main, /activityState\.connection !== 'connected'/);
-  assert.match(html, /id="subagent-summary" role="status" aria-live="polite"/);
+  assert.match(html, /id="subagent-summary"\s+role="status"\s+aria-live="polite"/);
   assert.match(html, /Delegated work status unavailable until connected/);
   assert.match(css, /\.visually-hidden\s*\{[\s\S]*clip-path: inset\(50%\)/);
   const frame = main.slice(main.indexOf('function frame()'), main.indexOf("window.addEventListener('resize'"));
@@ -534,7 +546,7 @@ test('stats modal distinguishes colliding opaque handles and fails closed when i
 });
 
 test('waiting counter and scene affordances stay bounded and activity-free', () => {
-  assert.match(html, /WAITING <b id="waiting">0<\/b>/);
+  assert.match(html, /WAITING\s+<b\s+id="waiting">0<\/b>/);
   assert.doesNotMatch(html, /notify-control|notify-toggle|notify-status|Notify when waiting/);
   assert.doesNotMatch(main, /Notification|createWaitNotifier|sentient\.notify/);
   assert.match(main, /function renderWaitingMarkers\(sessionIds\)/);
@@ -576,6 +588,7 @@ test('pulse and RGB edge writers use category channels, preserve kind motion and
     otherEnd: () => 1,
     pulseGeo: { attributes: { position: {}, aColor: {}, aSize: {} } },
     edgeGeo: { attributes: { color: {} } },
+    edgeLines: { visible: true },
   });
   vm.runInContext([sceneFunction('updatePulses'), sceneFunction('writePulseBuffers'),
     sceneFunction('writeEdgeColors')].join('\n'), context);

@@ -18,3 +18,5 @@ events.jsonl
 events.*.jsonl
 *.bak
 *.backup
+native/bin/
+copilot/generated/

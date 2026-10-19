@@ -8,7 +8,7 @@ import vm from 'node:vm';
 import * as THREE from 'three';
 import { CATEGORY_INDEX, CATEGORY_RGB, CATEGORY_HEX } from '../activity-colors.mjs';
 import { createThinkingPulseClock, createImpulseBuffer, createCategoryBurstPlan,
-  impulseIntensity } from '../activity-client.mjs';
+  createActivityTimeline, impulseIntensity } from '../activity-client.mjs';
 import { createPageActivityTotals } from '../session-stats-ui.mjs';
 import { loadVisualConfiguration, startVisualApplication, validateVisualSettings,
   resolveVisualSettings, VISUAL_PRESETS, VISUAL_SETTING_DEFINITIONS,
@@ -29,6 +29,7 @@ class TestElement {
   open = false;
 
   append(...elements) { this.children.push(...elements); }
+  replaceChildren(...elements) { this.children = elements; }
   addEventListener(type, callback) {
     const callbacks = this.listeners.get(type) ?? [];
     callbacks.push(callback);
@@ -45,11 +46,14 @@ class TestElement {
   focus() {}
 }
 
-function makePanelHarness({ defaults, preset = 'balanced', overrides = {}, loadFile, scheduleTimer, cancelTimer }) {
+function makePanelHarness({
+  defaults, preset = 'balanced', overrides = {}, loadFile, scheduleTimer, cancelTimer,
+  storage = makeMemoryStorage(), applySettings = () => true,
+}) {
   const resolved = resolveVisualSettings(defaults, preset, overrides);
   const document = new TestElement();
   document.hidden = false;
-  document.createElement = () => new TestElement();
+  document.createElement = (tagName) => Object.assign(new TestElement(), { tagName });
   const groups = new Map();
   const fields = new TestElement();
   fields.querySelector = (selector) => {
@@ -63,15 +67,22 @@ function makePanelHarness({ defaults, preset = 'balanced', overrides = {}, loadF
   const elements = Object.fromEntries([
     'opener', 'dialog', 'form', 'presetSelect', 'status', 'errorSummary', 'conflict',
     'useFileButton', 'keepPreviewButton', 'closeButton', 'resetButton', 'exportButton',
-    'reloadButton', 'autoReloadInput',
+    'reloadButton', 'autoReloadInput', 'presetNameInput', 'saveAsPresetButton',
+    'savePresetButton', 'deletePresetButton',
   ].map((key) => [key, new TestElement()]));
   const applied = [];
   const options = {
     document,
     ...elements,
     fields,
+    getStorage: () => storage,
+    confirmAction: () => true,
     initialConfiguration: { defaults, preset, overrides, settings: resolved.settings },
-    applySettings: (value) => { applied.push(value); return true; },
+    applySettings: (value) => {
+      const accepted = applySettings(value);
+      if (accepted !== false) applied.push(value);
+      return accepted;
+    },
     loadFile,
     ...(scheduleTimer ? { scheduleTimer } : {}),
     ...(cancelTimer ? { cancelTimer } : {}),
@@ -84,9 +95,18 @@ function makePanelHarness({ defaults, preset = 'balanced', overrides = {}, loadF
       .find((child) => child.attributes.get('data-setting-path') === path);
     const descendants = (element) => [element, ...element.children.flatMap(descendants)];
     return descendants(wrapper).filter((element) => element.type === 'number' ||
-      element.type === 'checkbox' || element.type === 'color');
+      element.type === 'checkbox' || element.type === 'color' || element.tagName === 'select');
   };
   return { panel, document, elements, groups, applied, control };
+}
+
+function makeMemoryStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem(key) { return values.get(key) ?? null; },
+    setItem(key, value) { values.set(key, value); },
+    values,
+  };
 }
 
 function sceneFunction(name) {
@@ -94,6 +114,43 @@ function sceneFunction(name) {
   const end = /\r?\n}\r?\n/.exec(body);
   assert.ok(end, `${name} is extractable`);
   return body.slice(0, end.index + end[0].length);
+}
+
+function makeNetworkHarness(VISUAL) {
+  const context = vm.createContext({
+    VISUAL, THREE, CATEGORY_INDEX, CATEGORY_HEX, CATEGORY_RGB, validateVisualSettings, structuredClone,
+    SCENE_RGB: Float32Array.from(CATEGORY_RGB), pixelRatio: 1,
+    CFG: { radius: 10, neighbours: 3, maxEdgeLen: 4.5, dust: 2, maxPulses: 16, trail: 7 },
+    brain: new THREE.Group(), scene: new THREE.Scene(),
+    camera: new THREE.PerspectiveCamera(),
+    controls: { target: new THREE.Vector3(), update() {} }, bloom: {},
+    window: { matchMedia: () => ({ matches: false, addEventListener() {} }) },
+    performance: { now: () => 1000 },
+    Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
+    libraryModalOpen: false,
+    activityState: {
+      connection: 'connected', sourceStatus: 'available', coverage: 'complete',
+      waitingSessionIds: ['AAAA'], runningSessions: 1, sessions: [],
+    },
+    document: {
+      getElementById: () => ({}),
+      createElement: () => ({
+        getContext: () => ({
+          createRadialGradient: () => ({ addColorStop() {} }), fillRect() {},
+        }),
+      }),
+    },
+  });
+  vm.runInContext(main.slice(main.indexOf('// ---------- nodes ----------'),
+    main.indexOf('// ---------- HUD ----------')) +
+    sceneFunction('renderWaitingMarkers') + sceneFunction('applyVisualSettings') + `
+    globalThis.network = () => ({
+      N, E, nodePos, nodeEnergy, nodeHot, nodeSize, adjacency, edgeA, edgeB, edgeLen,
+      nodeGeo, nodePoints, edgeGeo, edgeLines, edgeBase, fireEdges, activePulses, pActive, pFrom, pEdge,
+      pulsePos, pulseCol, pulseSize, pulseGeo, waitingMarkerGroups,
+      subagentAnchors, activeSubagentBranches, fadingSubagentBranches,
+    });`, context);
+  return context;
 }
 
 test('visual settings characterize the latest tuned defaults, not structural capacities or palette', async () => {
@@ -105,7 +162,7 @@ test('visual settings characterize the latest tuned defaults, not structural cap
       minDistance: 14, maxDistance: 60, autoRotate: true, autoRotateSpeed: 0.35,
     },
     nodes: {
-      scale: 95, size: 1, activeGrowth: 2, idleBrightness: 0.4,
+      count: visual.nodes.count, scale: 95, size: 1, activeGrowth: 2, idleBrightness: 0.4,
       activeBrightness: 1.8, hotMix: 1.4, whiteThreshold: 0.7, whiteMix: 1,
       baseSizeMin: 0.6, baseSizeRange: 1, largeChance: 0.04,
       largeSizeMin: 2.6, largeSizeRange: 1, energyCap: 1.8, decay: 2,
@@ -167,7 +224,7 @@ test('visual settings characterize the latest tuned defaults, not structural cap
       seedHeat: 2, nodeEnergy: 0.7, edgeIntensity: 0.8, head: 2.6,
     },
     scene: {
-      background: 0x020409, categoryBrightness: 0.9,
+      background: 0x020409, edgeVisibility: 'always', categoryBrightness: 0.9,
       edgeBaseColor: [0.012, 0.04, 0.13], edgeVariationMin: 0.45, edgeVariationRange: 0.55,
       breathSpeed: 0.8, breathAmplitude: 0.012,
       loadPulseScale: 500, loadSessionScale: 64, loadSmoothing: 3,
@@ -199,6 +256,7 @@ test('visual settings validate all known paths and reject malformed values witho
     ['nodes.scale', (value) => { value.nodes.scale = Number.NaN; }],
     ['running.maxSessions', (value) => { value.running.maxSessions = 1.5; }],
     ['nodes.baseColor[2]', (value) => { value.nodes.baseColor = [0.1, 0.2, 1.5]; }],
+    ['scene.edgeBaseColor[0]', (value) => { value.scene.edgeBaseColor = [-0.1, 0.2, 0.3]; }],
     ['scene.background', (value) => { value.scene.background = 0x1000000; }],
     ['effects.floor', (value) => { value.effects.floor = 1; }],
     ['scene.bloomRadius', (value) => { value.scene.bloomRadius = 1.1; }],
@@ -219,6 +277,379 @@ test('visual settings validate all known paths and reject malformed values witho
     assert.ok(errors.some((error) => error.path === path), `${path} reports its exact setting path`);
   }
   assert.equal(defaults.nodes.scale, 95, 'validation does not mutate the active defaults');
+});
+
+test('network count and line modes validate exact boundaries without mutating defaults', async () => {
+  const defaults = await settings();
+  defaults.nodes.count = 1200;
+  assert.equal(defaults.nodes.count, 1200);
+  assert.equal(defaults.scene.edgeVisibility, 'always');
+  for (const count of [2, 4000]) {
+    const result = resolveVisualSettings(defaults, 'balanced', { nodes: { count } });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.settings.nodes.count, count);
+  }
+  for (const count of [0, 1, 4001, 2.5, Infinity, '1200']) {
+    const result = resolveVisualSettings(defaults, 'balanced', { nodes: { count } });
+    assert.equal(result.settings, null);
+    assert.ok(result.errors.some(({ path }) => path.endsWith('nodes.count')));
+  }
+  for (const edgeVisibility of ['always', 'active', 'hidden']) {
+    assert.deepEqual(resolveVisualSettings(defaults, 'balanced', {
+      scene: { edgeVisibility },
+    }).errors, []);
+  }
+  for (const edgeVisibility of ['sometimes', true, 1, null]) {
+    const result = resolveVisualSettings(defaults, 'balanced', { scene: { edgeVisibility } });
+    assert.equal(result.settings, null);
+    assert.ok(result.errors.some(({ path }) => path.endsWith('scene.edgeVisibility')));
+  }
+  assert.equal(defaults.nodes.count, 1200);
+});
+
+test('startup topology uses the requested count and produces valid connected endpoints', async () => {
+  for (const count of [2, 37, 4000]) {
+    const VISUAL = await settings();
+    VISUAL.nodes.count = count;
+    const context = vm.createContext({
+      VISUAL, THREE, CFG: { radius: 10, neighbours: 3, maxEdgeLen: 4.5 },
+      Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
+    });
+    vm.runInContext(sceneFunction('buildNetwork') + '\nglobalThis.result = buildNetwork(VISUAL);', context);
+    const result = context.result;
+    assert.equal(result.N, count);
+    assert.equal(result.nodePos.length, count * 3);
+    assert.equal(result.nodeEnergy.length, count);
+    assert.equal(result.adjacency.length, count);
+    assert.ok(result.adjacency.every((edges) => edges.length > 0));
+    assert.ok([...result.nodePos].every(Number.isFinite));
+    for (let edge = 0; edge < result.edgeA.length; edge++) {
+      const a = result.edgeA[edge], b = result.edgeB[edge];
+      assert.ok(a >= 0 && a < count && b >= 0 && b < count && a !== b);
+      assert.ok(result.adjacency[a].includes(edge) && result.adjacency[b].includes(edge));
+    }
+  }
+});
+
+test('live network rebuild changes actual topology, disposes old geometry, and preserves activity state', async () => {
+  const VISUAL = await settings();
+  VISUAL.nodes.count = 37;
+  const context = makeNetworkHarness(VISUAL);
+  const originalState = structuredClone(context.activityState);
+  context.pageActivityTotals = createPageActivityTotals();
+  context.pageActivityTotals.add({ kind: 'step', count: 3 });
+  context.timeline = createActivityTimeline(0);
+  context.timeline.setCoverage(true, 0);
+  context.timeline.add(context.pageActivityTotals.counts, 1000);
+  context.impulseBuffer = createImpulseBuffer();
+  context.impulseBuffer.add({ kind: 'step', count: 3 });
+  const originalTimeline = structuredClone(context.timeline.read(1000));
+  const originalTotals = Array.from(context.pageActivityTotals.counts);
+  vm.runInContext(`
+    const session = { sid: 'AAAA', status: 'running', anchorIndex: N - 1 };
+    subagentAnchors.push(session);
+    subagentAnchorBySid.set(session.sid, session);
+    addSubagentBranch(session, { sid: 'BBBB', ageMs: 5000 }, false);
+    addSubagentBranch(session, { sid: 'CCCC', ageMs: 3000 }, false);
+    retireSubagentBranch('AAAA', 'CCCC', 'completed', 1);
+    fireFrom(N - 1, 2, 0);
+    writePulseBuffers();
+  `, context);
+  const unchanged = context.network();
+  context.candidate = structuredClone(VISUAL);
+  vm.runInContext('applyVisualSettings(candidate)', context);
+  assert.equal(context.network().nodeGeo, unchanged.nodeGeo, 'unchanged count does not rebuild');
+  assert.equal(context.network().activePulses, unchanged.activePulses);
+  for (const count of [2, 4000, 37]) {
+    const before = context.network();
+    let nodesDisposed = 0, edgesDisposed = 0;
+    before.nodeGeo.addEventListener('dispose', () => nodesDisposed++);
+    before.edgeGeo.addEventListener('dispose', () => edgesDisposed++);
+    context.candidate = structuredClone(VISUAL);
+    context.candidate.nodes.count = count;
+    context.candidate.scene.edgeVisibility = 'active';
+    vm.runInContext('applyVisualSettings(candidate)', context);
+    const next = context.network();
+    assert.equal(next.N, count);
+    assert.equal(VISUAL.nodes.count, count);
+    assert.equal(next.nodeGeo.attributes.position.count, count);
+    assert.equal(next.nodeGeo.attributes.aEnergy.count, count);
+    assert.equal(next.nodeGeo.attributes.aHot.count, count);
+    assert.equal(next.nodeGeo.attributes.aSize.count, count);
+    assert.equal(next.edgeGeo.attributes.position.count, next.E * 2);
+    assert.equal(next.nodePoints.geometry, next.nodeGeo);
+    assert.equal(next.edgeLines.geometry, next.edgeGeo);
+    assert.equal(nodesDisposed, 1);
+    assert.equal(edgesDisposed, 1);
+    assert.equal(next.activePulses, 0);
+    assert.ok([...next.pActive, ...next.pulseSize, ...next.pulseCol].every((value) => value === 0));
+    assert.equal(next.subagentAnchors.length, 1);
+    assert.equal(next.activeSubagentBranches.length, 1);
+    assert.equal(next.fadingSubagentBranches.length, 1);
+    for (const branch of [...next.subagentAnchors, ...next.activeSubagentBranches,
+      ...next.fadingSubagentBranches]) {
+      assert.ok(branch.anchorIndex >= 0 && branch.anchorIndex < count);
+    }
+    assert.equal(next.activeSubagentBranches[0].startedAt, -4);
+    assert.deepEqual(context.activityState, originalState);
+    assert.deepEqual(context.timeline.read(1000), originalTimeline);
+    assert.deepEqual(Array.from(context.pageActivityTotals.counts), originalTotals);
+    vm.runInContext(`
+      renderSubagentTree(1);
+      fireFrom(N - 1, 2, 0);
+    `, context);
+    assert.ok(context.network().activePulses > 0);
+    vm.runInContext(`
+      updatePulses(0.1);
+      writePulseBuffers();
+      writeEdgeColors(0.1);
+    `, context);
+    assert.ok([...next.pulsePos, ...next.waitingMarkerGroups[0].position.toArray()].every(Number.isFinite));
+    for (let edge = 0; edge < next.E; edge++) {
+      assert.ok(next.edgeA[edge] < count && next.edgeB[edge] < count);
+      assert.ok(next.adjacency[next.edgeA[edge]].includes(edge));
+      assert.ok(next.adjacency[next.edgeB[edge]].includes(edge));
+    }
+    assert.ok(next.fireEdges.length >= Math.max(...next.adjacency.map((edges) => edges.length)));
+  }
+  assert.equal(context.impulseBuffer.drain().byCategory[CATEGORY_INDEX.tool], 3,
+    'pending observed activity is not discarded with visual pulses');
+});
+
+test('failed or invalid network rebuild keeps the previous network and settings intact', async () => {
+  const VISUAL = await settings();
+  VISUAL.nodes.count = 37;
+  const context = makeNetworkHarness(VISUAL);
+  const before = context.network();
+  context.candidate = structuredClone(VISUAL);
+  context.candidate.nodes.count = 1;
+  assert.throws(() => vm.runInContext('applyVisualSettings(candidate)', context), /nodes.count/);
+  assert.equal(context.network().nodeGeo, before.nodeGeo);
+  assert.equal(VISUAL.nodes.count, 37);
+
+  context.candidate.nodes.count = 60;
+  let discardedGeometries = 0;
+  context.THREE = {
+    ...THREE,
+    BufferGeometry: class extends THREE.BufferGeometry {
+      setAttribute() { throw new Error('Synthetic geometry allocation failure'); }
+      dispose() { discardedGeometries++; super.dispose(); }
+    },
+  };
+  assert.throws(() => vm.runInContext('applyVisualSettings(candidate)', context), /allocation failure/);
+  assert.equal(context.network().nodeGeo, before.nodeGeo);
+  assert.equal(context.network().edgeGeo, before.edgeGeo);
+  assert.equal(context.network().N, 37);
+  assert.equal(VISUAL.nodes.count, 37);
+  assert.equal(discardedGeometries, 1, 'partially built geometry is disposed');
+});
+
+test('line modes change rendered edges only and preserve decaying activity', async () => {
+  for (const mode of ['always', 'active', 'hidden']) {
+    const VISUAL = await settings();
+    VISUAL.scene.edgeVisibility = mode;
+    VISUAL.scene.edgeBaseColor = [0.2, 0.4, 0.6];
+    const context = vm.createContext({
+      VISUAL, Math, E: 2, edgeR: [1, 0], edgeG: [0.5, 0], edgeBColor: [0.25, 0],
+      edgeBase: [1, 1], edgeColors: new Float32Array(12),
+      edgeLines: { visible: true }, edgeGeo: { attributes: { color: {} } },
+    });
+    vm.runInContext(sceneFunction('writeEdgeColors') + '\nwriteEdgeColors(1)', context);
+    assert.equal(context.edgeLines.visible, mode !== 'hidden');
+    const decay = Math.exp(-VISUAL.scene.edgeFade);
+    assert.ok(Math.abs(context.edgeR[0] - decay) < 1e-6);
+    const idle = mode === 'always' ? 0.2 : 0;
+    assert.ok(Math.abs(context.edgeColors[0] - (decay + idle)) < 1e-6);
+    assert.ok(Math.abs(context.edgeColors[6] - idle) < 1e-6);
+  }
+});
+
+test('count preview, reload, reset and export apply count live without a page refresh', async (t) => {
+  const defaults = await settings();
+  defaults.nodes.count = 1200;
+  const harness = makePanelHarness({
+    defaults,
+    loadFile: async () => ({
+      defaults, preset: 'balanced', overrides: { nodes: { count: 800 } }, errors: [],
+    }),
+  });
+  const [count] = harness.control('nodes.count');
+  count.value = '600';
+  count.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).nodes.count, 600);
+  assert.equal(harness.panel.state.overrides.nodes.count, 600);
+  assert.doesNotMatch(harness.elements.status.textContent, /refresh/i);
+  const [mode] = harness.control('scene.edgeVisibility');
+  mode.value = 'hidden';
+  mode.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).scene.edgeVisibility, 'hidden');
+  assert.equal(harness.applied.at(-1).nodes.count, 600);
+  let exportedBlob;
+  t.mock.method(URL, 'createObjectURL', (blob) => { exportedBlob = blob; return 'blob:synthetic'; });
+  harness.elements.exportButton.click();
+  const exported = await exportedBlob.text();
+  assert.match(exported, /"count": 600/);
+  assert.match(exported, /"edgeVisibility": "hidden"/);
+  assert.doesNotMatch(harness.elements.status.textContent, /refresh/i);
+  harness.elements.resetButton.click();
+  assert.equal(harness.applied.at(-1).nodes.count, 1200);
+  assert.doesNotMatch(harness.elements.status.textContent, /refresh/i);
+  await harness.panel.reload();
+  assert.equal(count.value, '800');
+  assert.equal(harness.applied.at(-1).nodes.count, 800);
+  assert.doesNotMatch(harness.elements.status.textContent, /refresh/i);
+  harness.elements.resetButton.click();
+  assert.equal(harness.applied.at(-1).nodes.count, 800);
+  assert.doesNotMatch(harness.elements.status.textContent, /refresh/i);
+});
+
+test('selecting personal presets applies saved node counts live', async () => {
+  const defaults = await settings();
+  defaults.nodes.count = 37;
+  const context = makeNetworkHarness(structuredClone(defaults));
+  const harness = makePanelHarness({
+    defaults,
+    applySettings(candidate) {
+      context.candidate = candidate;
+      return vm.runInContext('applyVisualSettings(candidate)', context);
+    },
+  });
+  const [count] = harness.control('nodes.count');
+  count.value = '60';
+  count.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.elements.presetNameInput.value = 'Sixty nodes';
+  harness.elements.saveAsPresetButton.click();
+  harness.elements.resetButton.click();
+  assert.equal(harness.applied.at(-1).nodes.count, 37);
+  assert.equal(context.network().N, 37);
+  harness.elements.presetSelect.value = 'user:Sixty nodes';
+  harness.elements.presetSelect.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).nodes.count, 60);
+  assert.equal(context.network().N, 60);
+  assert.doesNotMatch(harness.elements.status.textContent, /refresh/i);
+});
+
+test('panel reports a failed live rebuild and can recover without discarding the active network', async () => {
+  const defaults = await settings();
+  defaults.nodes.count = 37;
+  const context = makeNetworkHarness(structuredClone(defaults));
+  const harness = makePanelHarness({
+    defaults,
+    applySettings(candidate) {
+      context.candidate = candidate;
+      return vm.runInContext('applyVisualSettings(candidate)', context);
+    },
+  });
+  const before = context.network();
+  context.THREE = {
+    ...THREE,
+    BufferGeometry: class { constructor() { throw new Error('Synthetic rebuild failure'); } },
+  };
+  const [count] = harness.control('nodes.count');
+  count.value = '60';
+  count.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.network().nodeGeo, before.nodeGeo);
+  assert.equal(context.network().N, 37);
+  assert.match(harness.elements.status.textContent, /Preview not applied: Synthetic rebuild failure/);
+  assert.equal(harness.applied.length, 0);
+  context.THREE = THREE;
+  count.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(context.network().N, 60);
+  assert.match(harness.elements.status.textContent, /Live preview applied/);
+});
+
+test('invalid count and line-mode drafts preserve the last applied preview', async () => {
+  const harness = makePanelHarness({ defaults: await settings() });
+  for (const [path, value] of [['nodes.count', '4001'], ['scene.edgeVisibility', 'invalid']]) {
+    const [input] = harness.control(path);
+    input.value = value;
+    input.dispatch('input');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.applied.length, 0);
+    assert.equal(harness.elements.errorSummary.hidden, false);
+    assert.equal(input.attributes.get('aria-invalid'), 'true');
+    harness.elements.resetButton.click();
+    harness.applied.length = 0;
+  }
+});
+
+test('all colour settings use sRGB pickers while preserving stored formats and untouched precision', async () => {
+  const defaults = await settings();
+  const harness = makePanelHarness({ defaults });
+  const colours = VISUAL_SETTING_DEFINITIONS.filter(({ type }) => type === 'rgb' || type === 'hex');
+  for (const definition of colours) {
+    assert.equal(definition.editor, 'color');
+    const inputs = harness.control(definition.path);
+    assert.equal(inputs.length, 1, definition.path);
+    const [picker] = inputs;
+    assert.equal(picker.type, 'color', definition.path);
+    assert.match(picker.attributes.get('aria-label'), /sRGB color/);
+    const [group, name] = definition.path.split('.');
+    const original = defaults[group][name];
+    const expected = definition.type === 'rgb'
+      ? new THREE.Color().setRGB(...original, THREE.LinearSRGBColorSpace).getHexString()
+      : original.toString(16).padStart(6, '0');
+    assert.equal(picker.value, `#${expected}`);
+    picker.value = '#123456';
+    picker.dispatch('input');
+    await new Promise((resolve) => setImmediate(resolve));
+    const actual = harness.applied.at(-1)[group][name];
+    if (definition.type === 'rgb') {
+      assert.deepEqual(actual, new THREE.Color(0x123456).toArray());
+    } else {
+      assert.equal(actual, 0x123456);
+    }
+    harness.elements.resetButton.click();
+    assert.deepEqual(harness.applied.at(-1), defaults, 'reset preserves full original precision');
+    assert.equal(picker.value, `#${expected}`);
+  }
+  assert.equal(harness.control('camera.position').length, 3, 'non-colour vectors stay numeric');
+  assert.ok(harness.control('camera.position').every(({ type }) => type === 'number'));
+});
+
+test('picker edits survive export and reload with correct linear conversion and invalid drafts rejected', async (t) => {
+  const defaults = await settings();
+  const harness = makePanelHarness({
+    defaults,
+    loadFile: async () => ({
+      defaults, preset: 'balanced', overrides: {
+        scene: { edgeBaseColor: [0.003, 0.25, 1], background: 0xabcdef },
+      }, errors: [],
+    }),
+  });
+  const [picker] = harness.control('scene.edgeBaseColor');
+  picker.value = '#808080';
+  picker.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  const linear = new THREE.Color(0x808080).toArray();
+  assert.deepEqual(harness.applied.at(-1).scene.edgeBaseColor, linear);
+  assert.equal(picker.value, '#808080');
+  let blob;
+  t.mock.method(URL, 'createObjectURL', (value) => { blob = value; return 'blob:synthetic'; });
+  harness.elements.exportButton.click();
+  const source = await blob.text();
+  const module = { exports: {} };
+  vm.runInNewContext(source.replace(/^import .*$/m, '')
+    .replaceAll('export const ', 'const ') + '\nmodule.exports = VISUAL_OVERRIDES;', {
+    module, resolveVisualSettings,
+  });
+  assert.deepEqual([...module.exports.scene.edgeBaseColor], linear);
+  const lastValid = harness.applied.at(-1);
+  picker.value = '#zzzzzz';
+  picker.dispatch('input');
+  assert.equal(harness.applied.at(-1), lastValid);
+  assert.equal(picker.attributes.get('aria-invalid'), 'true');
+  harness.elements.resetButton.click();
+  await harness.panel.reload();
+  assert.equal(picker.value, `#${new THREE.Color().setRGB(0.003, 0.25, 1).getHexString()}`);
+  assert.equal(harness.control('scene.background')[0].value, '#abcdef');
+  assert.deepEqual(harness.applied.at(-1).scene.edgeBaseColor, [0.003, 0.25, 1]);
 });
 
 test('effect switches leave synthetic feed, timeline, and page totals unchanged', async () => {
@@ -298,13 +729,121 @@ test('presets and overrides resolve deterministically without mutating definitio
   assert.ok(unknownKey.errors.some((error) => error.path === 'fileOverrides.camera.__proto__'));
 });
 
+test('users can create, reapply, update, and delete personal presets across reloads', async (t) => {
+  const defaults = await settings();
+  const storage = makeMemoryStorage();
+  const first = makePanelHarness({ defaults, storage });
+  const [floorGlow] = first.control('scene.floorGlow');
+  floorGlow.value = '0.8';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  first.elements.presetNameInput.value = 'Night shift';
+  first.elements.saveAsPresetButton.click();
+
+  assert.equal(first.elements.presetSelect.value, 'user:Night shift');
+  assert.equal(first.panel.state.preset, 'user:Night shift');
+  assert.equal(first.elements.savePresetButton.disabled, false);
+  assert.equal(first.elements.deletePresetButton.disabled, false);
+
+  floorGlow.value = '0.4';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  first.elements.savePresetButton.click();
+  const stored = JSON.parse(storage.values.values().next().value);
+  assert.equal(stored.presets[0].settings.scene.floorGlow, 0.4);
+
+  const second = makePanelHarness({ defaults, storage });
+  assert.ok(second.elements.presetSelect.children.some((option) =>
+    option.value === 'user:Night shift'));
+  second.elements.presetSelect.value = 'user:Night shift';
+  second.elements.presetSelect.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(second.applied.at(-1).scene.floorGlow, 0.4);
+  const [secondFloorGlow] = second.control('scene.floorGlow');
+  secondFloorGlow.value = '';
+  secondFloorGlow.dispatch('input');
+  second.elements.deletePresetButton.click();
+  assert.equal(JSON.parse(storage.values.values().next().value).presets.length, 1);
+  assert.equal(second.panel.state.preset, 'user:Night shift');
+  assert.match(second.elements.status.textContent, /correct pending edits/i);
+  secondFloorGlow.value = '0.4';
+  secondFloorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  let exportedBlob;
+  t.mock.method(URL, 'createObjectURL', (blob) => { exportedBlob = blob; return 'blob:personal-preset'; });
+  second.elements.exportButton.click();
+  const source = await exportedBlob.text();
+  const exportedModule = { exports: {} };
+  vm.runInNewContext(source.replace(/^import .*$/m, '')
+    .replaceAll('export const ', 'const ') +
+    '\nmodule.exports = { VISUAL_PRESET, VISUAL_OVERRIDES };', {
+    module: exportedModule, resolveVisualSettings,
+  });
+  assert.equal(exportedModule.exports.VISUAL_PRESET, 'balanced');
+  assert.equal(exportedModule.exports.VISUAL_OVERRIDES.scene.floorGlow, 0.4);
+
+  second.elements.deletePresetButton.click();
+  assert.equal(second.elements.presetSelect.value, 'balanced');
+  assert.equal(second.elements.deletePresetButton.disabled, true);
+  assert.equal(JSON.parse(storage.values.values().next().value).presets.length, 0);
+  assert.equal(second.applied.at(-1).scene.floorGlow, 0.4,
+    'deleting the selected preset keeps the current preview intact');
+});
+
+test('personal preset names and browser storage failures are reported without losing the preview', async () => {
+  const defaults = await settings();
+  const unavailableStorage = {
+    getItem() { return null; },
+    setItem() { throw new Error('Quota exceeded'); },
+  };
+  const harness = makePanelHarness({ defaults, storage: unavailableStorage });
+  const [floorGlow] = harness.control('scene.floorGlow');
+  floorGlow.value = '0.8';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  harness.elements.presetNameInput.value = 'balanced';
+  harness.elements.saveAsPresetButton.click();
+  assert.match(harness.elements.status.textContent, /name.*reserved/i);
+  assert.equal(harness.elements.presetSelect.children.some((option) =>
+    option.value === 'user:balanced'), false);
+
+  harness.elements.presetNameInput.value = 'My preset';
+  harness.elements.saveAsPresetButton.click();
+  assert.match(harness.elements.status.textContent, /quota exceeded/i);
+  assert.equal(harness.elements.presetSelect.children.some((option) =>
+    option.value === 'user:My preset'), false);
+  assert.equal(harness.panel.state.preset, 'balanced');
+  assert.equal(harness.applied.at(-1).scene.floorGlow, 0.8);
+});
+
+test('malformed saved personal presets fail closed without disabling built-in previews', async () => {
+  const harness = makePanelHarness({
+    defaults: await settings(),
+    storage: { getItem: () => 'not-json', setItem() {} },
+  });
+  assert.match(harness.elements.status.textContent, /not valid JSON/i);
+  assert.equal(harness.elements.saveAsPresetButton.disabled, true);
+  assert.equal(harness.elements.savePresetButton.disabled, true);
+  assert.equal(harness.elements.deletePresetButton.disabled, true);
+
+  harness.elements.presetSelect.value = 'subtle';
+  harness.elements.presetSelect.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.panel.state.preset, 'subtle');
+  assert.equal(harness.applied.at(-1).running.pulsesPerSecondPerSession, 2);
+});
+
 test('exported settings module preserves defaults and layered overrides as a loadable config', async () => {
   const defaults = await settings();
-  const fileOverrides = { scene: { floorGlow: 0.66 }, floor: { color: [0.2, 0.3, 0.4] } };
+  const fileOverrides = {
+    nodes: { count: 800 }, scene: { floorGlow: 0.66, edgeVisibility: 'active' },
+    floor: { color: [0.2, 0.3, 0.4] },
+  };
   const previewOverrides = { floor: { color: [0.7, 0.6, 0.5] } };
   const overrides = mergeVisualOverrides(fileOverrides, previewOverrides);
   assert.deepEqual(overrides, {
-    scene: { floorGlow: 0.66 }, floor: { color: [0.7, 0.6, 0.5] },
+    nodes: { count: 800 }, scene: { floorGlow: 0.66, edgeVisibility: 'active' },
+    floor: { color: [0.7, 0.6, 0.5] },
   });
   assert.equal(visualConfigurationSignature({
     defaults: { b: 2, a: 1 }, preset: 'balanced', overrides: {},
@@ -582,16 +1121,15 @@ test('dust, floor, and waiting-marker switches hide only their decorative effect
 test('node size and idle edge variation tuning leaves generated geometry unchanged', async () => {
   const VISUAL = await settings();
   Object.assign(VISUAL.nodes, {
-    largeChance: 0, baseSizeMin: 2, baseSizeRange: 4, largeSizeMin: 6, largeSizeRange: 2,
+    count: 2, largeChance: 0, baseSizeMin: 2, baseSizeRange: 4, largeSizeMin: 6, largeSizeRange: 2,
   });
   Object.assign(VISUAL.scene, { edgeVariationMin: 0.2, edgeVariationRange: 0.4 });
-  const source = main.slice(main.indexOf('const N = CFG.nodes;'), main.indexOf('// ---------- edges'));
   const createNodes = () => {
     const context = vm.createContext({
-      VISUAL, THREE, CFG: { nodes: 2, radius: 10 },
+      VISUAL, THREE, CFG: { radius: 10, neighbours: 3, maxEdgeLen: 4.5 },
       Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
     });
-    vm.runInContext(source + '\nglobalThis.result = { nodePos, nodeSize };', context);
+    vm.runInContext(sceneFunction('buildNetwork') + '\nglobalThis.result = buildNetwork(VISUAL);', context);
     return context.result;
   };
   const ordinary = createNodes();
@@ -600,14 +1138,8 @@ test('node size and idle edge variation tuning leaves generated geometry unchang
   const large = createNodes();
   assert.deepEqual([...large.nodeSize], [7, 7]);
   assert.deepEqual([...large.nodePos], [...ordinary.nodePos], 'size tuning does not move nodes');
-  const context = vm.createContext({
-    VISUAL, THREE, E: 1, edgeA: [0], edgeB: [1], edgeBase: [0], nodePos: ordinary.nodePos,
-    Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
-  });
-  vm.runInContext(main.slice(main.indexOf('const edgeGeo ='), main.indexOf('const edgeLines =')) +
-    '\nglobalThis.positions = edgePositions;', context);
-  assert.equal(context.edgeBase[0], 0.4);
-  assert.deepEqual([...context.positions], [...ordinary.nodePos]);
+  assert.ok(Math.abs(ordinary.edgeBase[0] - 0.4) < 1e-6);
+  assert.deepEqual([...ordinary.edgeGeo.attributes.position.array], [...ordinary.nodePos]);
 });
 
 test('nondefault grouped burst settings control motion, excitation and bounded intensity', async () => {
@@ -878,6 +1410,7 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
   const VISUAL = await settings();
   const ambience = '{\n' + main.slice(main.indexOf('  // ambience'), main.indexOf('  hudTimer -= dt')) + '\n}';
   for (const key of Object.keys(VISUAL.scene)) {
+    if (typeof VISUAL.scene[key] === 'string') continue;
     VISUAL.scene[key] = Array.isArray(VISUAL.scene[key]) ? [0.2, 0.2, 0.2] : 0.2;
   }
   const bloomContext = vm.createContext({
@@ -898,6 +1431,7 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
   const context = vm.createContext({
     VISUAL, Math, E: 1, edgeR: [1], edgeG: [1], edgeBColor: [1],
     edgeBase: [0], edgeColors: new Float32Array(6), edgeGeo: { attributes: { color: {} } },
+    edgeLines: { visible: true },
     dt: 0, now: 0, smoothedLoad: 0.5, activePulses: 0,
     activityState: { activeSessions: 0, connection: 'connected', sourceStatus: 'available', waitingSessions: 0 },
     brain: { scale: { setScalar() {} } },

@@ -5,7 +5,7 @@ const SHAPE = {
     boolean: 'autoRotate',
   },
   nodes: {
-    number: 'scale size activeGrowth idleBrightness activeBrightness hotMix whiteThreshold whiteMix baseSizeMin baseSizeRange largeChance largeSizeMin largeSizeRange energyCap decay twinkleBase twinkleAmplitude twinkleSpeed coreFalloff',
+    number: 'count scale size activeGrowth idleBrightness activeBrightness hotMix whiteThreshold whiteMix baseSizeMin baseSizeRange largeChance largeSizeMin largeSizeRange energyCap decay twinkleBase twinkleAmplitude twinkleSpeed coreFalloff',
     vector3: 'twinkleSpatial',
     rgb: 'baseColor hotColor whiteColor',
   },
@@ -40,6 +40,7 @@ const SHAPE = {
     number: 'minMs maxMs minHops maxHops minSpread maxSpread neighbourSeeds neighbourHops neighbourSpread branchChance seedHeat nodeEnergy edgeIntensity head',
   },
   scene: {
+    enum: 'edgeVisibility',
     number: 'categoryBrightness edgeVariationMin edgeVariationRange breathSpeed breathAmplitude loadPulseScale loadSessionScale loadSmoothing coreSize haloSize glowKnee glowKneeOpacity bloomStrength bloomLoad bloomRadius bloomThreshold edgeFade coreOpacity coreLoad haloOpacity haloLoad dustBrightness floorBrightness floorFade floorGlow',
     rgb: 'edgeBaseColor',
     hex: 'background coreColor haloColor',
@@ -50,6 +51,7 @@ const SHAPE = {
 };
 
 const INTEGER_PATHS = new Set([
+  'nodes.count',
   'running.maxSessions', 'running.baseHops', 'running.maxExtraHops', 'running.spread',
   'activity.maxIntensity', 'activity.maxSpread', 'activity.reasoningBaseHops', 'activity.errorHops',
   'completion.hops', 'completion.neighbourHops', 'completion.spread', 'completion.neighbourSeeds',
@@ -86,6 +88,7 @@ const STRICT_UNIT_PATHS = new Set(['scene.glowKnee']);
 const MAX_ONE_EXCLUSIVE_PATHS = new Set(['scene.breathAmplitude']);
 
 function unitFor(path) {
+  if (path === 'nodes.count') return 'nodes';
   if (path === 'camera.fov') return 'degrees';
   if (path === 'camera.position' || path === 'camera.target' ||
       path === 'dust.tiltAmplitude' || path === 'floor.fineSpacing' || path === 'floor.coarseSpacing') {
@@ -108,9 +111,8 @@ export const VISUAL_SETTING_DEFINITIONS = Object.freeze(
       names.split(' ').map((name) => {
         const path = `${group}.${name}`;
         const label = `${group} ${name.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}`;
-        const editor = type === 'boolean' ? 'checkbox'
-          : type === 'rgb' ? 'rgb'
-            : type === 'hex' ? 'color'
+        const editor = type === 'enum' ? 'select' : type === 'boolean' ? 'checkbox'
+          : type === 'rgb' || type === 'hex' ? 'color'
               : type === 'vector3' ? 'vector3' : 'number';
         const constraints = {
           ...(INTEGER_PATHS.has(path) ? { integer: true } : {}),
@@ -119,11 +121,13 @@ export const VISUAL_SETTING_DEFINITIONS = Object.freeze(
           ...(!SIGNED_PATHS.has(path) && type === 'number' && !ZERO_TO_ONE_PATHS.has(path) &&
               !POSITIVE_PATHS.has(path) ? { minimum: 0 } : {}),
           ...(path === 'activity.maxIntensity' ? { minimum: 1 } : {}),
+          ...(path === 'nodes.count' ? { minimum: 2, maximum: 4000 } : {}),
           ...(STRICT_UNIT_PATHS.has(path) ? { exclusiveMinimum: 0, exclusiveMaximum: 1 } : {}),
           ...(MAX_ONE_EXCLUSIVE_PATHS.has(path) ? { exclusiveMaximum: 1 } : {}),
         };
         return Object.freeze({
           path, type, label, unit: unitFor(path), editor, constraints: Object.freeze(constraints),
+          ...(type === 'enum' ? { options: Object.freeze(['always', 'active', 'hidden']) } : {}),
         });
       })))
 );
@@ -318,7 +322,11 @@ export function validateVisualSettings(settings) {
         continue;
       }
       const value = values[name];
-      if (definition.type === 'boolean') {
+      if (definition.type === 'enum') {
+        if (!definition.options.includes(value)) {
+          errors.push({ path, message: `Must be one of: ${definition.options.join(', ')}.` });
+        }
+      } else if (definition.type === 'boolean') {
         if (typeof value !== 'boolean') errors.push({ path, message: 'Must be a boolean.' });
       } else if (definition.type === 'vector3' || definition.type === 'rgb') {
         validateTuple(value, definition, errors);
