@@ -85,7 +85,7 @@ export function createSentientServer({
   maxClients = MAX_CLIENTS,
   pollIntervalMs = 1000,
 } = {}) {
-  if (host !== '127.0.0.1') throw new Error('SENTIENT binds to IPv4 loopback only');
+  if (host !== '127.0.0.1') throw new Error('SENTIENT OS binds to IPv4 loopback only');
   const source = new LocalActivitySource({ ...(activityRoot ? { root: activityRoot } : {}), pollIntervalMs });
   const clients = new Set();
   let streamSequence = 0;
@@ -348,9 +348,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const requestedPort = portArg >= 0 ? Number(process.argv[portArg + 1]) : 43187;
   const app = createSentientServer({ host: '127.0.0.1', port: requestedPort });
   app.start().then((address) => {
-    process.stdout.write(`SENTIENT listening on http://127.0.0.1:${address.port} (local activity-file source)\n`);
+    process.stdout.write(`SENTIENT OS listening on http://127.0.0.1:${address.port} (local activity-file source)\n`);
   }).catch(() => {
-    process.stderr.write('SENTIENT could not start. Check port availability and local source access.\n');
+    process.stderr.write('SENTIENT OS could not start. Check port availability and local source access.\n');
     process.exitCode = 1;
   });
   const shutdown = () => app.stop().finally(() => process.exit(0));

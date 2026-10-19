@@ -28,7 +28,7 @@ test('session HUD status follows live, stale, waiting, ended, and later-event tr
   await source.poll();
   assert.equal(source.snapshot().sessions[0].status, 'running');
   now += 46_000;
-  assert.equal(source.snapshot().sessions[0].status, 'running-unverified');
+  assert.equal(source.snapshot().sessions[0].status, 'running', 'silent thinking stays running');
   await appendFile(file, event('permission.requested', { permissionId: 'permission' }));
   now++;
   await source.poll();
@@ -175,7 +175,7 @@ test('session records preserve status ordering and produce a separate active HUD
     ['wait-new', 'waiting'],
     ['wait-old', 'waiting'],
     ['live', 'running'],
-    ['stale', 'running-unverified'],
+    ['stale', 'running'],
     ['idle', 'idle'],
     ['ended', 'ended'],
   ]);
@@ -183,7 +183,7 @@ test('session records preserve status ordering and produce a separate active HUD
   assert.deepEqual(snapshot.hudSessions.map(({ key, status }) =>
     [path.basename(path.dirname(key)), status]), [
     ['live', 'running'],
-    ['stale', 'running-unverified'],
+    ['stale', 'running'],
   ]);
   assert.equal(snapshot.hudSessionsTruncated, false);
   assert.deepEqual(snapshot.waitingSessionKeys.map((key) => path.basename(path.dirname(key))), [
@@ -308,7 +308,7 @@ test('truncated HUD projection keeps observed waiters visible ahead of a full ru
 test('deriveStatus is a pure ordered status projection', () => {
   assert.equal(deriveStatus({ ended: true, waitingPermissions: new Set(['p']) }, 0), 'ended');
   assert.equal(deriveStatus({ waitingPermissions: new Set(['p']), waitingInputs: new Set() }, 0), 'waiting');
-  assert.equal(deriveStatus({ agents: new Map([['root', { active: true, live: true }]]), lastEventAt: 0 }, 46_000), 'running-unverified');
+  assert.equal(deriveStatus({ agents: new Map([['root', { active: true, live: true }]]), lastEventAt: 0 }, 46_000), 'running');
 });
 
 test('valid event families publish activity metadata except user-wait lifecycle events', async (t) => {
@@ -532,6 +532,176 @@ test('observed concurrent turns increase active sessions; tools emit one orange 
   assert.equal(source.snapshot().steps, 1);
 });
 
+test('discovery recognizes a new running session without replaying its first records', async (t) => {
+  const root = await fixture(t);
+  const now = 100_000;
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => now });
+  t.after(() => source.stop());
+  const activity = [];
+  source.on('activity', (value) => activity.push(value));
+  await source.start();
+  for (const [name, timestamp] of [
+    ['new', new Date(now).toISOString()],
+    ['old', new Date(now - 1).toISOString()],
+    ['invalid', 'invalid'],
+    ['future', new Date(now + 1).toISOString()],
+  ]) {
+    await mkdir(path.join(root, name));
+    await writeFile(path.join(root, name, 'events.jsonl'),
+      event('assistant.turn_start', { turnId: name }, { timestamp }));
+  }
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 1);
+  assert.equal(source.snapshot().activeSessions, 0);
+  assert.equal(source.snapshot().hudSessions.length, 1);
+  assert.deepEqual(activity, []);
+  await appendFile(path.join(root, 'new', 'events.jsonl'), event('session.idle'));
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 0);
+  assert.deepEqual(activity, []);
+});
+
+test('fresh work restores baseline visibility without granting completion eligibility', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file, event('assistant.turn_start', { turnId: 'historic' }));
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  const activity = [];
+  source.on('activity', (value) => activity.push(value));
+  await source.start();
+  assert.equal(source.snapshot().runningSessions, 0);
+  await appendFile(file, event('tool.execution_start', { toolCallId: 'live', toolName: 'powershell' }));
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 1);
+  assert.equal(source.snapshot().activeSessions, 0);
+  await appendFile(file, event('session.task_complete', { success: true, outcome: 'completed' }) +
+    event('session.idle'));
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 0);
+  assert.equal(activity.some(({ kind }) => kind === 'completion'), false);
+});
+
+test('newly discovered delegates are visible but completed baseline work is not replayed', async (t) => {
+  const root = await fixture(t);
+  const now = 100_000;
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => now });
+  t.after(() => source.stop());
+  const activity = [];
+  source.on('activity', (value) => activity.push(value));
+  await source.start();
+  const timestamp = new Date(now).toISOString();
+  for (const name of ['delegate', 'finished']) {
+    await mkdir(path.join(root, name));
+    await writeFile(path.join(root, name, 'events.jsonl'),
+      event('assistant.turn_start', { turnId: name }, { timestamp }) +
+      event('subagent.started', { toolCallId: name }, { timestamp, agentId: name }) +
+      event('assistant.turn_end', { turnId: name }, { timestamp }) +
+      (name === 'finished' ? event('session.idle', {}, { timestamp }) : ''));
+  }
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 1);
+  assert.equal(source.snapshot().hudSessions[0].stats.subagents.started, 0);
+  assert.deepEqual(activity, []);
+  await appendFile(path.join(root, 'delegate', 'events.jsonl'),
+    event('subagent.completed', { toolCallId: 'delegate' }, { agentId: 'delegate' }));
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 0);
+});
+
+test('work observed without a turn start stops at turn end and duplicate tools do not reopen it', async (t) => {
+  const { file, source } = await runningFixture(t);
+  const tool = event('tool.execution_start', { toolCallId: 'work', toolName: 'powershell' });
+  await appendFile(file, tool);
+  await source.poll();
+  assert.deepEqual(running(source), [1, 0]);
+  assert.equal(source.snapshot().activeSessions, 0);
+  await appendFile(file, event('assistant.turn_end', { turnId: 'unobserved' }));
+  await source.poll();
+  assert.deepEqual(running(source), [0, 0]);
+  await appendFile(file, event('tool.execution_start', { toolCallId: 'work', toolName: 'powershell' }));
+  await source.poll();
+  assert.deepEqual(running(source), [0, 0], 'a duplicate logical start cannot reopen work');
+  await appendFile(file, event('user.message') + event('tool.execution_complete', { toolCallId: 'work' }));
+  await source.poll();
+  assert.deepEqual(running(source), [0, 0], 'user messages and tool ends are not work starts');
+  await appendFile(file, event('assistant.message_delta'));
+  await source.poll();
+  assert.deepEqual(running(source), [1, 0]);
+  await appendFile(file, event('session.idle'));
+  await source.poll();
+  assert.deepEqual(running(source), [0, 0]);
+  await appendFile(file, event('tool.execution_start', { toolCallId: 'standalone', toolName: 'powershell' }));
+  await source.poll();
+  assert.deepEqual(running(source), [1, 0]);
+  await appendFile(file, event('tool.execution_complete', { toolCallId: 'standalone' }));
+  await source.poll();
+  assert.deepEqual(running(source), [0, 0], 'a standalone tool stops at its observed end');
+});
+
+test('split journal records pause coverage without blinking running or retaining contents', async (t) => {
+  const { file, source, observed } = await runningFixture(t);
+  await appendFile(file, event('assistant.turn_start', { turnId: 'live' }));
+  await source.poll();
+  assert.deepEqual(running(source), [1, 0]);
+  const bytes = Buffer.from(event('assistant.message_delta', { content: 'PRIVATE 🧠' }));
+  const split = bytes.indexOf(Buffer.from('🧠')) + 2;
+  await appendFile(file, bytes.subarray(0, split));
+  await source.poll();
+  assert.equal(source.snapshot().coverage, 'partial');
+  assert.deepEqual(running(source), [1, 0], 'a half-written record must not blink running off');
+  assert.equal(source.snapshot().hudSessions[0].status, 'running');
+  assert.equal(JSON.stringify([...source.files.values()]).includes('PRIVATE'), false);
+  await appendFile(file, bytes.subarray(split));
+  await source.poll();
+  assert.equal(source.snapshot().coverage, 'journal-only');
+  assert.deepEqual(running(source), [1, 0]);
+  await appendFile(file, event('session.task_complete', { success: true, outcome: 'completed' }));
+  await source.poll();
+  assert.equal(observed.includes('completion'), false, 'a gap cannot become success-eligible');
+  const terminal = event('session.idle');
+  await appendFile(file, terminal.slice(0, -3));
+  await source.poll();
+  assert.equal(source.snapshot().coverage, 'partial');
+  await appendFile(file, terminal.slice(-3));
+  await source.poll();
+  assert.equal(source.snapshot().coverage, 'journal-only');
+  assert.deepEqual(running(source), [0, 0], 'a split terminal event still ends work');
+});
+
+test('unfinished baseline records recover and malformed continuations invalidate running', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  const start = event('assistant.turn_start', { turnId: 'historic' });
+  await writeFile(file, start.slice(0, -3));
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  const activity = [];
+  source.on('activity', (value) => activity.push(value));
+  await source.start();
+  assert.equal(source.snapshot().coverage, 'partial');
+  await source.poll();
+  assert.equal(source.snapshot().coverage, 'partial', 'an unchanged partial line remains unknown');
+  await appendFile(file, start.slice(-3));
+  await source.poll();
+  assert.equal(source.snapshot().coverage, 'journal-only');
+  assert.equal(source.snapshot().runningSessions, 0);
+  assert.deepEqual(activity, [], 'baseline continuation is not replayed');
+  await appendFile(file, event('assistant.turn_start', { turnId: 'live' }));
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 1);
+  await appendFile(file, '{"type":');
+  await source.poll();
+  assert.equal(source.snapshot().coverage, 'partial');
+  await appendFile(file, 'invalid}\n');
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 0);
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 0, 'malformed input cannot restore prior work');
+});
+
 test('live root idle publishes once after turn end without duplicating task completion', async (t) => {
   const root = await fixture(t);
   await mkdir(path.join(root, 'session'));
@@ -715,7 +885,7 @@ test('startup tail baselines honor the aggregate byte budget across files', asyn
   assert.equal(source.snapshot().sourceStatus, 'available');
 });
 
-test('split UTF-8 records are safely discarded without retaining content; later records recover', async (t) => {
+test('split UTF-8 records are retried from disk without retaining content', async (t) => {
   const root = await fixture(t);
   const session = path.join(root, 'session-a');
   await mkdir(session);
@@ -741,15 +911,15 @@ test('split UTF-8 records are safely discarded without retaining content; later 
   await source.poll();
   await appendFile(file, bytes.subarray(emojiOffset + 2));
   await source.poll();
-  assert.equal(source.snapshot().activeSessions, 0);
-  assert.deepEqual(activity, []);
+  assert.equal(source.snapshot().activeSessions, 1);
+  assert.deepEqual(activity, ['thinking']);
   await appendFile(file, JSON.stringify({ id: 'small-event', type: 'assistant.turn_start', data: { turnId: 'recovered', ignored: '🌌' } }) + '\n');
   for (let i = 0; i < 3; i++) {
     await source.poll();
     if (source.snapshot().backlogFiles === 0) break;
   }
   assert.equal(source.snapshot().activeSessions, 1);
-  assert.deepEqual(activity, ['thinking']);
+  assert.deepEqual(activity, ['thinking', 'thinking']);
   assert.equal([...source.files.values()].some((state) => Object.hasOwn(state, 'pending')), false);
   assert.equal([...source.files.values()].some((state) => Buffer.isBuffer(state.boundary)), false);
   assert.equal(JSON.stringify([...source.files.values()]).includes('PRIVATE'), false);
@@ -966,8 +1136,8 @@ test('source loss invalidates active success eligibility and recovers without st
   assert.equal(observed.includes('completion'), false);
 });
 
-// ---- Observed running work (user decision 2026-10-18: keep pulsing observed
-// running tasks through long silence; mark stale running state unverified) ----
+// ---- Observed running work (user decisions 2026-10-18/19: keep observed
+// running tasks running through long silence, including thinking) ----
 
 async function runningFixture(t, initial = '') {
   const root = await fixture(t);
@@ -1003,7 +1173,8 @@ test('observed delegated task keeps running through >2 min silent tool/subagent 
   assert.equal(source.snapshot().thinkingSessions, 0, 'tool work is running, not precise cognition');
 
   clock.now += 150_000; // a silent long host tool inside the delegated task
-  assert.deepEqual(running(source), [1, 1], 'still running, but marked unverified');
+  assert.deepEqual(running(source), [1, 0], 'still running through silence');
+  assert.equal(source.snapshot().hudSessions[0].status, 'running');
   assert.equal(source.snapshot().unknownSessions, 1);
   assert.equal(source.snapshot().activeSessions, 0);
   assert.equal(source.snapshot().thinkingSessions, 0);
@@ -1014,7 +1185,7 @@ test('observed delegated task keeps running through >2 min silent tool/subagent 
     event('subagent.completed', { toolCallId: 'task-1' }, { agentId: 'child-1' }) +
     event('tool.execution_complete', { toolCallId: 'task-1', turnId: 'root-turn' }));
   await source.poll();
-  assert.deepEqual(running(source), [1, 0], 'fresh evidence clears the unverified marker');
+  assert.deepEqual(running(source), [1, 0], 'fresh evidence keeps it running');
   await appendFile(file, event('session.task_complete', { success: true, outcome: 'completed' }));
   await source.poll();
   assert.equal(observed.includes('completion'), false, 'stale interval never celebrates');
@@ -1038,7 +1209,7 @@ test('background subagent keeps running after the root turn ends until its own r
   await source.poll();
   assert.deepEqual(running(source), [1, 0]);
   clock.now += 130_000;
-  assert.deepEqual(running(source), [1, 1]);
+  assert.deepEqual(running(source), [1, 0]);
   const completed = event('subagent.completed', { toolCallId: 'task-bg' }, { agentId: 'bg' });
   await appendFile(file, completed + completed.replace(/"id":"[^"]+"/, '"id":"duplicate-completion"'));
   await source.poll();
@@ -1155,7 +1326,7 @@ test('abort, error, shutdown and idle each clear observed running work', async (
   }
 });
 
-test('startup baseline open turns, tools and subagents never become running pulses', async (t) => {
+test('startup baseline stays quiet until fresh work is observed', async (t) => {
   const { file, clock, source, observed } = await runningFixture(t,
     event('assistant.turn_start', { turnId: 'historic' }) +
     event('tool.execution_start', { toolCallId: 'historic-task', toolName: 'task' }) +
@@ -1167,7 +1338,7 @@ test('startup baseline open turns, tools and subagents never become running puls
   await appendFile(file, event('tool.execution_start', { toolCallId: 'late-tool', toolName: 'powershell' }) +
     event('tool.execution_progress', { toolCallId: 'late-tool' }, { agentId: 'historic-child' }));
   await source.poll();
-  assert.deepEqual(running(source), [0, 0], 'live events inside a historic interval do not make it running');
+  assert.deepEqual(running(source), [1, 0], 'fresh work restores liveness without replaying history');
   assert.equal(observed.includes('completion'), false);
 });
 
@@ -1251,7 +1422,7 @@ test('subagent failure/completion retires its open child even without a child tu
   }
 });
 
-test('malformed subagent terminal records mark partial and drop running until a new live start', async (t) => {
+test('malformed subagent terminal records drop running until fresh work is observed', async (t) => {
   const { file, source } = await runningFixture(t);
   await appendFile(file, event('assistant.turn_start', { turnId: 'root' }) +
     event('subagent.started', { toolCallId: 'call' }, { agentId: 'child' }) +
@@ -1264,7 +1435,8 @@ test('malformed subagent terminal records mark partial and drop running until a 
   assert.deepEqual(running(source), [0, 0]);
   await appendFile(file, event('tool.execution_progress', { toolCallId: 'x' }, { agentId: 'child' }));
   await source.poll();
-  assert.deepEqual(running(source), [0, 0]);
+  assert.deepEqual(running(source), [1, 0]);
+  assert.equal(source.snapshot().activeSessions, 0, 'recovered work is not success-eligible');
   await appendFile(file, event('assistant.turn_start', { turnId: 'fresh' }));
   await source.poll();
   assert.deepEqual(running(source), [1, 0]);
@@ -1466,13 +1638,11 @@ test('session stats accumulate status intervals and matched source-clock turn du
   await source.poll();
   now += 60_000;
   source.snapshot();
-  assert.equal(source.snapshot().sessions[0].stats.unverifiedMs, 15_000);
-  now += 1_000;
-  source.snapshot();
-  assert.equal(source.snapshot().sessions[0].stats.unverifiedMs, 16_000);
+  assert.equal(source.snapshot().sessions[0].stats.unverifiedMs, 0, 'silent thinking is running time');
+  assert.equal(source.snapshot().sessions[0].status, 'running');
   await appendFile(file, event('assistant.turn_end', { turnId: 'turn-stale' }, { id: 'end-stale' }));
   await source.poll();
-  assert.equal(source.snapshot().sessions[0].stats.turns.count, 1);
+  assert.equal(source.snapshot().sessions[0].stats.turns.count, 1, 'silent >45s turns stay out of duration stats');
 });
 
 // Copilot writes `type` first; oversized records are classified by that prefix.

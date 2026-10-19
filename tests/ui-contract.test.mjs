@@ -267,6 +267,11 @@ test('impulse titles follow observed events with a bottom fade and reduced-motio
   assert.match(css, /prefers-reduced-motion: reduce/);
 });
 
+test('page identity is SENTIENT OS in the browser title and visible heading', () => {
+  assert.match(html, /<title>SENTIENT OS<\/title>/);
+  assert.match(html, /<h1 class="title">SENTIENT OS<\/h1>/);
+});
+
 test('live UI has no fabricated/demo activity controls or external dependency URL', () => {
   assert.doesNotMatch(html, /https?:\/\//);
   assert.doesNotMatch(html, /data-mode|Calm|Storm|click a node/i);

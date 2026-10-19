@@ -1,6 +1,6 @@
-# SENTIENT · local Copilot activity
+# SENTIENT OS · local Copilot activity
 
-SENTIENT is a local-only Three.js activity visualizer. It reads Copilot's
+SENTIENT OS is a local-only Three.js activity visualizer. It reads Copilot's
 per-session `events.jsonl` activity files in
 `%USERPROFILE%\.copilot\session-state\<session>\` read-only and serves the page
 on IPv4 loopback. It does not attach to sessions, install a Copilot extension,
@@ -26,13 +26,17 @@ does not load a CDN or send activity outside this machine.
 
 - **Activity feed:** Recent event types and validated tool names, grouped when
   events arrive together. Prompts, commands, file paths and results are not shown.
-- **Sessions:** Live-observed work is marked RUNNING, or RUNNING · UNVERIFIED
-  after 45 seconds without a journal event. Coverage gaps are shown as unknown
+- **Sessions:** Live-observed work is marked RUNNING, including silent thinking,
+  until a recorded end, wait, cancellation or error; a session that stops
+  without recording an end can therefore linger as RUNNING. Coverage gaps are shown as unknown
   rather than presenting stale status. Session handles are opaque; titles and
-  paths are not displayed.
+  paths are not displayed. Sessions first discovered after observation began can
+  show RUNNING when their journal timestamps place the work within that observation
+  window; their existing events are not replayed. Sessions already running at
+  startup become visible when fresh tool work, reasoning, or message deltas arrive.
 - **Activity scene:** Pulses represent observed work, not hidden cognition.
   Waiting pauses pulses. If work ends without a journal end event, pulses may
-  continue until SENTIENT observes a terminal event or loses/re-baselines the
+  continue until SENTIENT OS observes a terminal event or loses/re-baselines the
   source.
 - **Details and delegates:** Available session statistics are keyboard
   accessible and marked “since observed”; the scene can show observed delegated
@@ -62,7 +66,7 @@ does not load a CDN or send activity outside this machine.
   enlarge the same live timeline in a centered dialog. Close it with the close
   button, Escape, or the backdrop to restore the compact view.
 
-“Quiet · not verified idle” means SENTIENT observed no fresh active interval; it
+“Quiet · not verified idle” means SENTIENT OS observed no fresh active interval; it
 does not mean every Copilot session is idle. A successful `session.task_complete`
 event lights up a bright, branching cascade of impulses, nodes and edges within
 the lattice. Grouped completions share one bounded cascade per frame, with no
@@ -110,7 +114,7 @@ are unaffected. Reloading still resets the page's in-memory activity totals.
 
 ## Privacy and limitations
 
-SENTIENT reads `events.jsonl` files in local session folders without modifying
+SENTIENT OS reads `events.jsonl` files in local session folders without modifying
 them. It serves the UI on `127.0.0.1` and sends only bounded event metadata,
 aggregate statistics and opaque handles to the browser. It never forwards
 prompts, reasoning content, tool arguments or results, raw session IDs,
@@ -121,7 +125,13 @@ This is an integration with local journal files, not a supported subscription
 to all Copilot sessions. It cannot verify sessions that do not write to those
 files, detect Copilot process health, or guarantee the journal format. If file
 coverage is incomplete, the display reports that instead of claiming universal
-idle. The server accepts no activity-writing requests and stores no history.
+idle. An unfinished journal record temporarily makes coverage unknown while the
+session keeps its last observed running state; bounded records are retried
+from disk without retaining their contents between polls. Running visibility
+can also recover when fresh work is
+observed, but an incompletely observed turn does not regain success eligibility.
+Existing history alone is not proof that a session is still running.
+The server accepts no activity-writing requests and stores no history.
 Do not expose it through a LAN binding, tunnel, or public proxy.
 
 ## Contributing and sharing
@@ -136,6 +146,6 @@ Git history or every binary/archive. Review `git status --short`, the staged
 diff, and any release archive yourself; ignore rules do not remove tracked files
 or history. If a credential was published, revoke or rotate it.
 
-SENTIENT has no project license yet. A license must be chosen before describing
+SENTIENT OS has no project license yet. A license must be chosen before describing
 a public release as open source. The bundled Three.js dependency retains its
-own MIT license; that does not license SENTIENT.
+own MIT license; that does not license SENTIENT OS.

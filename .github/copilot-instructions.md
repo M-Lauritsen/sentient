@@ -1,4 +1,4 @@
-# SENTIENT repository instructions
+# SENTIENT OS repository instructions
 
 ## Run and test
 
