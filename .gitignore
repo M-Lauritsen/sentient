@@ -13,7 +13,7 @@ coverage/
 .DS_Store
 Thumbs.db
 .copilot/
-plans/
+# plans/
 events.jsonl
 events.*.jsonl
 *.bak
