@@ -26,14 +26,32 @@ const MAX_STATS_IDENTIFIERS = 64;
 const MAX_STATS_TOP = 10;
 const MAX_TURN_DURATIONS = 50;
 const STALE_ACTIVITY_MS = 45_000;
+const MAX_STARTS_PER_SESSION = 256;
 const SOURCE = 'local-activity-files';
 const WAIT_EVENT_TYPES = new Set([
   'permission.requested', 'permission.completed',
   'user_input.requested', 'user_input.completed',
   'elicitation.requested', 'elicitation.completed',
 ]);
+// Event types that change session state; an oversized record of one of these
+// cannot be applied without its data, so it stays a coverage gap.
+const STATE_EVENT_TYPES = new Set([
+  ...WAIT_EVENT_TYPES,
+  'assistant.turn_start', 'assistant.turn_end',
+  'assistant.reasoning', 'assistant.reasoning_delta',
+  'tool.execution_start', 'tool.execution_complete',
+  'subagent.started', 'subagent.completed', 'subagent.failed',
+  'session.task_complete', 'abort', 'session.error', 'session.shutdown', 'session.idle',
+]);
+// Copilot writes `type` as the first key; only this bounded prefix is decoded.
+const OVERSIZED_TYPE_PREFIX = /^\{"type":"([A-Za-z0-9_.:-]{1,128})"/;
+const OVERSIZED_PREFIX_BYTES = 160;
 const STATUS_ORDER = ['waiting', 'running', 'running-unverified', 'idle', 'ended'];
 const ACTIVITY_KINDS = ['thinking', 'step', 'completion', 'activity'];
+const WORK_EVENT_TYPES = new Set([
+  'tool.execution_start', 'tool.execution_progress',
+  'assistant.reasoning', 'assistant.reasoning_delta', 'assistant.message_delta',
+]);
 
 function createStats(statusAt) {
   return {
@@ -100,6 +118,12 @@ function safeId(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 256 ? value : null;
 }
 
+function eventTime(event) {
+  if (typeof event.timestamp !== 'string' || event.timestamp.length > 64) return null;
+  const time = Date.parse(event.timestamp);
+  return Number.isFinite(time) ? time : null;
+}
+
 function attribution(event, data) {
   const agentIds = [event.agentId, data.agentId].filter((value) => value !== undefined);
   const parentIds = [event.parentToolCallId, data.parentToolCallId].filter((value) => value !== undefined);
@@ -123,7 +147,9 @@ export function deriveStatus(session, now) {
     }
   }
   if (!running) return 'idle';
-  return now - session.lastEventAt > STALE_ACTIVITY_MS ? 'running-unverified' : 'running';
+  // Silence is normal while the model thinks; running ends only on a recorded
+  // end, wait, cancellation or error (user decision 2026-10-19).
+  return 'running';
 }
 
 export class LocalActivitySource extends EventEmitter {
@@ -170,6 +196,7 @@ export class LocalActivitySource extends EventEmitter {
     if (this.started) return this.snapshot();
     this.started = true;
     this.stopped = false;
+    this.observedSince = this.clock();
     await this.poll();
     if (this.pollIntervalMs > 0) {
       this.timer = setInterval(() => {
@@ -198,20 +225,17 @@ export class LocalActivitySource extends EventEmitter {
     let thinkingSessions = 0;
     let unknownSessions = 0;
     let runningSessions = 0;
-    let unverifiedRunningSessions = 0;
+    const unverifiedRunningSessions = 0;
     let waitingSessions = 0;
     for (const state of this.sessions.values()) {
       const stale = now - state.lastEventAt > STALE_ACTIVITY_MS;
       if (state.waitingPermissions.size > 0 || state.waitingInputs.size > 0) {
         waitingSessions++;
       }
-      // Running is a separate visual liveness signal: only work whose start was
-      // observed live counts; staleness marks it unverified but does not stop it.
+      // Running is a separate visual liveness signal: fresh work can restore it
+      // without making an incompletely observed turn success-eligible.
       // It never grants success eligibility.
-      if (this.isRunning(state)) {
-        runningSessions++;
-        if (stale) unverifiedRunningSessions++;
-      }
+      if (this.isRunning(state)) runningSessions++;
       let active = false;
       let thinking = false;
       let unknown = false;
@@ -307,6 +331,8 @@ export class LocalActivitySource extends EventEmitter {
   }
 
   isRunning(session) {
+    // A half-written record only pauses coverage; running keeps its last
+    // observed state so large in-flight writes do not blink the session off.
     if (session.waitingPermissions.size > 0 || session.waitingInputs.size > 0) return false;
     if (session.subagents.size > 0) return true;
     for (const agent of session.agents.values()) {
@@ -402,7 +428,7 @@ export class LocalActivitySource extends EventEmitter {
         const state = this.files.get(item.file);
         if (!state || state.baselineTarget !== null || state.needsBaseline ||
             !state.baselineComplete || state.offset < state.observedSize || state.skipUntilNewline ||
-            state.boundaryCheckPending) {
+            state.boundaryCheckPending || state.session.pendingRecord) {
           pendingSelected++;
         }
       }
@@ -414,7 +440,8 @@ export class LocalActivitySource extends EventEmitter {
       }
       this.sourceStatus = this.readIssues === 0 && this.backlogFiles === 0 && !this.fileLimitHit
         ? 'available' : 'partial';
-      if (this.readIssues > 0) this.invalidateAllSessions();
+      // Per-file issues already invalidated their own session; other sessions'
+      // observed state stays valid.
     } catch (error) {
       this.sourceStatus = error?.code === 'ENOENT' ? 'unavailable' : 'partial';
       this.readIssues++;
@@ -491,6 +518,9 @@ export class LocalActivitySource extends EventEmitter {
 
       if (state.baselineTarget === null && mustBaseline) {
         this.beginBaseline(state, info);
+        if (newState && !this.initialBaseline && !this.forceBaseline && !previouslyKnown) {
+          state.liveBaselineSince = this.observedSince;
+        }
       } else if (info.size < state.offset || state.ino !== info.ino ||
           (info.size === previousSize && previousMtime !== info.mtimeMs) ||
           (state.boundary.length && !state.needsBaseline)) {
@@ -530,6 +560,9 @@ export class LocalActivitySource extends EventEmitter {
         }
       }
 
+      if (state.baselineTarget !== null && state.session.pendingRecord) {
+        state.baselineTarget = info.size;
+      }
       const baseline = state.baselineTarget !== null;
       const endOffset = baseline ? state.baselineTarget : info.size;
       const remaining = Math.max(0, endOffset - state.offset);
@@ -550,7 +583,6 @@ export class LocalActivitySource extends EventEmitter {
             const chunk = buffer.subarray(0, bytesRead);
             state.offset += bytesRead;
             state.size = info.size;
-            this.updateBoundary(state, chunk);
             state.backlogAtRead = state.offset < endOffset;
             if (state.backlogAtRead && !baseline) {
               state.suppressUntilOffset = Math.max(state.suppressUntilOffset ?? 0, endOffset);
@@ -562,7 +594,11 @@ export class LocalActivitySource extends EventEmitter {
             const suppressActivity = baseline || state.backlogAtRead || state.needsBaseline ||
               this.forceBaseline || state.suppressUntilOffset !== null;
             used += bytesRead;
-            this.consumeBuffer(state, chunk, suppressActivity);
+            this.syncSessionStatus(state.session, this.clock());
+            state.session.pendingRecord = false;
+            const consumed = this.consumeBuffer(state, chunk, suppressActivity);
+            state.offset -= bytesRead - consumed;
+            if (consumed > 0) this.updateBoundary(state, chunk.subarray(0, consumed));
             if (state.suppressUntilOffset !== null && state.offset >= state.suppressUntilOffset) {
               state.suppressUntilOffset = null;
             }
@@ -592,6 +628,7 @@ export class LocalActivitySource extends EventEmitter {
       boundary: { digest: '', length: 0 },
       boundaryCheckPending: false,
       baselineTarget: null,
+      liveBaselineSince: null,
       baselineStart: null,
       baselineSkipFirstLine: false,
       skipUntilNewline: false,
@@ -617,10 +654,13 @@ export class LocalActivitySource extends EventEmitter {
       completedRootTurn: null,
       // Survives turn_end because session.idle can follow the final assistant turn.
       pendingIdleTurn: null,
+      // Run-start times (journal timestamp and/or live clock) for durations.
+      starts: new Map(),
       waitingPermissions: new Set(),
       waitingInputs: new Set(),
       lastEventAt: now,
       ended: false,
+      pendingRecord: false,
       statusSince: now,
       lastStatus: 'idle',
       stats: createStats(now),
@@ -646,6 +686,7 @@ export class LocalActivitySource extends EventEmitter {
 
   finishBaseline(state) {
     state.baselineTarget = null;
+    state.liveBaselineSince = null;
     state.baselineStart = null;
     state.baselineSkipFirstLine = false;
     state.baselineComplete = true;
@@ -659,6 +700,7 @@ export class LocalActivitySource extends EventEmitter {
     state.boundary = { digest: '', length: 0 };
     state.boundaryCheckPending = false;
     state.baselineTarget = null;
+    state.liveBaselineSince = null;
     state.baselineStart = null;
     state.baselineSkipFirstLine = false;
     state.skipUntilNewline = false;
@@ -733,7 +775,7 @@ export class LocalActivitySource extends EventEmitter {
       const firstNewline = buffer.indexOf(0x0a);
       if (firstNewline < 0) {
         state.skipUntilNewline = true;
-        return;
+        return buffer.length;
       }
       start = firstNewline + 1;
       state.skipUntilNewline = false;
@@ -746,8 +788,10 @@ export class LocalActivitySource extends EventEmitter {
       if (end > start && buffer[end - 1] === 0x0d) end--;
       const length = end - start;
       if (length > MAX_LINE_BYTES) {
-        this.readIssues++;
-        if (!baseline) this.invalidateSession(state);
+        if (!this.consumeOversizedLine(state, buffer.subarray(start, end), baseline)) {
+          this.readIssues++;
+          if (!baseline) this.invalidateSession(state);
+        }
       } else if (length > 0) {
         this.consumeLine(state, buffer.subarray(start, end).toString('utf8'), baseline);
       }
@@ -755,27 +799,37 @@ export class LocalActivitySource extends EventEmitter {
     }
 
     if (start < buffer.length) {
+      // Retry a bounded unfinished record from disk, retaining only its offset.
+      if (buffer.length - start <= MAX_LINE_BYTES && !state.backlogAtRead) {
+        state.session.pendingRecord = true;
+        this.expireEligibility(state);
+        this.syncSessionStatus(state.session, this.clock());
+        return start;
+      }
       state.skipUntilNewline = true;
       if (buffer.length - start > MAX_LINE_BYTES) this.readIssues++;
       this.readIssues++;
       if (!baseline) this.invalidateSession(state);
     }
+    return buffer.length;
+  }
+
+  // Classifies a record too large to parse from its leading `type` only. State
+  // events still need their data, so only state-neutral types are accepted;
+  // nothing beyond the bounded type prefix is decoded or retained.
+  consumeOversizedLine(state, record, baseline) {
+    const prefix = record.subarray(0, OVERSIZED_PREFIX_BYTES).toString('latin1');
+    const type = OVERSIZED_TYPE_PREFIX.exec(prefix)?.[1];
+    if (!type || !validEventType(type) || STATE_EVENT_TYPES.has(type)) return false;
+    this.processEvent(state, { type }, {}, baseline);
+    return true;
   }
 
   syncSessionStatus(session, now) {
     const elapsed = Math.max(0, Math.floor(now - session.stats.statusAt));
     const status = deriveStatus(session, now);
-    if (session.lastStatus === 'running' && status === 'running-unverified') {
-      const verifiedMs = Math.min(elapsed, Math.max(0,
-        Math.floor(session.lastEventAt + STALE_ACTIVITY_MS - session.stats.statusAt)));
-      const unverifiedMs = elapsed - verifiedMs;
+    if (session.lastStatus === 'running') {
       session.stats.runningMs = addDuration(session.stats.runningMs, elapsed);
-      session.stats.unverifiedMs = addDuration(session.stats.unverifiedMs, unverifiedMs);
-    } else if (session.lastStatus === 'running' || session.lastStatus === 'running-unverified') {
-      session.stats.runningMs = addDuration(session.stats.runningMs, elapsed);
-      if (session.lastStatus === 'running-unverified') {
-        session.stats.unverifiedMs = addDuration(session.stats.unverifiedMs, elapsed);
-      }
     }
     if (session.lastStatus === 'waiting') {
       session.stats.waitingMs = addDuration(session.stats.waitingMs, elapsed);
@@ -786,7 +840,6 @@ export class LocalActivitySource extends EventEmitter {
       session.lastStatus = status;
       session.statusSince = now;
     }
-    if (status === 'running-unverified') session.stats.openTurns.clear();
     return status;
   }
 
@@ -847,6 +900,11 @@ export class LocalActivitySource extends EventEmitter {
     const data = validData ? event.data : {};
     const eventId = safeId(event.id);
     if (eventId && !this.uniqueKey(state.file, 'event', eventId)) return;
+    this.processEvent(state, event, data, baseline);
+  }
+
+  processEvent(state, event, data, baseline) {
+    const type = event.type;
     const session = state.session;
     const eventAt = this.clock();
     this.syncSessionStatus(session, eventAt);
@@ -862,19 +920,80 @@ export class LocalActivitySource extends EventEmitter {
       return;
     }
     session.ended = false;
+    this.eventDurationMs = undefined;
     const kind = this.applyEvent(state, event, data, baseline, attributionInfo, eventAt);
     this.syncSessionStatus(session, eventAt);
     if (!baseline && kind !== false && !WAIT_EVENT_TYPES.has(type)) {
       const toolName = type.startsWith('tool.') && validToolName(data.toolName) ? data.toolName : undefined;
       this.recordPublishedStats(session, kind || 'activity', type, toolName, data);
-      this.publish(kind || 'activity', type, toolName);
+      this.publish(kind || 'activity', type, toolName, this.eventDurationMs);
     }
+  }
+
+  markStart(session, id, event, eventAt, baseline) {
+    const ts = eventTime(event);
+    const clock = baseline ? null : eventAt;
+    if (ts === null && clock === null) return;
+    session.starts.delete(id);
+    if (session.starts.size >= MAX_STARTS_PER_SESSION) {
+      session.starts.delete(session.starts.keys().next().value);
+    }
+    session.starts.set(id, { ts, clock });
+  }
+
+  // Duration of a run whose start was seen; journal timestamps are preferred
+  // because one poll can observe both ends of a short run.
+  takeDuration(session, id, event, eventAt, baseline) {
+    const start = session.starts.get(id);
+    session.starts.delete(id);
+    if (!start || baseline) return;
+    const ts = eventTime(event);
+    const duration = start.ts !== null && ts !== null ? ts - start.ts
+      : start.clock !== null ? eventAt - start.clock : NaN;
+    if (Number.isFinite(duration) && duration >= 0) {
+      this.eventDurationMs = Math.min(MAX_HUD_ELAPSED_MS, Math.floor(duration));
+    }
+  }
+
+  observeWork(state, key, toolCallId) {
+    const session = state.session;
+    let agent = session.agents.get(key);
+    if (agent) {
+      agent.live = true;
+    } else {
+      if (session.agents.size >= MAX_AGENTS_PER_SESSION) {
+        this.readIssues++;
+        this.invalidateSession(state);
+        return false;
+      }
+      agent = {
+        turnId: null, active: true, eligible: false, live: true, waiting: false, toolCalls: new Set(),
+      };
+      session.agents.set(key, agent);
+    }
+    if (toolCallId) {
+      if (!agent.toolCalls.has(toolCallId) && agent.toolCalls.size >= MAX_TOOLS_PER_AGENT) {
+        this.readIssues++;
+        this.invalidateSession(state);
+        return false;
+      }
+      agent.toolCalls.add(toolCallId);
+    }
+    return true;
   }
 
   applyEvent(state, event, data, baseline, attributionInfo, eventAt) {
     const type = event.type;
     const session = state.session;
     const { root, key } = attributionInfo;
+    const timestamp = eventTime(event);
+    const liveBaseline = baseline && state.liveBaselineSince !== null &&
+      timestamp !== null && timestamp >= state.liveBaselineSince && timestamp <= eventAt;
+
+    if ((!baseline || liveBaseline) && type !== 'tool.execution_start' && WORK_EVENT_TYPES.has(type) &&
+        (type !== 'tool.execution_progress' || safeId(data.toolCallId))) {
+      if (!this.observeWork(state, key, type === 'tool.execution_progress' ? safeId(data.toolCallId) : null)) return;
+    }
 
     if (type === 'assistant.turn_start') {
       const turnId = safeId(data.turnId);
@@ -886,7 +1005,8 @@ export class LocalActivitySource extends EventEmitter {
         this.invalidateSession(state);
         return;
       }
-      session.agents.set(key, { turnId, active: true, eligible: !baseline, live: !baseline, waiting: false, toolCalls: new Set() });
+      session.agents.set(key, { turnId, active: true, eligible: !baseline, live: !baseline || liveBaseline, waiting: false, toolCalls: new Set() });
+      this.markStart(session, `turn\u0000${key}\u0000${turnId}`, event, eventAt, baseline);
       if (!baseline) session.stats.openTurns.set(key, { turnId, startedAt: eventAt });
       if (root) {
         session.eligibleRootTurn = baseline ? null : turnId;
@@ -899,12 +1019,13 @@ export class LocalActivitySource extends EventEmitter {
     if (type === 'assistant.turn_end') {
       const turnId = safeId(data.turnId);
       const agent = session.agents.get(key);
-      if (agent && (!turnId || agent.turnId === turnId)) {
+      if (agent && (!turnId || agent.turnId === null || agent.turnId === turnId)) {
         const openTurn = session.stats.openTurns.get(key);
         if (turnId && openTurn?.turnId === turnId) {
           this.recordTurn(session, eventAt - openTurn.startedAt);
         }
         if (openTurn?.turnId === agent.turnId) session.stats.openTurns.delete(key);
+        this.takeDuration(session, `turn\u0000${key}\u0000${agent.turnId}`, event, eventAt, baseline);
         agent.active = false;
         agent.eligible = false;
         if (root) session.eligibleRootTurn = null;
@@ -915,11 +1036,13 @@ export class LocalActivitySource extends EventEmitter {
 
     if (type === 'tool.execution_start') {
       const call = safeId(data.toolCallId) || safeId(event.id);
-      if (!call) return;
+      if (!call) return false;
       if (!this.uniqueKey(state.file, 'tool', call)) return false;
+      if ((!baseline || liveBaseline) && !this.observeWork(state, key, call)) return;
+      this.markStart(session, `tool\u0000${call}`, event, eventAt, baseline);
       const agent = session.agents.get(key);
       if (agent?.active) {
-        if (agent.toolCalls.size >= MAX_TOOLS_PER_AGENT) {
+        if (!agent.toolCalls.has(call) && agent.toolCalls.size >= MAX_TOOLS_PER_AGENT) {
           this.readIssues++;
           this.invalidateSession(state);
           return;
@@ -935,8 +1058,12 @@ export class LocalActivitySource extends EventEmitter {
     if (type === 'tool.execution_complete') {
       const call = safeId(data.toolCallId);
       if (!call) return;
+      this.takeDuration(session, `tool\u0000${call}`, event, eventAt, baseline);
       const agent = session.agents.get(key);
-      if (agent?.active) agent.toolCalls.delete(call);
+      if (agent?.active) {
+        const matched = agent.toolCalls.delete(call);
+        if (matched && agent.turnId === null && agent.toolCalls.size === 0) session.agents.delete(key);
+      }
       return;
     }
 
@@ -971,15 +1098,16 @@ export class LocalActivitySource extends EventEmitter {
     if (type === 'subagent.started') {
       const call = safeId(data.toolCallId);
       // One running interval per delegated call; duplicates or restarts after
-      // an observed end never re-open it. Baseline starts are never running.
-      if (!call || !this.uniqueKey(state.file, 'subagent', call) || baseline) return;
+      // an observed end never re-open it. New-session baseline starts may
+      // establish liveness, but are never replayed as activity or statistics.
+      if (!call || !this.uniqueKey(state.file, 'subagent', call) || (baseline && !liveBaseline)) return;
       if (session.subagents.size >= MAX_SUBAGENTS_PER_SESSION) {
         this.readIssues++;
         this.invalidateSession(state);
         return;
       }
       session.subagents.set(call, { key, startedAt: eventAt });
-      session.stats.subagents.started = increment(session.stats.subagents.started);
+      if (!baseline) session.stats.subagents.started = increment(session.stats.subagents.started);
       return;
     }
 
@@ -997,6 +1125,9 @@ export class LocalActivitySource extends EventEmitter {
         session.stats.subagents[type === 'subagent.failed' ? 'failed' : 'completed'] =
           increment(session.stats.subagents[type === 'subagent.failed' ? 'failed' : 'completed']);
       }
+      // The delegating tool call shares this id; its start drives one
+      // subagent-sized burst here instead of a second tool burst.
+      this.takeDuration(session, `tool\u0000${call}`, event, eventAt, baseline);
       // Retire the delegated call and its child agent even if the child never
       // wrote its own turn end. Duplicate terminal records are no-ops.
       const subagent = session.subagents.get(call);
@@ -1081,7 +1212,7 @@ export class LocalActivitySource extends EventEmitter {
   }
 
   // Staleness only: success eligibility is lost, observed running work is kept
-  // (shown as unverified) until a recorded end, wait, cancellation or error.
+  // as running until a recorded end, wait, cancellation or error.
   expireEligibility(state) {
     state.session.pendingIdleTurn = null;
     for (const agent of state.session.agents.values()) agent.eligible = false;
@@ -1091,7 +1222,7 @@ export class LocalActivitySource extends EventEmitter {
 
   // Coverage gaps (read errors, truncation, rebaseline, malformed/partial
   // records, backlog, source loss): an end event may have been missed, so live
-  // running state is dropped too and never resumes without a new live start.
+  // running state is dropped too; only fresh observed work can restore it.
   invalidateSession(state) {
     const now = this.clock();
     this.syncSessionStatus(state.session, now);
@@ -1124,11 +1255,11 @@ export class LocalActivitySource extends EventEmitter {
   hasCompleteCoverageFor(state) {
     return state.baselineTarget === null && !state.needsBaseline && !state.backlogAtRead &&
       state.offset >= state.observedSize && this.backlogFiles === 0 && !this.fileLimitHit &&
-      !state.skipUntilNewline && !state.boundaryCheckPending && !this.forceBaseline &&
+      !state.skipUntilNewline && !state.session.pendingRecord && !state.boundaryCheckPending && !this.forceBaseline &&
       !this.initialBaseline && this.readIssues === 0;
   }
 
-  publish(kind, eventType, toolName) {
+  publish(kind, eventType, toolName, durationMs) {
     this.sequence++;
     const key = JSON.stringify([kind, eventType, toolName]);
     // At most 64 distinct metadata groups are retained. Flush, never drop, on
@@ -1137,6 +1268,8 @@ export class LocalActivitySource extends EventEmitter {
     const previous = this.pendingActivities.get(key);
     const value = previous || { kind, eventType, ...(toolName ? { toolName } : {}), count: 0 };
     value.count++;
+    // Grouped runs keep their longest duration as the burst's impact.
+    if (durationMs !== undefined) value.durationMs = Math.max(value.durationMs ?? 0, durationMs);
     // Move repeated groups to the newest position for the newest-first feed.
     this.pendingActivities.delete(key);
     this.pendingActivities.set(key, value);

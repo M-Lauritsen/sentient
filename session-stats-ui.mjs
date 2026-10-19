@@ -229,3 +229,29 @@ export function clearSessionStats(list, expandedSessionStats) {
   list.replaceChildren();
   expandedSessionStats.clear();
 }
+
+export function createTimelineDialog({ preview, content, canvas, dialog, dialogContent, opener, closeButton, redraw }) {
+  opener.addEventListener('click', () => {
+    if (dialog.open) return;
+    dialogContent.append(content);
+    canvas.height = 160;
+    dialog.showModal();
+    opener.setAttribute('aria-expanded', 'true');
+    redraw();
+  });
+  closeButton.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', (event) => {
+    if (event.target !== dialog) return;
+    const bounds = dialog.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right ||
+        event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
+  });
+  dialog.addEventListener('close', () => {
+    if (dialog.open) return;
+    preview.append(content);
+    canvas.height = 48;
+    opener.setAttribute('aria-expanded', 'false');
+    redraw();
+    opener.focus({ preventScroll: true });
+  });
+}

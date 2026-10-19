@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile, appendFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, appendFile, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -16,6 +16,15 @@ async function fixture(t) {
 function record(type, data = {}) {
   return JSON.stringify({ id: `${type}-${Date.now()}`, type, data }) + '\n';
 }
+
+test('server-side activity projection does not import browser visual settings', async () => {
+  const [server, client] = await Promise.all([
+    readFile(new URL('../server.mjs', import.meta.url), 'utf8'),
+    readFile(new URL('../activity-client.mjs', import.meta.url), 'utf8'),
+  ]);
+  assert.match(server, /from '\.\/activity-client\.mjs'/);
+  assert.doesNotMatch(client, /from '\.\/visual-settings\.mjs'/);
+});
 
 test('SSE session projection uses stable opaque ids and excludes internal keys', async (t) => {
   const activityRoot = await fixture(t);
@@ -247,6 +256,20 @@ test('loopback server serves only explicit app assets and denies traversal', asy
   assert.equal(visualSettings.status, 200);
   assert.match(visualSettings.headers.get('content-type'), /javascript/);
   assert.match(await visualSettings.text(), /export const VISUAL/);
+  const bootstrap = await fetch(`${base}/bootstrap.mjs`);
+  assert.equal(bootstrap.status, 200);
+  assert.match(await bootstrap.text(), /startVisualApplication/);
+  const visualConfig = await fetch(`${base}/visual-config.mjs`);
+  assert.equal(visualConfig.status, 200);
+  assert.match(await visualConfig.text(), /validateVisualSettings/);
+  for (const asset of ['visual-settings-ui.mjs', 'visual-settings-worker.mjs']) {
+    const response = await fetch(`${base}/${asset}`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type'), /javascript/);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+  }
+  assert.match(html, /visual-settings-dialog/);
+  assert.equal((await fetch(`${base}/package.json`)).status, 404);
   assert.equal((await fetch(`${base}/copilot/visual-settings.mjs`)).status, 404);
   const unlistedModule = await fetch(`${base}/copilot/activity-colors.mjs`);
   assert.equal(unlistedModule.status, 404);

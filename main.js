@@ -4,12 +4,15 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity,
+import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity, impactBurst,
   createThinkingPulseClock, summarizeSubagents, createCategoryBurstPlan, createActivityTimeline,
   projectActiveHudSessions } from './activity-client.mjs';
-import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, renderSessionRows } from './session-stats-ui.mjs';
+import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from './session-stats-ui.mjs';
 import { CATEGORIES, CATEGORY_HEX, CATEGORY_INDEX, CATEGORY_RGB } from './activity-colors.mjs';
-import { VISUAL } from './visual-settings.mjs';
+import { VISUAL as VISUAL_DEFAULTS, VISUAL_PRESET, VISUAL_OVERRIDES,
+  EFFECTIVE_VISUAL as VISUAL } from './visual-settings.mjs';
+import { validateVisualSettings } from './visual-config.mjs';
+import { createVisualSettingsPanel } from './visual-settings-ui.mjs';
 
 // Structural geometry and fixed buffer capacities, not visual tuning.
 const CFG = {
@@ -22,11 +25,12 @@ const CFG = {
   trail: 7,
 };
 
-// Pulse kinds: 0 = observed thinking, 1 = activity step, 2 = completion cascade.
+// Pulse kinds: 0 = observed thinking, 1 = activity step, 2 = completion cascade,
+// 3 = duration-scaled impact burst.
 // Motion and category are independent; RGB storage is shared and never rebuilt.
-// Shader attributes are linear; cap the palette at 0.9 before trail brightness.
+// Shader attributes are linear; apply scene brightness before trail brightness.
 const SCENE_RGB = Float32Array.from(CATEGORY_RGB, (channel) =>
-  0.9 * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+  VISUAL.scene.categoryBrightness * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
 
 // ---------- renderer / scene ----------
 const container = document.getElementById('app');
@@ -43,20 +47,20 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x020409);
+scene.background = new THREE.Color(VISUAL.scene.background);
 
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 600);
-camera.position.set(0, 4, 31);
+const camera = new THREE.PerspectiveCamera(VISUAL.camera.fov, window.innerWidth / window.innerHeight, 0.1, 600);
+camera.position.set(...VISUAL.camera.position);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
-controls.dampingFactor = 0.06;
+controls.dampingFactor = VISUAL.camera.damping;
 controls.enablePan = false;
-controls.minDistance = 14;
-controls.maxDistance = 60;
-controls.autoRotate = true;
-controls.autoRotateSpeed = 0.35;
-controls.target.set(0, 0, 0);
+controls.minDistance = VISUAL.camera.minDistance;
+controls.maxDistance = VISUAL.camera.maxDistance;
+controls.autoRotate = VISUAL.camera.autoRotate;
+controls.autoRotateSpeed = VISUAL.camera.autoRotateSpeed;
+controls.target.set(...VISUAL.camera.target);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
@@ -88,7 +92,9 @@ const nodeSize = new Float32Array(N);
     dir.normalize();
     const shell = CFG.radius * (0.3 + 0.7 * Math.pow(Math.random(), 0.28));
     dir.multiplyScalar(shell).toArray(nodePos, i * 3);
-    nodeSize[i] = Math.random() < 0.04 ? 2.6 + Math.random() : 0.6 + Math.random() * 1.0;
+    nodeSize[i] = Math.random() < VISUAL.nodes.largeChance
+      ? VISUAL.nodes.largeSizeMin + Math.random() * VISUAL.nodes.largeSizeRange
+      : VISUAL.nodes.baseSizeMin + Math.random() * VISUAL.nodes.baseSizeRange;
   }
 }
 
@@ -146,7 +152,7 @@ for (let e = 0; e < E; e++) {
     edgePositions[e * 6 + c] = nodePos[edgeA[e] * 3 + c];
     edgePositions[e * 6 + 3 + c] = nodePos[edgeB[e] * 3 + c];
   }
-  edgeBase[e] = 0.45 + Math.random() * 0.55;
+  edgeBase[e] = VISUAL.scene.edgeVariationMin + Math.random() * VISUAL.scene.edgeVariationRange;
 }
 edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgePositions, 3));
 edgeGeo.setAttribute('color', new THREE.BufferAttribute(edgeColors, 3).setUsage(THREE.DynamicDrawUsage));
@@ -176,6 +182,14 @@ const nodeMat = new THREE.ShaderMaterial({
     uHotMix: { value: VISUAL.nodes.hotMix },
     uWhiteThreshold: { value: VISUAL.nodes.whiteThreshold },
     uWhiteMix: { value: VISUAL.nodes.whiteMix },
+    uTwinkleBase: { value: VISUAL.nodes.twinkleBase },
+    uTwinkleAmplitude: { value: VISUAL.nodes.twinkleAmplitude },
+    uTwinkleSpeed: { value: VISUAL.nodes.twinkleSpeed },
+    uTwinkleSpatial: { value: new THREE.Vector3(...VISUAL.nodes.twinkleSpatial) },
+    uCoreFalloff: { value: VISUAL.nodes.coreFalloff },
+    uBaseColor: { value: new THREE.Vector3(...VISUAL.nodes.baseColor) },
+    uHotColor: { value: new THREE.Vector3(...VISUAL.nodes.hotColor) },
+    uWhiteColor: { value: new THREE.Vector3(...VISUAL.nodes.whiteColor) },
   },
   vertexShader: /* glsl */ `
     attribute float aEnergy;
@@ -185,13 +199,17 @@ const nodeMat = new THREE.ShaderMaterial({
     uniform float uTime;
     uniform float uSize;
     uniform float uActiveGrowth;
+    uniform float uTwinkleBase;
+    uniform float uTwinkleAmplitude;
+    uniform float uTwinkleSpeed;
+    uniform vec3 uTwinkleSpatial;
     varying float vEnergy;
     varying float vHot;
     varying float vTwinkle;
     void main() {
       vec4 mv = modelViewMatrix * vec4(position, 1.0);
       gl_Position = projectionMatrix * mv;
-      vTwinkle = 0.75 + 0.25 * sin(uTime * 1.7 + position.x * 3.1 + position.y * 2.3);
+      vTwinkle = uTwinkleBase + uTwinkleAmplitude * sin(uTime * uTwinkleSpeed + dot(position, uTwinkleSpatial));
       gl_PointSize = aSize * uSize * (1.0 + aEnergy * uActiveGrowth) * uScale / -mv.z;
       vEnergy = aEnergy;
       vHot = aHot;
@@ -202,18 +220,19 @@ const nodeMat = new THREE.ShaderMaterial({
     uniform float uHotMix;
     uniform float uWhiteThreshold;
     uniform float uWhiteMix;
+    uniform float uCoreFalloff;
+    uniform vec3 uBaseColor;
+    uniform vec3 uHotColor;
+    uniform vec3 uWhiteColor;
     varying float vEnergy;
     varying float vHot;
     varying float vTwinkle;
     void main() {
       float d = length(gl_PointCoord - 0.5);
       if (d > 0.5) discard;
-      float core = pow(smoothstep(0.5, 0.0, d), 2.2);
-      vec3 base = vec3(0.16, 0.45, 1.0);
-      vec3 hot = vec3(1.0, 0.52, 0.12);
-      vec3 white = vec3(1.0, 0.92, 0.8);
-      vec3 col = mix(base, hot, clamp(vHot * uHotMix, 0.0, 1.0));
-      col = mix(col, white, clamp((max(vEnergy, vHot) - uWhiteThreshold) * uWhiteMix, 0.0, 1.0));
+      float core = pow(smoothstep(0.5, 0.0, d), uCoreFalloff);
+      vec3 col = mix(uBaseColor, uHotColor, clamp(vHot * uHotMix, 0.0, 1.0));
+      col = mix(col, uWhiteColor, clamp((max(vEnergy, vHot) - uWhiteThreshold) * uWhiteMix, 0.0, 1.0));
       gl_FragColor = vec4(col * core * (uIdleBrightness * vTwinkle + max(vEnergy, vHot) * uActiveBrightness), 1.0);
     }`,
   transparent: true,
@@ -237,69 +256,82 @@ brain.add(new THREE.Points(nodeGeo, nodeMat));
   geo.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
   var dustMat = new THREE.ShaderMaterial({
     uniforms: {
-      uTime: { value: 0 }, uScale: { value: 40 * pixelRatio },
+      uTime: { value: 0 }, uScale: { value: VISUAL.dust.scale * pixelRatio },
       uBrightness: { value: VISUAL.scene.dustBrightness },
+      uColor: { value: new THREE.Vector3(...VISUAL.dust.color) },
+      uTwinkleBase: { value: VISUAL.dust.twinkleBase },
+      uTwinkleAmplitude: { value: VISUAL.dust.twinkleAmplitude },
+      uTwinkleSpeed: { value: VISUAL.dust.twinkleSpeed },
+      uTwinklePhase: { value: VISUAL.dust.twinklePhase },
+      uTwinklePower: { value: VISUAL.dust.twinklePower },
     },
     vertexShader: /* glsl */ `
       attribute float aPhase;
       uniform float uTime;
       uniform float uScale;
+      uniform float uTwinkleBase;
+      uniform float uTwinkleAmplitude;
+      uniform float uTwinkleSpeed;
+      uniform float uTwinklePhase;
+      uniform float uTwinklePower;
       varying float vA;
       void main() {
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * mv;
-        vA = 0.25 + 0.75 * pow(0.5 + 0.5 * sin(uTime * 0.9 + aPhase * 7.0), 3.0);
+        vA = uTwinkleBase + uTwinkleAmplitude * pow(0.5 + 0.5 * sin(uTime * uTwinkleSpeed + aPhase * uTwinklePhase), uTwinklePower);
         gl_PointSize = uScale / -mv.z;
       }`,
     fragmentShader: /* glsl */ `
       uniform float uBrightness;
+      uniform vec3 uColor;
       varying float vA;
       void main() {
         float d = length(gl_PointCoord - 0.5);
         if (d > 0.5) discard;
-        gl_FragColor = vec4(vec3(0.2, 0.45, 1.0) * vA * uBrightness * smoothstep(0.5, 0.0, d), 1.0);
+        gl_FragColor = vec4(uColor * vA * uBrightness * smoothstep(0.5, 0.0, d), 1.0);
       }`,
     transparent: true,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
   var dust = new THREE.Points(geo, dustMat);
+  dust.visible = VISUAL.effects.dust;
   scene.add(dust);
 }
 
 // ---------- core glow ----------
-function radialTexture() {
+function radialTexture(settings = VISUAL) {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const g = c.getContext('2d');
   const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
   grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.25, 'rgba(255,255,255,0.35)');
+  grad.addColorStop(settings.scene.glowKnee, `rgba(255,255,255,${settings.scene.glowKneeOpacity})`);
   grad.addColorStop(1, 'rgba(255,255,255,0)');
   g.fillStyle = grad;
   g.fillRect(0, 0, 128, 128);
   return new THREE.CanvasTexture(c);
 }
-const glowTex = radialTexture();
+let glowTex = radialTexture();
 const coreGlow = new THREE.Sprite(
   new THREE.SpriteMaterial({
     map: glowTex,
-    color: 0x3d8bff,
+    color: VISUAL.scene.coreColor,
     transparent: true,
     opacity: VISUAL.scene.coreOpacity,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   })
 );
-coreGlow.scale.setScalar(16);
+coreGlow.scale.setScalar(VISUAL.scene.coreSize);
 brain.add(coreGlow);
-const baseCoreColor = new THREE.Color(0x3d8bff);
+const baseCoreColor = new THREE.Color(VISUAL.scene.coreColor);
 const waitingCoreColor = new THREE.Color(CATEGORY_HEX.waiting);
 const waitingMarkerMaterial = new THREE.SpriteMaterial({
   map: glowTex,
-  color: 0xff4fd8,
+  color: CATEGORY_HEX.waiting,
   transparent: true,
-  opacity: 0.9,
+  opacity: VISUAL.waiting.markerOpacity,
   blending: THREE.AdditiveBlending,
   depthWrite: false,
 });
@@ -308,7 +340,7 @@ const waitingMarkerGroups = Array.from({ length: 8 }, () => {
   for (const [x, y, z] of [[0, 0, 0], [0.32, 0.12, 0], [-0.2, -0.26, 0.18]]) {
     const marker = new THREE.Sprite(waitingMarkerMaterial);
     marker.position.set(x, y, z);
-    marker.scale.setScalar(0.55);
+    marker.scale.setScalar(VISUAL.waiting.markerSize);
     cluster.add(marker);
   }
   cluster.visible = false;
@@ -318,14 +350,14 @@ const waitingMarkerGroups = Array.from({ length: 8 }, () => {
 const haloGlow = new THREE.Sprite(
   new THREE.SpriteMaterial({
     map: glowTex,
-    color: 0x2a6bff,
+    color: VISUAL.scene.haloColor,
     transparent: true,
     opacity: VISUAL.scene.haloOpacity,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   })
 );
-haloGlow.scale.setScalar(38);
+haloGlow.scale.setScalar(VISUAL.scene.haloSize);
 brain.add(haloGlow);
 
 // ---------- pulses ----------
@@ -350,7 +382,10 @@ pulseGeo.setAttribute('position', new THREE.BufferAttribute(pulsePos, 3).setUsag
 pulseGeo.setAttribute('aColor', new THREE.BufferAttribute(pulseCol, 3).setUsage(THREE.DynamicDrawUsage));
 pulseGeo.setAttribute('aSize', new THREE.BufferAttribute(pulseSize, 1).setUsage(THREE.DynamicDrawUsage));
 const pulseMat = new THREE.ShaderMaterial({
-  uniforms: { uScale: { value: VISUAL.pulses.scale * pixelRatio } },
+  uniforms: {
+    uScale: { value: VISUAL.pulses.scale * pixelRatio },
+    uCoreFalloff: { value: VISUAL.pulses.coreFalloff },
+  },
   vertexShader: /* glsl */ `
     attribute vec3 aColor;
     attribute float aSize;
@@ -363,11 +398,12 @@ const pulseMat = new THREE.ShaderMaterial({
       vColor = aColor;
     }`,
   fragmentShader: /* glsl */ `
+    uniform float uCoreFalloff;
     varying vec3 vColor;
     void main() {
       float d = length(gl_PointCoord - 0.5);
       if (d > 0.5) discard;
-      float a = pow(smoothstep(0.5, 0.0, d), 1.8);
+      float a = pow(smoothstep(0.5, 0.0, d), uCoreFalloff);
       gl_FragColor = vec4(vColor * a, 1.0);
     }`,
   transparent: true,
@@ -381,8 +417,8 @@ brain.add(pulsePoints);
 const MAX_ACTIVE_SUBAGENT_BRANCHES = 512;
 const MAX_FADING_SUBAGENT_BRANCHES = 64;
 const MAX_SUBAGENT_ANCHORS = 32;
-const SUBAGENT_FADE_SECONDS = 2;
-const SUBAGENT_GROW_SECONDS = 0.22;
+let SUBAGENT_FADE_SECONDS = VISUAL.subagents.fadeSeconds;
+let SUBAGENT_GROW_SECONDS = VISUAL.subagents.growSeconds;
 const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 let reducedMotion = reducedMotionQuery.matches;
 reducedMotionQuery.addEventListener('change', (event) => {
@@ -422,7 +458,7 @@ const branchTipGeo = new THREE.BufferGeometry();
 branchTipGeo.setAttribute('position', new THREE.BufferAttribute(branchTipPositions, 3).setUsage(THREE.DynamicDrawUsage));
 branchTipGeo.setAttribute('color', new THREE.BufferAttribute(branchTipColors, 3).setUsage(THREE.DynamicDrawUsage));
 const branchTips = new THREE.Points(branchTipGeo, new THREE.PointsMaterial({
-  size: 5 * pixelRatio, sizeAttenuation: false, vertexColors: true, transparent: true,
+  size: VISUAL.subagents.tipSize * pixelRatio, sizeAttenuation: false, vertexColors: true, transparent: true,
   blending: THREE.AdditiveBlending, depthWrite: false,
 }));
 branchTips.frustumCulled = false;
@@ -441,7 +477,7 @@ const fadingTipGeo = new THREE.BufferGeometry();
 fadingTipGeo.setAttribute('position', new THREE.BufferAttribute(fadingTipPositions, 3).setUsage(THREE.DynamicDrawUsage));
 fadingTipGeo.setAttribute('color', new THREE.BufferAttribute(fadingTipColors, 3).setUsage(THREE.DynamicDrawUsage));
 const fadingTips = new THREE.Points(fadingTipGeo, new THREE.PointsMaterial({
-  size: 4 * pixelRatio, sizeAttenuation: false, vertexColors: true, transparent: true,
+  size: VISUAL.subagents.fadingTipSize * pixelRatio, sizeAttenuation: false, vertexColors: true, transparent: true,
   blending: THREE.AdditiveBlending, depthWrite: false,
 }));
 fadingTips.frustumCulled = false;
@@ -451,7 +487,7 @@ const anchorGeo = new THREE.BufferGeometry();
 anchorGeo.setAttribute('position', new THREE.BufferAttribute(anchorPositions, 3).setUsage(THREE.DynamicDrawUsage));
 anchorGeo.setAttribute('color', new THREE.BufferAttribute(anchorColors, 3).setUsage(THREE.DynamicDrawUsage));
 const anchorPoints = new THREE.Points(anchorGeo, new THREE.PointsMaterial({
-  size: 8 * pixelRatio, sizeAttenuation: false, vertexColors: true, transparent: true,
+  size: VISUAL.subagents.anchorSize * pixelRatio, sizeAttenuation: false, vertexColors: true, transparent: true,
   blending: THREE.AdditiveBlending, depthWrite: false,
 }));
 anchorPoints.frustumCulled = false;
@@ -530,7 +566,7 @@ function retireSubagentBranch(sessionSid, sid, outcome, now) {
     last.slot = slot;
   }
   subagentBranchByKey.delete(key);
-  if (reducedMotion) return;
+  if (reducedMotion || !VISUAL.effects.subagentTransitions) return;
   branch.outcome = outcome;
   branch.fadeStart = now;
   if (fadingSubagentBranches.length >= MAX_FADING_SUBAGENT_BRANCHES) fadingSubagentBranches.shift();
@@ -565,7 +601,7 @@ function applySubagentTree(tree) {
   }
   for (const branch of tree.added) {
     const session = subagentAnchorBySid.get(branch.sessionSid);
-    if (session) addSubagentBranch(session, branch, !reducedMotion);
+    if (session) addSubagentBranch(session, branch, !reducedMotion && VISUAL.effects.subagentTransitions);
   }
 }
 
@@ -588,10 +624,14 @@ function renderSubagentTree(now) {
     anchorPositions[colorOffset] = nodePos[offset];
     anchorPositions[colorOffset + 1] = nodePos[offset + 1];
     anchorPositions[colorOffset + 2] = nodePos[offset + 2];
-    if (session.status === 'running') writeTreeColor(anchorColors, colorOffset, 0.2, 0.6, 1, 1.1);
-    else if (session.status === 'waiting') writeTreeCategory(anchorColors, colorOffset, CATEGORY_INDEX.waiting, 0.9);
-    else if (session.status === 'stuck') writeTreeColor(anchorColors, colorOffset, 0.5, 0.55, 0.65, 0.55);
-    else writeTreeColor(anchorColors, colorOffset, 0.16, 0.32, 0.56, 0.35);
+    if (session.status === 'running') writeTreeColor(anchorColors, colorOffset,
+      ...VISUAL.subagents.runningAnchorColor, VISUAL.subagents.runningAnchorIntensity);
+    else if (session.status === 'waiting') writeTreeCategory(anchorColors, colorOffset,
+      CATEGORY_INDEX.waiting, VISUAL.subagents.waitingAnchorIntensity);
+    else if (session.status === 'stuck') writeTreeColor(anchorColors, colorOffset,
+      ...VISUAL.subagents.stuckAnchorColor, VISUAL.subagents.stuckAnchorIntensity);
+    else writeTreeColor(anchorColors, colorOffset,
+      ...VISUAL.subagents.quietAnchorColor, VISUAL.subagents.quietAnchorIntensity);
   }
   anchorGeo.setDrawRange(0, subagentAnchors.length);
   anchorGeo.attributes.position.needsUpdate = true;
@@ -603,7 +643,8 @@ function renderSubagentTree(now) {
     const lineOffset = i * 6;
     const tipOffset = i * 3;
     const session = subagentAnchorBySid.get(branch.sessionSid);
-    const growth = reducedMotion ? 1 : Math.min(1, Math.max(0, (now - branch.growthStart) / SUBAGENT_GROW_SECONDS));
+    const growth = reducedMotion || !VISUAL.effects.subagentTransitions ? 1
+      : Math.min(1, Math.max(0, (now - branch.growthStart) / SUBAGENT_GROW_SECONDS));
     const length = branch.length * growth;
     const x = nodePos[anchorOffset], y = nodePos[anchorOffset + 1], z = nodePos[anchorOffset + 2];
     const ex = x + branch.directionX * length;
@@ -618,7 +659,9 @@ function renderSubagentTree(now) {
     branchTipPositions[tipOffset] = ex;
     branchTipPositions[tipOffset + 1] = ey;
     branchTipPositions[tipOffset + 2] = ez;
-    const intensity = Math.min(1, 0.55 + Math.max(0, now - branch.startedAt) * 0.08);
+    const intensity = Math.min(VISUAL.subagents.maxIntensity, VISUAL.subagents.initialIntensity +
+      (VISUAL.effects.subagentTransitions
+        ? Math.max(0, now - branch.startedAt) * VISUAL.subagents.intensityPerSecond : 0));
     // No per-child last-activity attribution crosses the wire. Do not infer it
     // from aggregate events: delegated activity uses its role, waiting its cue.
     const category = session?.status === 'waiting' ? CATEGORY_INDEX.waiting : CATEGORY_INDEX.subagent;
@@ -644,9 +687,11 @@ function renderSubagentTree(now) {
     const offset = branch.anchorIndex * 3;
     const lineOffset = i * 6;
     const age = Math.max(0, (now - branch.fadeStart) / SUBAGENT_FADE_SECONDS);
-    const flash = branch.outcome === 'failed' && age < 0.12 ? 2 : 1;
+    const flash = branch.outcome === 'failed' && age < VISUAL.subagents.failureFlashFraction
+      ? VISUAL.subagents.failureFlashIntensity : 1;
     const intensity = (1 - age) * flash *
-      (branch.outcome === 'completed' && age < 0.15 ? 0.6 + age * 6 : 1);
+      (branch.outcome === 'completed' && age < VISUAL.subagents.completionFlashFraction
+        ? VISUAL.subagents.completionFlashBase + age * VISUAL.subagents.completionFlashGrowth : 1);
     const x = nodePos[offset], y = nodePos[offset + 1], z = nodePos[offset + 2];
     fadingLinePositions[lineOffset] = x;
     fadingLinePositions[lineOffset + 1] = y;
@@ -661,8 +706,8 @@ function renderSubagentTree(now) {
       writeTreeCategory(fadingLineColors, lineOffset, CATEGORY_INDEX.error, intensity);
       writeTreeCategory(fadingTipColors, i * 3, CATEGORY_INDEX.error, intensity);
     } else if (branch.outcome === 'cleared') {
-      writeTreeColor(fadingLineColors, lineOffset, 0.55, 0.58, 0.64, intensity);
-      writeTreeColor(fadingTipColors, i * 3, 0.65, 0.68, 0.72, intensity);
+      writeTreeColor(fadingLineColors, lineOffset, ...VISUAL.subagents.clearedLineColor, intensity);
+      writeTreeColor(fadingTipColors, i * 3, ...VISUAL.subagents.clearedTipColor, intensity);
     } else {
       writeTreeCategory(fadingLineColors, lineOffset, CATEGORY_INDEX.subagent, intensity);
       writeTreeCategory(fadingTipColors, i * 3, CATEGORY_INDEX.subagent, intensity);
@@ -726,7 +771,9 @@ function updatePulses(dt) {
     const kind = pKind[s];
     pT[s] += (pSpeed[s] * dt) / edgeLen[e];
     const rgb = pCat[s] * 3;
-    const intensity = kind === 2 ? VISUAL.completion.edgeIntensity : kind === 1 ? 0.45 : 0.6;
+    const intensity = kind === 3 ? VISUAL.impact.edgeIntensity
+      : kind === 2 ? VISUAL.completion.edgeIntensity
+        : kind === 1 ? VISUAL.pulses.stepEdgeIntensity : VISUAL.pulses.thinkingEdgeIntensity;
     edgeR[e] = Math.max(edgeR[e], SCENE_RGB[rgb] * intensity);
     edgeG[e] = Math.max(edgeG[e], SCENE_RGB[rgb + 1] * intensity);
     edgeBColor[e] = Math.max(edgeBColor[e], SCENE_RGB[rgb + 2] * intensity);
@@ -737,9 +784,11 @@ function updatePulses(dt) {
       const to = otherEnd(e, from);
       pActive[s] = 0;
       activePulses--;
-      nodeEnergy[to] = Math.min(1.8, nodeEnergy[to] + (kind === 2 ? VISUAL.completion.nodeEnergy : 0.5));
+      nodeEnergy[to] = Math.min(VISUAL.nodes.energyCap, nodeEnergy[to] + (kind === 3 ? VISUAL.impact.nodeEnergy
+        : kind === 2 ? VISUAL.completion.nodeEnergy : VISUAL.pulses.nodeEnergy));
       if (hops > 0) {
-        const branch = kind === 2 ? (Math.random() < VISUAL.completion.branchChance ? 2 : 1) : kind === 0 ? 1 : 0;
+        const branch = kind === 3 ? (Math.random() < VISUAL.impact.branchChance ? 2 : 1)
+          : kind === 2 ? (Math.random() < VISUAL.completion.branchChance ? 2 : 1) : kind === 0 ? 1 : 0;
         if (branch > 0) fireFrom(to, hops - 1, kind, from, branch, pCat[s]);
       }
     }
@@ -757,8 +806,9 @@ function writePulseBuffers() {
     const a = pFrom[s] * 3;
     const b = otherEnd(e, pFrom[s]) * 3;
     const rgb = pCat[s] * 3;
-    const head = pKind[s] === 2 ? VISUAL.pulses.completionHead : VISUAL.pulses.head;
-    const spacing = pKind[s] === 2 ? VISUAL.pulses.completionTrailSpacing : VISUAL.pulses.trailSpacing;
+    const head = pKind[s] === 3 ? VISUAL.impact.head
+      : pKind[s] === 2 ? VISUAL.pulses.completionHead : VISUAL.pulses.head;
+    const spacing = pKind[s] >= 2 ? VISUAL.pulses.completionTrailSpacing : VISUAL.pulses.trailSpacing;
     for (let j = 0; j < T; j++) {
       const idx = base + j;
       const t = pT[s] - j * spacing;
@@ -774,7 +824,7 @@ function writePulseBuffers() {
       pulseCol[idx * 3] = SCENE_RGB[rgb] * bright;
       pulseCol[idx * 3 + 1] = SCENE_RGB[rgb + 1] * bright;
       pulseCol[idx * 3 + 2] = SCENE_RGB[rgb + 2] * bright;
-      pulseSize[idx] = head * (0.35 + 0.65 * f);
+      pulseSize[idx] = head * (VISUAL.pulses.minTrailSize + (1 - VISUAL.pulses.minTrailSize) * f);
     }
   }
   pulseGeo.attributes.position.needsUpdate = true;
@@ -789,9 +839,9 @@ function writeEdgeColors(dt) {
     edgeG[e] *= decay;
     edgeBColor[e] *= decay;
     const b = edgeBase[e];
-    const r = 0.012 * b + edgeR[e];
-    const g = 0.04 * b + edgeG[e];
-    const bl = 0.13 * b + edgeBColor[e];
+    const r = VISUAL.scene.edgeBaseColor[0] * b + edgeR[e];
+    const g = VISUAL.scene.edgeBaseColor[1] * b + edgeG[e];
+    const bl = VISUAL.scene.edgeBaseColor[2] * b + edgeBColor[e];
     const o = e * 6;
     edgeColors[o] = edgeColors[o + 3] = r;
     edgeColors[o + 1] = edgeColors[o + 4] = g;
@@ -806,6 +856,15 @@ const floorMat = new THREE.ShaderMaterial({
     uTime: { value: 0 }, uGlow: { value: 0 },
     uBrightness: { value: VISUAL.scene.floorBrightness },
     uFade: { value: VISUAL.scene.floorFade },
+    uFineSpacing: { value: VISUAL.floor.fineSpacing },
+    uFineIntensity: { value: VISUAL.floor.fineIntensity },
+    uCoarseSpacing: { value: VISUAL.floor.coarseSpacing },
+    uCoarseIntensity: { value: VISUAL.floor.coarseIntensity },
+    uColor: { value: new THREE.Vector3(...VISUAL.floor.color) },
+    uPoolColor: { value: new THREE.Vector3(...VISUAL.floor.poolColor) },
+    uPoolFade: { value: VISUAL.floor.poolFade },
+    uPoolBase: { value: VISUAL.floor.poolBase },
+    uPoolGrid: { value: VISUAL.floor.poolGrid },
   },
   vertexShader: /* glsl */ `
     varying vec3 vW;
@@ -819,6 +878,15 @@ const floorMat = new THREE.ShaderMaterial({
     uniform float uGlow;
     uniform float uBrightness;
     uniform float uFade;
+    uniform float uFineSpacing;
+    uniform float uFineIntensity;
+    uniform float uCoarseSpacing;
+    uniform float uCoarseIntensity;
+    uniform vec3 uColor;
+    uniform vec3 uPoolColor;
+    uniform float uPoolFade;
+    uniform float uPoolBase;
+    uniform float uPoolGrid;
     varying vec3 vW;
     float grid(vec2 p, float s) {
       vec2 q = p / s;
@@ -827,11 +895,11 @@ const floorMat = new THREE.ShaderMaterial({
     }
     void main() {
       float d = length(vW.xz);
-      float g = grid(vW.xz, 2.5) * 0.45 + grid(vW.xz, 12.5) * 0.8;
+      float g = grid(vW.xz, uFineSpacing) * uFineIntensity + grid(vW.xz, uCoarseSpacing) * uCoarseIntensity;
       float fade = exp(-d * uFade);
-      vec3 col = vec3(0.1, 0.32, 1.0) * g * fade * uBrightness;
-      float pool = exp(-d * 0.1) * uGlow;
-      col += vec3(0.12, 0.32, 0.95) * pool * (0.06 + g * 0.6);
+      vec3 col = uColor * g * fade * uBrightness;
+      float pool = exp(-d * uPoolFade) * uGlow;
+      col += uPoolColor * pool * (uPoolBase + g * uPoolGrid);
       gl_FragColor = vec4(col, 1.0);
     }`,
   transparent: true,
@@ -842,6 +910,7 @@ const floorMat = new THREE.ShaderMaterial({
 const floor = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), floorMat);
 floor.rotation.x = -Math.PI / 2;
 floor.position.y = -15;
+floor.visible = VISUAL.effects.floor;
 scene.add(floor);
 
 // ---------- HUD ----------
@@ -873,6 +942,16 @@ const timelineLabels = {
   gap: 'Coverage gap · missing activity is unknown, not zero',
 };
 let lastTimelineState = '';
+createTimelineDialog({
+  preview: document.querySelector('.hud-timeline'),
+  content: document.getElementById('timeline-content'),
+  canvas: timelineCanvas,
+  dialog: document.getElementById('timeline-dialog'),
+  dialogContent: document.getElementById('timeline-dialog-content'),
+  opener: document.getElementById('timeline-open'),
+  closeButton: document.getElementById('timeline-close'),
+  redraw: () => renderTimeline(performance.now()),
+});
 const sessionStatusLabels = {
   running: 'RUNNING',
   'running-unverified': 'RUNNING · UNVERIFIED',
@@ -915,7 +994,7 @@ function renderWaitingMarkers(sessionIds) {
   for (let index = 0; index < waitingMarkerGroups.length; index++) {
     const cluster = waitingMarkerGroups[index];
     const id = waiting[index];
-    cluster.visible = Boolean(id);
+    cluster.visible = VISUAL.effects.waitingMarkers && Boolean(id);
     if (!id) continue;
     let hash = 0;
     for (const character of id) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
@@ -978,18 +1057,18 @@ function renderSessions(state) {
 
 // ---------- interaction ----------
 let activityState = { connection: 'connecting', sourceStatus: 'unknown', coverage: 'unknown', activeSessions: 0, thinkingSessions: 0, runningSessions: 0, unverifiedRunningSessions: 0, journalFiles: 0, sessions: [] };
-const thinkingPulseClock = createThinkingPulseClock();
+const thinkingPulseClock = createThinkingPulseClock(VISUAL.running);
 
 // Blue running-state stream: observed running work (thinking, tools and
 // delegated agents), not a claim of hidden cognition.
 function renderThinking(dt) {
-  const sessions = Math.min(activityState.runningSessions ?? 0, 32);
+  const sessions = Math.min(activityState.runningSessions ?? 0, VISUAL.running.maxSessions);
   const pulses = thinkingPulseClock.tick(dt, activityState, document.hidden);
   for (let i = 0; i < pulses; i++) {
     const node = (Math.random() * N) | 0;
-    const hops = 2 + Math.min(5, Math.floor(Math.log2(sessions + 1)));
-    fireFrom(node, hops, 0, -1, 1);
-    nodeEnergy[node] = Math.min(1.8, nodeEnergy[node] + 0.45);
+    const hops = VISUAL.running.baseHops + Math.min(VISUAL.running.maxExtraHops, Math.floor(Math.log2(sessions + 1)));
+    fireFrom(node, hops, 0, -1, VISUAL.running.spread);
+    nodeEnergy[node] = Math.min(VISUAL.nodes.energyCap, nodeEnergy[node] + VISUAL.running.nodeEnergy);
   }
 }
 
@@ -1098,10 +1177,24 @@ function renderCompletionCascade(node) {
   }
 }
 
+function renderImpactBurst(node, category, durationMs) {
+  const burst = impactBurst(durationMs, VISUAL.impact);
+  if (!burst) return;
+  const edges = adjacency[node];
+  nodeHot[node] = Math.max(nodeHot[node], burst.seedHeat);
+  fireFrom(node, burst.hops, 3, -1, Math.min(burst.spread, edges.length), category);
+  for (let i = 0; i < Math.min(burst.neighbourSeeds, edges.length); i++) {
+    fireFrom(otherEnd(edges[i], node), burst.neighbourHops, 3, node, burst.neighbourSpread, category);
+  }
+}
+
 function renderObservedImpulses() {
-  const { byCategory, sceneByCategory, entries } = impulseBuffer.drain();
+  const { byCategory, sceneByCategory, entries, impacts } = impulseBuffer.drain();
   if (document.hidden) return;
   timeline.add(byCategory, performance.now());
+  for (let i = 0; i < impacts.length; i++) {
+    renderImpactBurst((Math.random() * N) | 0, impacts[i].category, impacts[i].durationMs);
+  }
   for (let i = 0; i < entries.length; i++) {
     const { kind, toolName, eventType, count } = entries[i];
     impulseFeed.add(kind, toolName, eventType, count);
@@ -1110,17 +1203,19 @@ function renderObservedImpulses() {
   const plan = categoryBurstPlan.plan(sceneByCategory);
   for (let i = 0; i < plan.length; i++) {
     const node = (Math.random() * N) | 0;
-    const intensity = impulseIntensity(plan.counts[i]);
+    const intensity = impulseIntensity(plan.counts[i], VISUAL.activity);
     const kind = plan.kinds[i];
     const category = plan.categories[i];
     if (kind === 2) {
       renderCompletionCascade(node);
       continue;
     }
-    const hops = category === CATEGORY_INDEX.error ? 0 : kind === 0 ? 2 + intensity : intensity;
-    fireFrom(node, hops, kind, -1, Math.min(3, intensity), category);
-    if (kind === 0) nodeEnergy[node] = Math.min(1.8, nodeEnergy[node] + 0.45 * intensity);
-    else nodeHot[node] = Math.min(1.2, nodeHot[node] + 0.7 * intensity);
+    const hops = category === CATEGORY_INDEX.error ? VISUAL.activity.errorHops
+      : kind === 0 ? VISUAL.activity.reasoningBaseHops + intensity : intensity;
+    fireFrom(node, hops, kind, -1, Math.min(VISUAL.activity.maxSpread, intensity), category);
+    if (kind === 0) nodeEnergy[node] = Math.min(VISUAL.nodes.energyCap,
+      nodeEnergy[node] + VISUAL.activity.reasoningEnergy * intensity);
+    else nodeHot[node] = Math.min(VISUAL.activity.stepHeatCap, nodeHot[node] + VISUAL.activity.stepHeat * intensity);
   }
 }
 
@@ -1193,7 +1288,7 @@ function frame() {
   }
   updatePulses(dt);
 
-  const decay = Math.exp(-dt * 2.0);
+  const decay = Math.exp(-dt * VISUAL.nodes.decay);
   for (let i = 0; i < N; i++) {
     nodeEnergy[i] *= decay;
     nodeHot[i] *= decay;
@@ -1205,21 +1300,24 @@ function frame() {
   writePulseBuffers();
 
   // ambience
-  const load = Math.min(1, activePulses / 500 + activityState.activeSessions / 64);
-  smoothedLoad += (load - smoothedLoad) * Math.min(1, dt * 3);
+  const load = Math.min(1, activePulses / VISUAL.scene.loadPulseScale + activityState.activeSessions / VISUAL.scene.loadSessionScale);
+  smoothedLoad += (load - smoothedLoad) * Math.min(1, dt * VISUAL.scene.loadSmoothing);
 
-  const breathe = 1 + Math.sin(now * 0.8) * 0.012;
+  const breathe = VISUAL.effects.latticeBreathing
+    ? 1 + Math.sin(now * VISUAL.scene.breathSpeed) * VISUAL.scene.breathAmplitude : 1;
   brain.scale.setScalar(breathe);
   const waitingGlow = activityState.connection === 'connected' &&
     activityState.sourceStatus !== 'unavailable' && activityState.waitingSessions > 0;
-  const waitBreath = 0.5 + 0.5 * (0.5 + 0.5 * Math.sin(now * 0.7));
-  coreGlow.material.color.lerpColors(baseCoreColor, waitingCoreColor, waitingGlow ? waitBreath : 0);
+  const waitBreath = VISUAL.waiting.colorMixMin +
+    VISUAL.waiting.colorMixRange * (0.5 + 0.5 * Math.sin(now * VISUAL.waiting.breathSpeed));
+  const showWaitingGlow = VISUAL.effects.waitingGlow && waitingGlow;
+  coreGlow.material.color.lerpColors(baseCoreColor, waitingCoreColor, showWaitingGlow ? waitBreath : 0);
   coreGlow.material.opacity = VISUAL.scene.coreOpacity + smoothedLoad * VISUAL.scene.coreLoad;
-  if (waitingGlow) coreGlow.material.opacity += 0.025 + waitBreath * 0.025;
+  if (showWaitingGlow) coreGlow.material.opacity += VISUAL.waiting.opacityBase + waitBreath * VISUAL.waiting.opacityBreath;
   haloGlow.material.opacity = VISUAL.scene.haloOpacity + smoothedLoad * VISUAL.scene.haloLoad;
   bloom.strength = VISUAL.scene.bloomStrength + smoothedLoad * VISUAL.scene.bloomLoad;
-  dust.rotation.y = -now * 0.02;
-  dust.rotation.x = Math.sin(now * 0.05) * 0.1;
+  dust.rotation.y = now * VISUAL.dust.rotationSpeed;
+  dust.rotation.x = Math.sin(now * VISUAL.dust.tiltSpeed) * VISUAL.dust.tiltAmplitude;
 
   nodeMat.uniforms.uTime.value = now;
   dustMat.uniforms.uTime.value = now;
@@ -1250,6 +1348,171 @@ window.addEventListener('resize', () => {
   renderer.setSize(w, h);
   composer.setSize(w, h);
   bloom.setSize(w, h);
+});
+
+function applyVisualSettings(candidate) {
+  const errors = validateVisualSettings(candidate);
+  if (errors.length) throw new Error(errors.map(({ path, message }) => `${path}: ${message}`).join(' '));
+
+  const previous = structuredClone(VISUAL);
+  const changed = (path) =>
+    JSON.stringify(path.split('.').reduce((value, key) => value[key], previous)) !==
+    JSON.stringify(path.split('.').reduce((value, key) => value[key], candidate));
+  const nextSceneRgb = Float32Array.from(CATEGORY_RGB, (channel) =>
+    candidate.scene.categoryBrightness *
+      (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+  const nextNodeSize = changed('nodes.largeChance') || changed('nodes.largeSizeMin') ||
+    changed('nodes.largeSizeRange') || changed('nodes.baseSizeMin') || changed('nodes.baseSizeRange')
+    ? Float32Array.from({ length: N }, () => Math.random() < candidate.nodes.largeChance
+      ? candidate.nodes.largeSizeMin + Math.random() * candidate.nodes.largeSizeRange
+      : candidate.nodes.baseSizeMin + Math.random() * candidate.nodes.baseSizeRange)
+    : null;
+  const nextEdgeBase = changed('scene.edgeVariationMin') || changed('scene.edgeVariationRange')
+    ? Float32Array.from({ length: E }, () =>
+      candidate.scene.edgeVariationMin + Math.random() * candidate.scene.edgeVariationRange)
+    : null;
+  const nextGlowTexture = changed('scene.glowKnee') || changed('scene.glowKneeOpacity')
+    ? radialTexture(candidate) : null;
+  const nextBackground = changed('scene.background') ? new THREE.Color(candidate.scene.background) : null;
+
+  if (changed('camera.fov')) camera.fov = candidate.camera.fov;
+  if (changed('camera.position')) camera.position.set(...candidate.camera.position);
+  if (changed('camera.target')) controls.target.set(...candidate.camera.target);
+  controls.dampingFactor = candidate.camera.damping;
+  controls.minDistance = candidate.camera.minDistance;
+  controls.maxDistance = candidate.camera.maxDistance;
+  controls.autoRotate = candidate.camera.autoRotate;
+  controls.autoRotateSpeed = candidate.camera.autoRotateSpeed;
+  if (changed('camera.fov')) camera.updateProjectionMatrix();
+
+  for (const [group, values] of Object.entries(candidate)) {
+    for (const [name, value] of Object.entries(values)) {
+      VISUAL[group][name] = Array.isArray(value) ? value.slice() : value;
+    }
+  }
+
+  if (nextBackground) scene.background = nextBackground;
+  if (nextNodeSize) {
+    nodeSize.set(nextNodeSize);
+    nodeGeo.attributes.aSize.needsUpdate = true;
+  }
+  if (nextEdgeBase) edgeBase.set(nextEdgeBase);
+  SCENE_RGB.set(nextSceneRgb);
+
+  const nodeUniforms = nodeMat.uniforms;
+  nodeUniforms.uScale.value = VISUAL.nodes.scale * pixelRatio;
+  nodeUniforms.uSize.value = VISUAL.nodes.size;
+  nodeUniforms.uActiveGrowth.value = VISUAL.nodes.activeGrowth;
+  nodeUniforms.uIdleBrightness.value = VISUAL.nodes.idleBrightness;
+  nodeUniforms.uActiveBrightness.value = VISUAL.nodes.activeBrightness;
+  nodeUniforms.uHotMix.value = VISUAL.nodes.hotMix;
+  nodeUniforms.uWhiteThreshold.value = VISUAL.nodes.whiteThreshold;
+  nodeUniforms.uWhiteMix.value = VISUAL.nodes.whiteMix;
+  nodeUniforms.uTwinkleBase.value = VISUAL.nodes.twinkleBase;
+  nodeUniforms.uTwinkleAmplitude.value = VISUAL.nodes.twinkleAmplitude;
+  nodeUniforms.uTwinkleSpeed.value = VISUAL.nodes.twinkleSpeed;
+  nodeUniforms.uTwinkleSpatial.value.set(...VISUAL.nodes.twinkleSpatial);
+  nodeUniforms.uCoreFalloff.value = VISUAL.nodes.coreFalloff;
+  nodeUniforms.uBaseColor.value.set(...VISUAL.nodes.baseColor);
+  nodeUniforms.uHotColor.value.set(...VISUAL.nodes.hotColor);
+  nodeUniforms.uWhiteColor.value.set(...VISUAL.nodes.whiteColor);
+
+  const dustUniforms = dustMat.uniforms;
+  dustUniforms.uScale.value = VISUAL.dust.scale * pixelRatio;
+  dustUniforms.uBrightness.value = VISUAL.scene.dustBrightness;
+  dustUniforms.uColor.value.set(...VISUAL.dust.color);
+  dustUniforms.uTwinkleBase.value = VISUAL.dust.twinkleBase;
+  dustUniforms.uTwinkleAmplitude.value = VISUAL.dust.twinkleAmplitude;
+  dustUniforms.uTwinkleSpeed.value = VISUAL.dust.twinkleSpeed;
+  dustUniforms.uTwinklePhase.value = VISUAL.dust.twinklePhase;
+  dustUniforms.uTwinklePower.value = VISUAL.dust.twinklePower;
+  dust.visible = VISUAL.effects.dust;
+
+  pulseMat.uniforms.uScale.value = VISUAL.pulses.scale * pixelRatio;
+  pulseMat.uniforms.uCoreFalloff.value = VISUAL.pulses.coreFalloff;
+  if (changed('pulses.speedMin') || changed('pulses.speedRange')) {
+    for (let index = 0; index < P; index++) {
+      if (!pActive[index]) continue;
+      const fraction = previous.pulses.speedRange > 0
+        ? (pSpeed[index] - previous.pulses.speedMin) / previous.pulses.speedRange : 0.5;
+      pSpeed[index] = VISUAL.pulses.speedMin +
+        Math.min(1, Math.max(0, fraction)) * VISUAL.pulses.speedRange;
+    }
+  }
+
+  if (nextGlowTexture) {
+    const previousTexture = glowTex;
+    glowTex = nextGlowTexture;
+    coreGlow.material.map = glowTex;
+    waitingMarkerMaterial.map = glowTex;
+    haloGlow.material.map = glowTex;
+    coreGlow.material.needsUpdate = true;
+    waitingMarkerMaterial.needsUpdate = true;
+    haloGlow.material.needsUpdate = true;
+    previousTexture.dispose();
+  }
+  coreGlow.material.color.set(VISUAL.scene.coreColor);
+  baseCoreColor.set(VISUAL.scene.coreColor);
+  coreGlow.scale.setScalar(VISUAL.scene.coreSize);
+  haloGlow.material.color.set(VISUAL.scene.haloColor);
+  haloGlow.scale.setScalar(VISUAL.scene.haloSize);
+  waitingMarkerMaterial.opacity = VISUAL.waiting.markerOpacity;
+  for (const group of waitingMarkerGroups) {
+    for (const marker of group.children) marker.scale.setScalar(VISUAL.waiting.markerSize);
+  }
+  if (changed('subagents.growSeconds')) SUBAGENT_GROW_SECONDS = VISUAL.subagents.growSeconds;
+  if (changed('subagents.fadeSeconds')) SUBAGENT_FADE_SECONDS = VISUAL.subagents.fadeSeconds;
+  branchTips.material.size = VISUAL.subagents.tipSize * pixelRatio;
+  fadingTips.material.size = VISUAL.subagents.fadingTipSize * pixelRatio;
+  anchorPoints.material.size = VISUAL.subagents.anchorSize * pixelRatio;
+
+  const floorUniforms = floorMat.uniforms;
+  floorUniforms.uBrightness.value = VISUAL.scene.floorBrightness;
+  floorUniforms.uFade.value = VISUAL.scene.floorFade;
+  floorUniforms.uFineSpacing.value = VISUAL.floor.fineSpacing;
+  floorUniforms.uFineIntensity.value = VISUAL.floor.fineIntensity;
+  floorUniforms.uCoarseSpacing.value = VISUAL.floor.coarseSpacing;
+  floorUniforms.uCoarseIntensity.value = VISUAL.floor.coarseIntensity;
+  floorUniforms.uColor.value.set(...VISUAL.floor.color);
+  floorUniforms.uPoolColor.value.set(...VISUAL.floor.poolColor);
+  floorUniforms.uPoolFade.value = VISUAL.floor.poolFade;
+  floorUniforms.uPoolBase.value = VISUAL.floor.poolBase;
+  floorUniforms.uPoolGrid.value = VISUAL.floor.poolGrid;
+  floor.visible = VISUAL.effects.floor;
+
+  bloom.strength = VISUAL.scene.bloomStrength;
+  bloom.radius = VISUAL.scene.bloomRadius;
+  bloom.threshold = VISUAL.scene.bloomThreshold;
+  renderWaitingMarkers(activityState.connection === 'connected' && activityState.sourceStatus !== 'unavailable'
+    ? activityState.waitingSessionIds : []);
+  controls.update();
+  return true;
+}
+
+createVisualSettingsPanel({
+  document,
+  opener: document.getElementById('visual-settings-open'),
+  dialog: document.getElementById('visual-settings-dialog'),
+  form: document.getElementById('visual-settings-form'),
+  presetSelect: document.getElementById('visual-settings-preset'),
+  fields: document.getElementById('visual-settings-fields'),
+  status: document.getElementById('visual-settings-status'),
+  errorSummary: document.getElementById('visual-settings-errors'),
+  conflict: document.getElementById('visual-settings-conflict'),
+  useFileButton: document.getElementById('visual-settings-use-file'),
+  keepPreviewButton: document.getElementById('visual-settings-keep-preview'),
+  closeButton: document.getElementById('visual-settings-close'),
+  resetButton: document.getElementById('visual-settings-reset'),
+  exportButton: document.getElementById('visual-settings-export'),
+  reloadButton: document.getElementById('visual-settings-reload'),
+  autoReloadInput: document.getElementById('visual-settings-auto-reload'),
+  initialConfiguration: {
+    defaults: VISUAL_DEFAULTS,
+    preset: VISUAL_PRESET,
+    overrides: VISUAL_OVERRIDES,
+    settings: VISUAL,
+  },
+  applySettings: applyVisualSettings,
 });
 
 frame();

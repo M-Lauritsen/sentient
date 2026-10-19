@@ -47,16 +47,28 @@ const EDIT_TOOLS = Object.freeze([
   'edit', 'create', 'write', 'apply_patch', 'str_replace_editor',
 ]);
 const READ_TOOLS = Object.freeze([
-  'view', 'read', 'grep', 'glob', 'search', 'rg', 'ls',
+  'view', 'read', 'read_file', 'get_file_contents', 'grep', 'glob', 'search',
+  'search_code', 'search_wiki', 'microsoft_docs_search', 'microsoft_code_sample_search',
+  'query-docs', 'resolve-library-id', 'rg', 'ls',
 ]);
 
 function startsWith(value, prefix) {
   return typeof value === 'string' && value.startsWith(prefix);
 }
 
+function toolOperation(toolName) {
+  if (typeof toolName !== 'string') return '';
+  return toolName.slice(Math.max(
+    toolName.lastIndexOf('.'),
+    toolName.lastIndexOf('/'),
+    toolName.lastIndexOf(':'),
+  ) + 1);
+}
+
 export function activityCategory(value = {}) {
   const activity = value && typeof value === 'object' ? value : {};
   const { kind, eventType, toolName } = activity;
+  const operation = toolOperation(toolName);
 
   if (kind === 'completion') return 'completion';
   if (eventType === 'session.error' || eventType === 'abort' || eventType === 'subagent.failed') {
@@ -67,9 +79,9 @@ export function activityCategory(value = {}) {
       startsWith(eventType, 'elicitation.')) return 'waiting';
   if (startsWith(eventType, 'subagent.')) return 'subagent';
   if (startsWith(eventType, 'tool.')) {
-    if (SHELL_TOOLS.includes(toolName)) return 'shell';
-    if (EDIT_TOOLS.includes(toolName)) return 'edit';
-    if (READ_TOOLS.includes(toolName)) return 'read';
+    if (SHELL_TOOLS.includes(operation)) return 'shell';
+    if (EDIT_TOOLS.includes(operation)) return 'edit';
+    if (READ_TOOLS.includes(operation)) return 'read';
     return 'tool';
   }
   if (kind === 'step') return 'tool';
