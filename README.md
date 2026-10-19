@@ -89,11 +89,25 @@ internal and can change.
 
 ## Editing visual settings
 
-Edit the values in **`visual-settings.mjs`**, save, then refresh the browser
-(hard refresh if it still shows an older module). No build or server restart is
-needed. This is public, browser-loaded configuration: never put secrets in it.
-There are no on-screen sliders or persisted overrides; the file is the only
-source of these visual settings.
+Open **Visual settings** in the HUD to preview the `balanced`, `subtle` or
+`intense` preset and edit any in-scope setting. Valid edits apply to the running
+scene; invalid or incomplete values do not. **Reset preview** returns to the
+last loaded file configuration. Changes remain temporary until **Export
+settings** downloads a replacement `visual-settings.mjs` and you save it over
+the source file. The page never writes that file or stores overrides in browser
+storage.
+
+Use **Reload from file** to read the current repository-authored
+`visual-settings.mjs` without refreshing the page. Automatic reload is optional,
+off by default, and checks every five seconds only while the page is visible.
+If the file changes while a preview is dirty, choose **Use file** or **Keep
+preview**; keeping the preview suppresses repeated prompts for that same file
+version. Reload failures leave the last valid scene active and display an error.
+Invalid configuration at startup is shown before the 3D scene starts.
+
+This is public, browser-loaded configuration: never put secrets in it. Visual
+changes do not alter activity data, session state, timeline history or
+statistics.
 
 All 3D appearance and animation tuning lives in these sections:
 
@@ -110,13 +124,14 @@ All 3D appearance and animation tuning lives in these sections:
 | `floor` | Fine/coarse grid spacing, colors and ambient light pool |
 | `completion`, `impact` | Existing local cascades and duration-scaled bursts |
 | `scene` | Background, category light multiplier, idle edges, breathing, load response, bloom and glows |
+| `effects` | Independent dust, floor, breathing, waiting glow/markers and subagent-transition switches |
 
 The shipped values preserve the existing appearance. Inline comments describe
 units, constraints and suggested ranges. Ranges are guidance, not automatic
 clamps: use finite numbers, nonnegative except signed positions/rotation,
 integer hop/count values, positive durations/grid spacing/load divisors, and
 probabilities between 0 and 1. Decorative RGB arrays use linear 0–1 channels;
-hex colors use sRGB. Start with small edits and reload to compare.
+hex colors use sRGB. Start with small edits and preview to compare.
 `running.pulsesPerSecondPerSession` defaults to 6 and `running.maxSessions`
 defaults to 32. Raising the rate makes the background stream denser; the cap
 limits how many running sessions multiply that rate. Setting either to 0
@@ -134,7 +149,8 @@ renderer resource limits, accessibility safeguards and HUD/CSS styling are
 also unchanged and remain outside this file. Numeric shader math constants
 (such as normalized point coordinates) are implementation details, not tuning.
 Activity mapping, statuses, hidden-tab discard and network/privacy behavior
-are unaffected. Reloading still resets the page's in-memory activity totals.
+are unaffected. Visual preview and file reload preserve page-local activity
+totals and timeline history; a full document refresh still resets them.
 
 ## Privacy and limitations
 

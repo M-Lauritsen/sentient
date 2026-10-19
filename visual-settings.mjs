@@ -1,3 +1,5 @@
+import { resolveVisualSettings } from './visual-config.mjs';
+
 // Visual-only browser settings: edit values, save, then refresh the page.
 // Values below ARE the defaults (all environments); ranges are useful tuning
 // suggestions, not clamps. Use finite numbers (nonnegative unless signed below) and integer hop/count
@@ -123,6 +125,15 @@ export const VISUAL = {
 		opacityBreath: 0.025, // Extra opacity times color blend, try 0–0.1.
 	},
 
+	effects: {
+		dust: true,
+		floor: true,
+		latticeBreathing: true,
+		waitingGlow: true,
+		waitingMarkers: true,
+		subagentTransitions: true,
+	},
+
 	dust: {
 		scale: 40, // Point projection scale, try 10–80.
 		color: [0.2, 0.45, 1], // Decorative linear RGB.
@@ -219,3 +230,9 @@ export const VISUAL = {
 		floorGlow: 0.5, // Default 0.5; floor pool glow at full load, try 0–1.
 	},
 };
+
+export const VISUAL_PRESET = 'balanced';
+export const VISUAL_OVERRIDES = {};
+const resolution = resolveVisualSettings(VISUAL, VISUAL_PRESET, VISUAL_OVERRIDES);
+export const EFFECTIVE_VISUAL = resolution.settings;
+export const VISUAL_ERRORS = resolution.errors;

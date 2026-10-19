@@ -88,6 +88,93 @@ html, body {
   flex-wrap: wrap;
 }
 
+.visual-settings-open {
+  pointer-events: auto;
+  border: 1px solid rgba(110, 165, 255, 0.55);
+  background: rgba(2, 8, 20, 0.82);
+  color: #c6dcff;
+  padding: 5px 8px;
+  font: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.visual-settings-dialog {
+  width: min(960px, 94vw);
+  max-width: 94vw;
+  max-height: 88vh;
+  overflow: hidden;
+  padding: 18px;
+  border: 1px solid rgba(110, 165, 255, 0.5);
+  background: rgba(3, 8, 18, 0.98);
+  color: var(--text);
+  box-shadow: 0 0 32px rgba(61, 139, 255, 0.22);
+}
+
+.visual-settings-dialog::backdrop { background: rgba(0, 2, 8, 0.78); }
+.visual-settings-dialog .stats-dialog-header { margin-bottom: 14px; }
+.visual-settings-dialog form { display: flex; flex-direction: column; max-height: calc(88vh - 64px); }
+.visual-settings-toolbar, .visual-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(110, 165, 255, 0.18);
+}
+
+.visual-settings-dialog button, .visual-settings-dialog select,
+.visual-settings-dialog input {
+  border: 1px solid rgba(110, 165, 255, 0.42);
+  border-radius: 2px;
+  background: #071121;
+  color: #d8e7ff;
+  font: inherit;
+  padding: 5px 7px;
+}
+
+.visual-settings-dialog button { cursor: pointer; }
+.visual-settings-dialog button:hover, .visual-settings-open:hover { border-color: var(--blue); }
+.visual-settings-open:focus-visible,
+.visual-settings-dialog button:focus-visible,
+.visual-settings-dialog select:focus-visible,
+.visual-settings-dialog input:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.visual-settings-toolbar label { display: flex; align-items: center; gap: 7px; }
+.visual-auto-reload input { accent-color: var(--blue); }
+#visual-settings-help { margin: 8px 0 4px; color: #8eadd8; text-transform: none; letter-spacing: 0; }
+#visual-settings-status { margin: 8px 0; text-transform: none; letter-spacing: 0; }
+.visual-settings-errors, .visual-field-error { color: #ff9b8d; text-transform: none; letter-spacing: 0; }
+.visual-settings-errors { margin: 4px 0 10px; }
+.visual-settings-conflict {
+  padding: 8px;
+  border: 1px solid var(--orange);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.visual-settings-fields { overflow: auto; min-height: 0; padding: 8px 0; }
+.visual-settings-fields details { border-bottom: 1px solid rgba(110, 165, 255, 0.18); }
+.visual-settings-fields summary { padding: 9px 3px; cursor: pointer; color: #d8e7ff; }
+.visual-settings-fields [data-visual-group] { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; padding: 4px 6px 14px; }
+.visual-field { display: grid; grid-template-columns: minmax(130px, 1fr) minmax(110px, 0.8fr); align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; }
+.visual-field-label { overflow-wrap: anywhere; }
+.visual-field input[type="number"] { width: 100%; min-width: 0; }
+.visual-field input[type="checkbox"] { justify-self: start; accent-color: var(--blue); }
+.visual-field input[type="color"] { width: 48px; height: 30px; padding: 2px; }
+.visual-tuple { display: flex; gap: 4px; }
+.visual-tuple input { width: 33.33%; min-width: 0; }
+.visual-field-error { grid-column: 1 / -1; font-size: 10px; }
+.visual-settings-actions { justify-content: flex-end; border-top: 1px solid rgba(110, 165, 255, 0.18); border-bottom: 0; }
+
+@media (max-width: 700px) {
+  .visual-settings-fields [data-visual-group] { grid-template-columns: 1fr; }
+  .visual-settings-dialog { padding: 12px; }
+  .visual-settings-dialog form { max-height: calc(88vh - 54px); }
+}
+
 .dot {
   display: inline-block;
   width: 7px;
@@ -338,6 +425,21 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
 }
 
 .fallback[hidden] { display: none; }
+.visual-config-error {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  padding: 24px;
+  overflow: auto;
+  background: var(--bg);
+  color: var(--orange);
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+.visual-config-error[hidden] { display: none; }
 
 @media (max-width: 1000px) {
   .hud-bottom { bottom: 144px; }

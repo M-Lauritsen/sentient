@@ -1,14 +1,93 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import * as THREE from 'three';
 import { CATEGORY_INDEX, CATEGORY_RGB, CATEGORY_HEX } from '../activity-colors.mjs';
 import { createThinkingPulseClock, createImpulseBuffer, createCategoryBurstPlan,
   impulseIntensity } from '../activity-client.mjs';
+import { createPageActivityTotals } from '../session-stats-ui.mjs';
+import { loadVisualConfiguration, startVisualApplication, validateVisualSettings,
+  resolveVisualSettings, VISUAL_PRESETS, VISUAL_SETTING_DEFINITIONS,
+  mergeVisualOverrides, visualConfigurationSignature, createVisualSettingsModuleSource } from '../visual-config.mjs';
+import { createVisualSettingsPanel } from '../visual-settings-ui.mjs';
 
 const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
 const settings = async () => structuredClone((await import('../visual-settings.mjs')).VISUAL);
+
+class TestElement {
+  children = [];
+  listeners = new Map();
+  attributes = new Map();
+  hidden = false;
+  checked = false;
+  value = '';
+  textContent = '';
+  open = false;
+
+  append(...elements) { this.children.push(...elements); }
+  addEventListener(type, callback) {
+    const callbacks = this.listeners.get(type) ?? [];
+    callbacks.push(callback);
+    this.listeners.set(type, callbacks);
+  }
+  dispatch(type) {
+    for (const callback of this.listeners.get(type) ?? []) callback({ preventDefault() {} });
+  }
+  click() { this.dispatch('click'); }
+  setAttribute(name, value) { this.attributes.set(name, value); }
+  removeAttribute(name) { this.attributes.delete(name); }
+  showModal() { this.open = true; }
+  close() { this.open = false; this.dispatch('close'); }
+  focus() {}
+}
+
+function makePanelHarness({ defaults, preset = 'balanced', overrides = {}, loadFile, scheduleTimer, cancelTimer }) {
+  const resolved = resolveVisualSettings(defaults, preset, overrides);
+  const document = new TestElement();
+  document.hidden = false;
+  document.createElement = () => new TestElement();
+  const groups = new Map();
+  const fields = new TestElement();
+  fields.querySelector = (selector) => {
+    const group = selector.match(/data-visual-group="([^"]+)"/)?.[1];
+    return groups.get(group);
+  };
+  for (const definition of VISUAL_SETTING_DEFINITIONS) {
+    const groupName = definition.path.split('.')[0];
+    if (!groups.has(groupName)) groups.set(groupName, new TestElement());
+  }
+  const elements = Object.fromEntries([
+    'opener', 'dialog', 'form', 'presetSelect', 'status', 'errorSummary', 'conflict',
+    'useFileButton', 'keepPreviewButton', 'closeButton', 'resetButton', 'exportButton',
+    'reloadButton', 'autoReloadInput',
+  ].map((key) => [key, new TestElement()]));
+  const applied = [];
+  const options = {
+    document,
+    ...elements,
+    fields,
+    initialConfiguration: { defaults, preset, overrides, settings: resolved.settings },
+    applySettings: (value) => { applied.push(value); return true; },
+    loadFile,
+    ...(scheduleTimer ? { scheduleTimer } : {}),
+    ...(cancelTimer ? { cancelTimer } : {}),
+    requestFrame: (callback) => { queueMicrotask(callback); return 1; },
+    cancelFrame() {},
+  };
+  const panel = createVisualSettingsPanel(options);
+  const control = (path) => {
+    const wrapper = groups.get(path.split('.')[0]).children
+      .find((child) => child.attributes.get('data-setting-path') === path);
+    const descendants = (element) => [element, ...element.children.flatMap(descendants)];
+    return descendants(wrapper).filter((element) => element.type === 'number' ||
+      element.type === 'checkbox' || element.type === 'color');
+  };
+  return { panel, document, elements, groups, applied, control };
+}
 
 function sceneFunction(name) {
   const body = main.slice(main.indexOf(`function ${name}(`));
@@ -19,6 +98,7 @@ function sceneFunction(name) {
 
 test('visual settings characterize the latest tuned defaults, not structural capacities or palette', async () => {
   const visual = await settings();
+  const configModule = await import('../visual-settings.mjs');
   assert.deepEqual(visual, {
     camera: {
       fov: 50, position: [0, 4, 31], target: [0, 0, 0], damping: 0.06,
@@ -62,6 +142,10 @@ test('visual settings characterize the latest tuned defaults, not structural cap
       markerOpacity: 0.9, markerSize: 0.55, breathSpeed: 0.7,
       colorMixMin: 0.5, colorMixRange: 0.5, opacityBase: 0.025, opacityBreath: 0.025,
     },
+    effects: {
+      dust: true, floor: true, latticeBreathing: true, waitingGlow: true,
+      waitingMarkers: true, subagentTransitions: true,
+    },
     dust: {
       scale: 40, color: [0.2, 0.45, 1], twinkleBase: 0.25, twinkleAmplitude: 0.75,
       twinkleSpeed: 0.9, twinklePhase: 7, twinklePower: 3,
@@ -95,10 +179,294 @@ test('visual settings characterize the latest tuned defaults, not structural cap
       floorFade: 0.028, floorGlow: 0.5,
     },
   });
-  assert.match(main, /import \{ VISUAL \} from '\.\/visual-settings\.mjs'/);
+  assert.match(main, /import \{ VISUAL as VISUAL_DEFAULTS, VISUAL_PRESET, VISUAL_OVERRIDES,\s*EFFECTIVE_VISUAL as VISUAL \} from '\.\/visual-settings\.mjs'/);
   assert.match(main, /maxPulses: 1600/);
   assert.match(main, /trail: 7/);
   assert.match(main, /CATEGORY_RGB, \(channel\)/);
+  assert.equal(configModule.VISUAL_PRESET, 'balanced');
+  assert.deepEqual(configModule.VISUAL_ERRORS, []);
+  assert.deepEqual(configModule.EFFECTIVE_VISUAL, visual);
+});
+
+test('visual settings validate all known paths and reject malformed values without mutating input', async () => {
+  const defaults = await settings();
+  assert.deepEqual(validateVisualSettings(defaults), []);
+  const expectedPaths = Object.entries(defaults).flatMap(([group, values]) =>
+    Object.keys(values).map((name) => `${group}.${name}`)).sort();
+  assert.deepEqual(VISUAL_SETTING_DEFINITIONS.map(({ path }) => path).sort(), expectedPaths);
+
+  const cases = [
+    ['nodes.scale', (value) => { value.nodes.scale = Number.NaN; }],
+    ['running.maxSessions', (value) => { value.running.maxSessions = 1.5; }],
+    ['nodes.baseColor[2]', (value) => { value.nodes.baseColor = [0.1, 0.2, 1.5]; }],
+    ['scene.background', (value) => { value.scene.background = 0x1000000; }],
+    ['effects.floor', (value) => { value.effects.floor = 1; }],
+    ['scene.bloomRadius', (value) => { value.scene.bloomRadius = 1.1; }],
+    ['scene.breathAmplitude', (value) => { value.scene.breathAmplitude = -0.1; }],
+    ['floor.fineSpacing', (value) => { value.floor.fineSpacing = 0; }],
+    ['camera.minDistance', (value) => { value.camera.minDistance = 70; value.camera.maxDistance = 20; }],
+    ['camera.position', (value) => { value.camera.position = [...value.camera.target]; }],
+    ['waiting.colorMixMin', (value) => { value.waiting.colorMixMin = 0.6; value.waiting.colorMixRange = 0.5; }],
+    ['nodes.twinkleAmplitude', (value) => { value.nodes.twinkleAmplitude = 0.8; }],
+    ['impact.minMs', (value) => { value.impact.minMs = 120_001; }],
+    ['VISUAL.extra', (value) => { value.extra = true; }],
+    ['camera.fov', (value) => { delete value.camera.fov; }],
+  ];
+  for (const [path, mutate] of cases) {
+    const candidate = structuredClone(defaults);
+    mutate(candidate);
+    const errors = validateVisualSettings(candidate);
+    assert.ok(errors.some((error) => error.path === path), `${path} reports its exact setting path`);
+  }
+  assert.equal(defaults.nodes.scale, 95, 'validation does not mutate the active defaults');
+});
+
+test('effect switches leave synthetic feed, timeline, and page totals unchanged', async () => {
+  const results = [];
+  for (const enabled of [true, false]) {
+    const VISUAL = await settings();
+    for (const effect of Object.keys(VISUAL.effects)) VISUAL.effects[effect] = enabled;
+    const buffer = createImpulseBuffer();
+    const totals = createPageActivityTotals();
+    const events = [
+      { kind: 'thinking', count: 4 },
+      { kind: 'step', toolName: 'node', count: 2 },
+    ];
+    const feed = [], timeline = [], rendered = [];
+    for (const event of events) {
+      buffer.add(event);
+      totals.add(event);
+    }
+    const context = vm.createContext({
+      VISUAL, CATEGORY_INDEX, impulseBuffer: buffer, document: { hidden: false },
+      timeline: { add: (counts) => timeline.push(Array.from(counts)) },
+      performance: { now: () => 100 }, Math, N: 1,
+      impulseFeed: { add: (...entry) => feed.push(entry) },
+      categoryBurstPlan: createCategoryBurstPlan(),
+      impulseIntensity: (count) => impulseIntensity(count, VISUAL.activity),
+      renderImpactBurst() {}, renderCompletionCascade() {},
+      fireFrom: (...args) => rendered.push(args),
+      nodeEnergy: new Float32Array(1), nodeHot: new Float32Array(1),
+    });
+    vm.runInContext(sceneFunction('renderObservedImpulses') + '\nrenderObservedImpulses()', context);
+    results.push({
+      feed, timeline, pageTotals: Array.from(totals.counts), rendered,
+    });
+  }
+  assert.deepEqual(results[0], results[1]);
+  assert.equal(results[0].feed.length, 2);
+  assert.equal(results[0].timeline.length, 1);
+});
+
+test('presets and overrides resolve deterministically without mutating definitions', async () => {
+  const defaults = await settings();
+  const balanced = resolveVisualSettings(defaults, 'balanced');
+  const subtle = resolveVisualSettings(defaults, 'subtle');
+  const intense = resolveVisualSettings(defaults, 'intense');
+  assert.deepEqual(balanced.errors, []);
+  assert.deepEqual(balanced.settings, defaults);
+  assert.deepEqual(subtle.errors, []);
+  assert.deepEqual(intense.errors, []);
+  assert.equal(subtle.settings.running.pulsesPerSecondPerSession, 2);
+  assert.equal(subtle.settings.nodes.idleBrightness, 0.25);
+  assert.equal(subtle.settings.scene.bloomStrength, 0.55);
+  assert.equal(intense.settings.running.pulsesPerSecondPerSession, 10);
+  assert.equal(intense.settings.activity.maxIntensity, 10);
+  assert.equal(intense.settings.scene.coreLoad, 0.17);
+  assert.equal(defaults.running.pulsesPerSecondPerSession, 6);
+  assert.ok(Object.isFrozen(VISUAL_PRESETS.subtle));
+
+  const filePosition = [5, 6, 7];
+  const previewPosition = [8, 9, 10];
+  const overridden = resolveVisualSettings(defaults, 'subtle',
+    { camera: { position: filePosition }, running: { pulsesPerSecondPerSession: 4 } },
+    { camera: { position: previewPosition }, running: { pulsesPerSecondPerSession: 8 } });
+  assert.deepEqual(overridden.errors, []);
+  assert.deepEqual(overridden.settings.camera.position, previewPosition,
+    'a vector is replaced as a whole by the highest-precedence override');
+  assert.equal(overridden.settings.running.pulsesPerSecondPerSession, 8,
+    'temporary overrides win over file and preset values');
+  assert.deepEqual(defaults.camera.position, [0, 4, 31]);
+  assert.deepEqual(filePosition, [5, 6, 7]);
+
+  const unknownPreset = resolveVisualSettings(defaults, 'unknown');
+  assert.equal(unknownPreset.settings, null);
+  assert.equal(unknownPreset.errors[0].path, 'preset');
+  const unknownKey = resolveVisualSettings(defaults, 'balanced',
+    JSON.parse('{"camera":{"__proto__":{"polluted":true}}}'));
+  assert.equal(unknownKey.settings, null);
+  assert.ok(unknownKey.errors.some((error) => error.path === 'fileOverrides.camera.__proto__'));
+});
+
+test('exported settings module preserves defaults and layered overrides as a loadable config', async () => {
+  const defaults = await settings();
+  const fileOverrides = { scene: { floorGlow: 0.66 }, floor: { color: [0.2, 0.3, 0.4] } };
+  const previewOverrides = { floor: { color: [0.7, 0.6, 0.5] } };
+  const overrides = mergeVisualOverrides(fileOverrides, previewOverrides);
+  assert.deepEqual(overrides, {
+    scene: { floorGlow: 0.66 }, floor: { color: [0.7, 0.6, 0.5] },
+  });
+  assert.equal(visualConfigurationSignature({
+    defaults: { b: 2, a: 1 }, preset: 'balanced', overrides: {},
+  }), visualConfigurationSignature({
+    defaults: { a: 1, b: 2 }, preset: 'balanced', overrides: {},
+  }));
+
+  const directory = await mkdtemp(path.join(tmpdir(), 'sentient-visual-export-'));
+  try {
+    const currentConfig = new URL('../visual-config.mjs', import.meta.url);
+    await copyFile(currentConfig, path.join(directory, 'visual-config.mjs'));
+    const exportedFile = path.join(directory, 'visual-settings.mjs');
+    await writeFile(exportedFile, createVisualSettingsModuleSource({
+      defaults, preset: 'subtle', overrides,
+    }));
+    const exported = await import(`${pathToFileURL(exportedFile).href}?test=${Date.now()}`);
+    const expected = resolveVisualSettings(defaults, 'subtle', overrides);
+    assert.deepEqual(exported.VISUAL, defaults);
+    assert.equal(exported.VISUAL_PRESET, 'subtle');
+    assert.deepEqual(exported.VISUAL_OVERRIDES, overrides);
+    assert.deepEqual(exported.EFFECTIVE_VISUAL, expected.settings);
+    assert.deepEqual(exported.VISUAL_ERRORS, []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('preview edits apply complete valid settings and reset to the file source', async () => {
+  const defaults = await settings();
+  const harness = makePanelHarness({ defaults });
+  const [floorGlow] = harness.control('scene.floorGlow');
+  floorGlow.value = '';
+  floorGlow.dispatch('input');
+  assert.equal(harness.applied.length, 0);
+  assert.equal(harness.elements.errorSummary.hidden, false);
+
+  floorGlow.value = '0.8';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).scene.floorGlow, 0.8);
+  assert.equal(harness.panel.state.dirty, true);
+  assert.equal(harness.elements.errorSummary.hidden, true);
+
+  harness.elements.resetButton.click();
+  assert.equal(harness.applied.at(-1).scene.floorGlow, defaults.scene.floorGlow);
+  assert.equal(harness.panel.state.dirty, false);
+
+  harness.elements.opener.click();
+  assert.equal(harness.elements.opener.attributes.get('aria-expanded'), 'true');
+  const escape = { key: 'Escape', preventDefault() { this.defaultPrevented = true; } };
+  for (const callback of harness.elements.dialog.listeners.get('cancel')) callback(escape);
+  assert.equal(escape.defaultPrevented, true);
+  assert.equal(harness.elements.dialog.open, false);
+  assert.equal(harness.elements.opener.attributes.get('aria-expanded'), 'false');
+});
+
+test('file reload conflicts preserve previews, support both choices, and recover from invalid files', async () => {
+  const defaults = await settings();
+  const fileVersion = (preset, overrides) => ({ defaults, preset, overrides, errors: [] });
+  const versions = [
+    fileVersion('subtle', { scene: { floorGlow: 0.65 } }),
+    fileVersion('subtle', { scene: { floorGlow: 0.65 } }),
+    fileVersion('intense', { scene: { floorGlow: 0.9 } }),
+    { errors: [{ path: 'scene.floorGlow', message: 'Must be finite.' }] },
+    fileVersion('balanced', { scene: { floorGlow: 0.7 } }),
+  ];
+  const harness = makePanelHarness({
+    defaults,
+    loadFile: async () => versions.shift(),
+  });
+  const [floorGlow] = harness.control('scene.floorGlow');
+  floorGlow.value = '0.8';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  const preview = harness.applied.at(-1);
+
+  await harness.panel.reload();
+  assert.equal(harness.elements.conflict.hidden, false);
+  assert.equal(harness.applied.at(-1), preview);
+  harness.elements.keepPreviewButton.click();
+  assert.equal(harness.elements.conflict.hidden, true);
+  await harness.panel.reload();
+  assert.equal(harness.elements.conflict.hidden, true, 'the kept file version is not prompted repeatedly');
+  await harness.panel.reload();
+  assert.equal(harness.elements.conflict.hidden, false, 'a newer file version prompts again');
+  harness.elements.useFileButton.click();
+  assert.equal(harness.applied.at(-1).scene.floorGlow, 0.9);
+  assert.equal(harness.panel.state.dirty, false);
+
+  const lastValid = harness.applied.at(-1);
+  assert.equal(await harness.panel.reload(), false);
+  assert.equal(harness.applied.at(-1), lastValid);
+  assert.match(harness.elements.status.textContent, /last valid configuration remains active/);
+  assert.equal(harness.panel.state.dirty, false, 'a reload error is not a dirty preview');
+  await harness.panel.reload();
+  assert.equal(harness.elements.conflict.hidden, true);
+  assert.equal(harness.applied.at(-1).scene.floorGlow, 0.7);
+});
+
+test('automatic file reload is opt-in, periodic, and paused while hidden', async () => {
+  const defaults = await settings();
+  const tasks = new Map();
+  let nextTask = 0;
+  let loads = 0;
+  const harness = makePanelHarness({
+    defaults,
+    loadFile: async () => {
+      loads++;
+      return { defaults, preset: 'subtle', overrides: {}, errors: [] };
+    },
+    scheduleTimer: (callback, delay) => {
+      const id = ++nextTask;
+      tasks.set(id, { callback, delay });
+      return id;
+    },
+    cancelTimer: (id) => tasks.delete(id),
+  });
+  assert.equal(tasks.size, 0, 'automatic reload starts disabled');
+  harness.elements.autoReloadInput.checked = true;
+  harness.elements.autoReloadInput.dispatch('change');
+  assert.equal([...tasks.values()][0].delay, 5000);
+  const scheduled = [...tasks.entries()][0];
+  tasks.delete(scheduled[0]);
+  scheduled[1].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(loads, 1);
+  assert.equal(harness.panel.state.preset, 'subtle');
+
+  harness.elements.autoReloadInput.checked = false;
+  harness.elements.autoReloadInput.dispatch('change');
+  assert.equal(tasks.size, 0);
+  harness.document.hidden = true;
+  harness.elements.autoReloadInput.checked = true;
+  harness.elements.autoReloadInput.dispatch('change');
+  assert.equal(tasks.size, 0, 'hidden tabs do not schedule reload work');
+});
+
+test('visual configuration loader distinguishes import failures from value errors', async () => {
+  const syntaxFailure = await loadVisualConfiguration(async () => {
+    throw new SyntaxError('Unexpected token');
+  });
+  assert.equal(syntaxFailure.settings, null);
+  assert.match(syntaxFailure.errors[0].message, /Could not load configuration module: Unexpected token/);
+
+  const invalidValues = await loadVisualConfiguration(async () => ({ VISUAL: { camera: {} } }));
+  assert.equal(invalidValues.settings, null);
+  assert.ok(invalidValues.errors.some((error) => error.path === 'camera.fov'));
+
+  const panel = { hidden: true, textContent: '' };
+  let sceneStarted = false;
+  const started = await startVisualApplication({ getElementById: () => panel },
+    () => Promise.resolve(syntaxFailure), async () => { sceneStarted = true; });
+  assert.equal(started, false);
+  assert.equal(sceneStarted, false, 'invalid startup never starts the 3D scene');
+  assert.equal(panel.hidden, false, 'configuration failures are visible');
+  assert.match(panel.textContent, /visual-settings\.mjs: Could not load configuration module/);
+
+  const validPanel = { hidden: true, textContent: '' };
+  const validStart = await startVisualApplication({ getElementById: () => validPanel },
+    () => Promise.resolve({ errors: [] }), async () => { sceneStarted = true; });
+  assert.equal(validStart, true);
+  assert.equal(sceneStarted, true, 'a valid configuration starts the scene');
 });
 
 test('nondefault running settings drive scene impulses without changing hidden-tab discard', async () => {
@@ -163,7 +531,7 @@ test('nondefault glow and waiting-marker settings reach scene materials and spri
       }),
     }) },
   });
-  vm.runInContext(main.slice(main.indexOf('function radialTexture()'),
+  vm.runInContext(main.slice(main.indexOf('function radialTexture(settings = VISUAL)'),
     main.indexOf('// ---------- pulses ----------')) +
     '\nglobalThis.result = { coreGlow, haloGlow, waitingMarkerGroups };', context);
   const { coreGlow, haloGlow, waitingMarkerGroups } = context.result;
@@ -177,6 +545,38 @@ test('nondefault glow and waiting-marker settings reach scene materials and spri
   assert.equal(marker.scale.x, 0.8);
   assert.equal(marker.material.opacity, 0.5);
   assert.equal(marker.material.color.getHexString(), CATEGORY_HEX.waiting.slice(1));
+});
+
+test('dust, floor, and waiting-marker switches hide only their decorative effects', async () => {
+  for (const enabled of [true, false]) {
+    const VISUAL = await settings();
+    VISUAL.effects.dust = enabled;
+    const dustContext = vm.createContext({
+      VISUAL, THREE, CFG: { dust: 1, radius: 10 }, pixelRatio: 1, scene: new THREE.Scene(),
+    });
+    vm.runInContext(main.slice(main.indexOf('// ---------- dust ----------'),
+      main.indexOf('// ---------- core glow ----------')), dustContext);
+    assert.equal(dustContext.dust.visible, enabled);
+
+    VISUAL.effects.floor = enabled;
+    const floorContext = vm.createContext({ VISUAL, THREE, scene: new THREE.Scene() });
+    vm.runInContext(main.slice(main.indexOf('const floorMat ='),
+      main.indexOf('// ---------- HUD ----------')) + '\nglobalThis.result = floor;', floorContext);
+    assert.equal(floorContext.result.visible, enabled);
+    assert.equal(floorContext.scene.children.includes(floorContext.result), true,
+      'the floor remains available and is controlled by rendering visibility');
+
+    VISUAL.effects.waitingMarkers = enabled;
+    const groups = Array.from({ length: 8 }, () => ({
+      visible: false, position: { set() {} },
+    }));
+    const markerContext = vm.createContext({
+      VISUAL, waitingMarkerGroups: groups, nodePos: new Float32Array([1, 2, 3]), N: 1,
+    });
+    vm.runInContext(sceneFunction('renderWaitingMarkers') + "\nrenderWaitingMarkers(['AAAA'])", markerContext);
+    assert.equal(groups[0].visible, enabled);
+    assert.equal(groups.slice(1).some((group) => group.visible), false);
+  }
 });
 
 test('node size and idle edge variation tuning leaves generated geometry unchanged', async () => {
@@ -291,6 +691,47 @@ test('nondefault subagent appearance controls growth, lighting and retirement wi
   `, context);
   assert.equal(result.activeSubagentBranches.length, 0);
   assert.equal(result.fadingSubagentBranches.length, 0, 'reduced motion still suppresses retirement animation');
+});
+
+test('disabling subagent transitions keeps current branches but removes growth, flashes, and retirement fades', async () => {
+  const VISUAL = await settings();
+  VISUAL.effects.subagentTransitions = false;
+  const context = vm.createContext({
+    VISUAL, THREE, CATEGORY_INDEX, SCENE_RGB: CATEGORY_RGB, Math,
+    pixelRatio: 1,
+    window: { matchMedia: () => ({ matches: false, addEventListener() {} }) },
+    document: { hidden: false, getElementById: () => ({}) },
+    performance: { now: () => 0 }, N: 1, brain: new THREE.Group(), nodePos: new Float32Array([1, 0, 0]),
+    activityState: { connection: 'connected', sourceStatus: 'available', coverage: 'unknown' },
+    subagentSummary: { textContent: '' },
+  });
+  vm.runInContext(main.slice(main.indexOf('const MAX_ACTIVE_SUBAGENT_BRANCHES'),
+    main.indexOf('function otherEnd')) + `
+    applySubagentTree({
+      reset: false,
+      sessions: [{ sid: 'AAAA', status: 'running', subagents: [{ sid: 'BBBB', ageMs: 0 }] }],
+      completed: [], failed: [], cleared: [],
+      added: [{ sessionSid: 'AAAA', sid: 'BBBB', ageMs: 0 }],
+    });
+    renderSubagentTree(0.5);
+    const branchLength = Math.hypot(
+      branchLinePositions[3] - branchLinePositions[0],
+      branchLinePositions[4] - branchLinePositions[1],
+      branchLinePositions[5] - branchLinePositions[2]);
+    const branch = activeSubagentBranches[0];
+    retireSubagentBranch('AAAA', 'BBBB', 'failed', 0.5);
+    globalThis.result = {
+      branchLength, expectedLength: branch.length, growthStart: branch.growthStart,
+      activeBranchCount: activeSubagentBranches.length, fadingSubagentBranches, subagentAnchors,
+    };`,
+    context);
+  const result = context.result;
+  assert.equal(result.subagentAnchors.length, 1, 'delegated-work visibility is retained');
+  assert.ok(Math.abs(result.branchLength - result.expectedLength) < 1e-6,
+    'current branches render fully without animated growth');
+  assert.equal(result.growthStart, -Infinity);
+  assert.equal(result.activeBranchCount, 0, 'retired branches are removed');
+  assert.equal(result.fadingSubagentBranches.length, 0, 'retirement fades and flashes are suppressed');
 });
 
 test('nondefault node, pulse and floor values reach real material uniforms and shader expressions', async () => {
@@ -487,6 +928,13 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
   assert.ok(Math.abs(scale - (1 + Math.sin(Math.PI / 10) * 0.2)) < 1e-6);
   assert.ok(Math.abs(context.dust.rotation.y + Math.PI * 0.15) < 1e-6);
   assert.equal(context.dust.rotation.x, 0.4);
+  VISUAL.effects.waitingGlow = false;
+  VISUAL.effects.latticeBreathing = false;
+  vm.runInContext(ambience, context);
+  assert.equal(blend, 0, 'waiting glow modulation is removed');
+  assert.ok(Math.abs(context.coreGlow.material.opacity - 0.3) < 1e-6,
+    'baseline core glow remains when waiting glow is disabled');
+  assert.equal(scale, 1, 'disabled lattice breathing leaves the lattice unmodulated');
   context.dt = 0.5;
   context.activePulses = 0.1;
   context.activityState.activeSessions = 0.1;

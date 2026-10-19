@@ -9,7 +9,10 @@ import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIn
   projectActiveHudSessions } from './activity-client.mjs';
 import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from './session-stats-ui.mjs';
 import { CATEGORIES, CATEGORY_HEX, CATEGORY_INDEX, CATEGORY_RGB } from './activity-colors.mjs';
-import { VISUAL } from './visual-settings.mjs';
+import { VISUAL as VISUAL_DEFAULTS, VISUAL_PRESET, VISUAL_OVERRIDES,
+  EFFECTIVE_VISUAL as VISUAL } from './visual-settings.mjs';
+import { validateVisualSettings } from './visual-config.mjs';
+import { createVisualSettingsPanel } from './visual-settings-ui.mjs';
 
 // Structural geometry and fixed buffer capacities, not visual tuning.
 const CFG = {
@@ -292,23 +295,24 @@ brain.add(new THREE.Points(nodeGeo, nodeMat));
     depthWrite: false,
   });
   var dust = new THREE.Points(geo, dustMat);
+  dust.visible = VISUAL.effects.dust;
   scene.add(dust);
 }
 
 // ---------- core glow ----------
-function radialTexture() {
+function radialTexture(settings = VISUAL) {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const g = c.getContext('2d');
   const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
   grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(VISUAL.scene.glowKnee, `rgba(255,255,255,${VISUAL.scene.glowKneeOpacity})`);
+  grad.addColorStop(settings.scene.glowKnee, `rgba(255,255,255,${settings.scene.glowKneeOpacity})`);
   grad.addColorStop(1, 'rgba(255,255,255,0)');
   g.fillStyle = grad;
   g.fillRect(0, 0, 128, 128);
   return new THREE.CanvasTexture(c);
 }
-const glowTex = radialTexture();
+let glowTex = radialTexture();
 const coreGlow = new THREE.Sprite(
   new THREE.SpriteMaterial({
     map: glowTex,
@@ -413,8 +417,8 @@ brain.add(pulsePoints);
 const MAX_ACTIVE_SUBAGENT_BRANCHES = 512;
 const MAX_FADING_SUBAGENT_BRANCHES = 64;
 const MAX_SUBAGENT_ANCHORS = 32;
-const SUBAGENT_FADE_SECONDS = VISUAL.subagents.fadeSeconds;
-const SUBAGENT_GROW_SECONDS = VISUAL.subagents.growSeconds;
+let SUBAGENT_FADE_SECONDS = VISUAL.subagents.fadeSeconds;
+let SUBAGENT_GROW_SECONDS = VISUAL.subagents.growSeconds;
 const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
 let reducedMotion = reducedMotionQuery.matches;
 reducedMotionQuery.addEventListener('change', (event) => {
@@ -562,7 +566,7 @@ function retireSubagentBranch(sessionSid, sid, outcome, now) {
     last.slot = slot;
   }
   subagentBranchByKey.delete(key);
-  if (reducedMotion) return;
+  if (reducedMotion || !VISUAL.effects.subagentTransitions) return;
   branch.outcome = outcome;
   branch.fadeStart = now;
   if (fadingSubagentBranches.length >= MAX_FADING_SUBAGENT_BRANCHES) fadingSubagentBranches.shift();
@@ -597,7 +601,7 @@ function applySubagentTree(tree) {
   }
   for (const branch of tree.added) {
     const session = subagentAnchorBySid.get(branch.sessionSid);
-    if (session) addSubagentBranch(session, branch, !reducedMotion);
+    if (session) addSubagentBranch(session, branch, !reducedMotion && VISUAL.effects.subagentTransitions);
   }
 }
 
@@ -639,7 +643,8 @@ function renderSubagentTree(now) {
     const lineOffset = i * 6;
     const tipOffset = i * 3;
     const session = subagentAnchorBySid.get(branch.sessionSid);
-    const growth = reducedMotion ? 1 : Math.min(1, Math.max(0, (now - branch.growthStart) / SUBAGENT_GROW_SECONDS));
+    const growth = reducedMotion || !VISUAL.effects.subagentTransitions ? 1
+      : Math.min(1, Math.max(0, (now - branch.growthStart) / SUBAGENT_GROW_SECONDS));
     const length = branch.length * growth;
     const x = nodePos[anchorOffset], y = nodePos[anchorOffset + 1], z = nodePos[anchorOffset + 2];
     const ex = x + branch.directionX * length;
@@ -655,7 +660,8 @@ function renderSubagentTree(now) {
     branchTipPositions[tipOffset + 1] = ey;
     branchTipPositions[tipOffset + 2] = ez;
     const intensity = Math.min(VISUAL.subagents.maxIntensity, VISUAL.subagents.initialIntensity +
-      Math.max(0, now - branch.startedAt) * VISUAL.subagents.intensityPerSecond);
+      (VISUAL.effects.subagentTransitions
+        ? Math.max(0, now - branch.startedAt) * VISUAL.subagents.intensityPerSecond : 0));
     // No per-child last-activity attribution crosses the wire. Do not infer it
     // from aggregate events: delegated activity uses its role, waiting its cue.
     const category = session?.status === 'waiting' ? CATEGORY_INDEX.waiting : CATEGORY_INDEX.subagent;
@@ -904,6 +910,7 @@ const floorMat = new THREE.ShaderMaterial({
 const floor = new THREE.Mesh(new THREE.PlaneGeometry(500, 500), floorMat);
 floor.rotation.x = -Math.PI / 2;
 floor.position.y = -15;
+floor.visible = VISUAL.effects.floor;
 scene.add(floor);
 
 // ---------- HUD ----------
@@ -987,7 +994,7 @@ function renderWaitingMarkers(sessionIds) {
   for (let index = 0; index < waitingMarkerGroups.length; index++) {
     const cluster = waitingMarkerGroups[index];
     const id = waiting[index];
-    cluster.visible = Boolean(id);
+    cluster.visible = VISUAL.effects.waitingMarkers && Boolean(id);
     if (!id) continue;
     let hash = 0;
     for (const character of id) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
@@ -1050,7 +1057,7 @@ function renderSessions(state) {
 
 // ---------- interaction ----------
 let activityState = { connection: 'connecting', sourceStatus: 'unknown', coverage: 'unknown', activeSessions: 0, thinkingSessions: 0, runningSessions: 0, unverifiedRunningSessions: 0, journalFiles: 0, sessions: [] };
-const thinkingPulseClock = createThinkingPulseClock();
+const thinkingPulseClock = createThinkingPulseClock(VISUAL.running);
 
 // Blue running-state stream: observed running work (thinking, tools and
 // delegated agents), not a claim of hidden cognition.
@@ -1196,7 +1203,7 @@ function renderObservedImpulses() {
   const plan = categoryBurstPlan.plan(sceneByCategory);
   for (let i = 0; i < plan.length; i++) {
     const node = (Math.random() * N) | 0;
-    const intensity = impulseIntensity(plan.counts[i]);
+    const intensity = impulseIntensity(plan.counts[i], VISUAL.activity);
     const kind = plan.kinds[i];
     const category = plan.categories[i];
     if (kind === 2) {
@@ -1296,15 +1303,17 @@ function frame() {
   const load = Math.min(1, activePulses / VISUAL.scene.loadPulseScale + activityState.activeSessions / VISUAL.scene.loadSessionScale);
   smoothedLoad += (load - smoothedLoad) * Math.min(1, dt * VISUAL.scene.loadSmoothing);
 
-  const breathe = 1 + Math.sin(now * VISUAL.scene.breathSpeed) * VISUAL.scene.breathAmplitude;
+  const breathe = VISUAL.effects.latticeBreathing
+    ? 1 + Math.sin(now * VISUAL.scene.breathSpeed) * VISUAL.scene.breathAmplitude : 1;
   brain.scale.setScalar(breathe);
   const waitingGlow = activityState.connection === 'connected' &&
     activityState.sourceStatus !== 'unavailable' && activityState.waitingSessions > 0;
   const waitBreath = VISUAL.waiting.colorMixMin +
     VISUAL.waiting.colorMixRange * (0.5 + 0.5 * Math.sin(now * VISUAL.waiting.breathSpeed));
-  coreGlow.material.color.lerpColors(baseCoreColor, waitingCoreColor, waitingGlow ? waitBreath : 0);
+  const showWaitingGlow = VISUAL.effects.waitingGlow && waitingGlow;
+  coreGlow.material.color.lerpColors(baseCoreColor, waitingCoreColor, showWaitingGlow ? waitBreath : 0);
   coreGlow.material.opacity = VISUAL.scene.coreOpacity + smoothedLoad * VISUAL.scene.coreLoad;
-  if (waitingGlow) coreGlow.material.opacity += VISUAL.waiting.opacityBase + waitBreath * VISUAL.waiting.opacityBreath;
+  if (showWaitingGlow) coreGlow.material.opacity += VISUAL.waiting.opacityBase + waitBreath * VISUAL.waiting.opacityBreath;
   haloGlow.material.opacity = VISUAL.scene.haloOpacity + smoothedLoad * VISUAL.scene.haloLoad;
   bloom.strength = VISUAL.scene.bloomStrength + smoothedLoad * VISUAL.scene.bloomLoad;
   dust.rotation.y = now * VISUAL.dust.rotationSpeed;
@@ -1339,6 +1348,171 @@ window.addEventListener('resize', () => {
   renderer.setSize(w, h);
   composer.setSize(w, h);
   bloom.setSize(w, h);
+});
+
+function applyVisualSettings(candidate) {
+  const errors = validateVisualSettings(candidate);
+  if (errors.length) throw new Error(errors.map(({ path, message }) => `${path}: ${message}`).join(' '));
+
+  const previous = structuredClone(VISUAL);
+  const changed = (path) =>
+    JSON.stringify(path.split('.').reduce((value, key) => value[key], previous)) !==
+    JSON.stringify(path.split('.').reduce((value, key) => value[key], candidate));
+  const nextSceneRgb = Float32Array.from(CATEGORY_RGB, (channel) =>
+    candidate.scene.categoryBrightness *
+      (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+  const nextNodeSize = changed('nodes.largeChance') || changed('nodes.largeSizeMin') ||
+    changed('nodes.largeSizeRange') || changed('nodes.baseSizeMin') || changed('nodes.baseSizeRange')
+    ? Float32Array.from({ length: N }, () => Math.random() < candidate.nodes.largeChance
+      ? candidate.nodes.largeSizeMin + Math.random() * candidate.nodes.largeSizeRange
+      : candidate.nodes.baseSizeMin + Math.random() * candidate.nodes.baseSizeRange)
+    : null;
+  const nextEdgeBase = changed('scene.edgeVariationMin') || changed('scene.edgeVariationRange')
+    ? Float32Array.from({ length: E }, () =>
+      candidate.scene.edgeVariationMin + Math.random() * candidate.scene.edgeVariationRange)
+    : null;
+  const nextGlowTexture = changed('scene.glowKnee') || changed('scene.glowKneeOpacity')
+    ? radialTexture(candidate) : null;
+  const nextBackground = changed('scene.background') ? new THREE.Color(candidate.scene.background) : null;
+
+  if (changed('camera.fov')) camera.fov = candidate.camera.fov;
+  if (changed('camera.position')) camera.position.set(...candidate.camera.position);
+  if (changed('camera.target')) controls.target.set(...candidate.camera.target);
+  controls.dampingFactor = candidate.camera.damping;
+  controls.minDistance = candidate.camera.minDistance;
+  controls.maxDistance = candidate.camera.maxDistance;
+  controls.autoRotate = candidate.camera.autoRotate;
+  controls.autoRotateSpeed = candidate.camera.autoRotateSpeed;
+  if (changed('camera.fov')) camera.updateProjectionMatrix();
+
+  for (const [group, values] of Object.entries(candidate)) {
+    for (const [name, value] of Object.entries(values)) {
+      VISUAL[group][name] = Array.isArray(value) ? value.slice() : value;
+    }
+  }
+
+  if (nextBackground) scene.background = nextBackground;
+  if (nextNodeSize) {
+    nodeSize.set(nextNodeSize);
+    nodeGeo.attributes.aSize.needsUpdate = true;
+  }
+  if (nextEdgeBase) edgeBase.set(nextEdgeBase);
+  SCENE_RGB.set(nextSceneRgb);
+
+  const nodeUniforms = nodeMat.uniforms;
+  nodeUniforms.uScale.value = VISUAL.nodes.scale * pixelRatio;
+  nodeUniforms.uSize.value = VISUAL.nodes.size;
+  nodeUniforms.uActiveGrowth.value = VISUAL.nodes.activeGrowth;
+  nodeUniforms.uIdleBrightness.value = VISUAL.nodes.idleBrightness;
+  nodeUniforms.uActiveBrightness.value = VISUAL.nodes.activeBrightness;
+  nodeUniforms.uHotMix.value = VISUAL.nodes.hotMix;
+  nodeUniforms.uWhiteThreshold.value = VISUAL.nodes.whiteThreshold;
+  nodeUniforms.uWhiteMix.value = VISUAL.nodes.whiteMix;
+  nodeUniforms.uTwinkleBase.value = VISUAL.nodes.twinkleBase;
+  nodeUniforms.uTwinkleAmplitude.value = VISUAL.nodes.twinkleAmplitude;
+  nodeUniforms.uTwinkleSpeed.value = VISUAL.nodes.twinkleSpeed;
+  nodeUniforms.uTwinkleSpatial.value.set(...VISUAL.nodes.twinkleSpatial);
+  nodeUniforms.uCoreFalloff.value = VISUAL.nodes.coreFalloff;
+  nodeUniforms.uBaseColor.value.set(...VISUAL.nodes.baseColor);
+  nodeUniforms.uHotColor.value.set(...VISUAL.nodes.hotColor);
+  nodeUniforms.uWhiteColor.value.set(...VISUAL.nodes.whiteColor);
+
+  const dustUniforms = dustMat.uniforms;
+  dustUniforms.uScale.value = VISUAL.dust.scale * pixelRatio;
+  dustUniforms.uBrightness.value = VISUAL.scene.dustBrightness;
+  dustUniforms.uColor.value.set(...VISUAL.dust.color);
+  dustUniforms.uTwinkleBase.value = VISUAL.dust.twinkleBase;
+  dustUniforms.uTwinkleAmplitude.value = VISUAL.dust.twinkleAmplitude;
+  dustUniforms.uTwinkleSpeed.value = VISUAL.dust.twinkleSpeed;
+  dustUniforms.uTwinklePhase.value = VISUAL.dust.twinklePhase;
+  dustUniforms.uTwinklePower.value = VISUAL.dust.twinklePower;
+  dust.visible = VISUAL.effects.dust;
+
+  pulseMat.uniforms.uScale.value = VISUAL.pulses.scale * pixelRatio;
+  pulseMat.uniforms.uCoreFalloff.value = VISUAL.pulses.coreFalloff;
+  if (changed('pulses.speedMin') || changed('pulses.speedRange')) {
+    for (let index = 0; index < P; index++) {
+      if (!pActive[index]) continue;
+      const fraction = previous.pulses.speedRange > 0
+        ? (pSpeed[index] - previous.pulses.speedMin) / previous.pulses.speedRange : 0.5;
+      pSpeed[index] = VISUAL.pulses.speedMin +
+        Math.min(1, Math.max(0, fraction)) * VISUAL.pulses.speedRange;
+    }
+  }
+
+  if (nextGlowTexture) {
+    const previousTexture = glowTex;
+    glowTex = nextGlowTexture;
+    coreGlow.material.map = glowTex;
+    waitingMarkerMaterial.map = glowTex;
+    haloGlow.material.map = glowTex;
+    coreGlow.material.needsUpdate = true;
+    waitingMarkerMaterial.needsUpdate = true;
+    haloGlow.material.needsUpdate = true;
+    previousTexture.dispose();
+  }
+  coreGlow.material.color.set(VISUAL.scene.coreColor);
+  baseCoreColor.set(VISUAL.scene.coreColor);
+  coreGlow.scale.setScalar(VISUAL.scene.coreSize);
+  haloGlow.material.color.set(VISUAL.scene.haloColor);
+  haloGlow.scale.setScalar(VISUAL.scene.haloSize);
+  waitingMarkerMaterial.opacity = VISUAL.waiting.markerOpacity;
+  for (const group of waitingMarkerGroups) {
+    for (const marker of group.children) marker.scale.setScalar(VISUAL.waiting.markerSize);
+  }
+  if (changed('subagents.growSeconds')) SUBAGENT_GROW_SECONDS = VISUAL.subagents.growSeconds;
+  if (changed('subagents.fadeSeconds')) SUBAGENT_FADE_SECONDS = VISUAL.subagents.fadeSeconds;
+  branchTips.material.size = VISUAL.subagents.tipSize * pixelRatio;
+  fadingTips.material.size = VISUAL.subagents.fadingTipSize * pixelRatio;
+  anchorPoints.material.size = VISUAL.subagents.anchorSize * pixelRatio;
+
+  const floorUniforms = floorMat.uniforms;
+  floorUniforms.uBrightness.value = VISUAL.scene.floorBrightness;
+  floorUniforms.uFade.value = VISUAL.scene.floorFade;
+  floorUniforms.uFineSpacing.value = VISUAL.floor.fineSpacing;
+  floorUniforms.uFineIntensity.value = VISUAL.floor.fineIntensity;
+  floorUniforms.uCoarseSpacing.value = VISUAL.floor.coarseSpacing;
+  floorUniforms.uCoarseIntensity.value = VISUAL.floor.coarseIntensity;
+  floorUniforms.uColor.value.set(...VISUAL.floor.color);
+  floorUniforms.uPoolColor.value.set(...VISUAL.floor.poolColor);
+  floorUniforms.uPoolFade.value = VISUAL.floor.poolFade;
+  floorUniforms.uPoolBase.value = VISUAL.floor.poolBase;
+  floorUniforms.uPoolGrid.value = VISUAL.floor.poolGrid;
+  floor.visible = VISUAL.effects.floor;
+
+  bloom.strength = VISUAL.scene.bloomStrength;
+  bloom.radius = VISUAL.scene.bloomRadius;
+  bloom.threshold = VISUAL.scene.bloomThreshold;
+  renderWaitingMarkers(activityState.connection === 'connected' && activityState.sourceStatus !== 'unavailable'
+    ? activityState.waitingSessionIds : []);
+  controls.update();
+  return true;
+}
+
+createVisualSettingsPanel({
+  document,
+  opener: document.getElementById('visual-settings-open'),
+  dialog: document.getElementById('visual-settings-dialog'),
+  form: document.getElementById('visual-settings-form'),
+  presetSelect: document.getElementById('visual-settings-preset'),
+  fields: document.getElementById('visual-settings-fields'),
+  status: document.getElementById('visual-settings-status'),
+  errorSummary: document.getElementById('visual-settings-errors'),
+  conflict: document.getElementById('visual-settings-conflict'),
+  useFileButton: document.getElementById('visual-settings-use-file'),
+  keepPreviewButton: document.getElementById('visual-settings-keep-preview'),
+  closeButton: document.getElementById('visual-settings-close'),
+  resetButton: document.getElementById('visual-settings-reset'),
+  exportButton: document.getElementById('visual-settings-export'),
+  reloadButton: document.getElementById('visual-settings-reload'),
+  autoReloadInput: document.getElementById('visual-settings-auto-reload'),
+  initialConfiguration: {
+    defaults: VISUAL_DEFAULTS,
+    preset: VISUAL_PRESET,
+    overrides: VISUAL_OVERRIDES,
+    settings: VISUAL,
+  },
+  applySettings: applyVisualSettings,
 });
 
 frame();

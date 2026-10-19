@@ -1,5 +1,4 @@
 import { activityCategory, CATEGORIES, CATEGORY_GLYPH, CATEGORY_INDEX } from './activity-colors.mjs';
-import { VISUAL } from './visual-settings.mjs';
 
 const EMPTY = Object.freeze({
   connection: 'connecting',
@@ -27,12 +26,14 @@ const IMPULSE_LABELS = new Map([
   ['step', 'Task step'],
   ['completion', 'Task completed'],
 ]);
+const DEFAULT_RUNNING_SETTINGS = Object.freeze({ pulsesPerSecondPerSession: 6, maxSessions: 32 });
+const DEFAULT_ACTIVITY_SETTINGS = Object.freeze({ maxIntensity: 8 });
 
 // Blue running-state clock. It follows observed RUNNING work (thinking, tool
 // and delegated execution, including unverified long silence), not only
 // precise cognition. Legacy snapshots without runningSessions fall back to
 // thinkingSessions.
-export function createThinkingPulseClock(settings = VISUAL.running) {
+export function createThinkingPulseClock(settings = DEFAULT_RUNNING_SETTINGS) {
   let accumulated = 0;
   return {
     reset() { accumulated = 0; },
@@ -86,7 +87,7 @@ export function activityColor({ kind, eventType }) {
   return activityCategory({ kind, eventType }) === 'reasoning' ? 'blue' : 'orange';
 }
 
-export function impulseIntensity(count, settings = VISUAL.activity) {
+export function impulseIntensity(count, settings = DEFAULT_ACTIVITY_SETTINGS) {
   return Math.min(settings.maxIntensity, 1 + Math.floor(Math.log2(Math.max(1, count))));
 }
 
