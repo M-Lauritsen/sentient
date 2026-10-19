@@ -44,7 +44,28 @@ export const VISUAL = {
 		branchChance: 0.42, // Default 0.42; probability of 2 rather than 1 child, 0–1.
 		seedHeat: 2.5, // Default 2.5; heat on central node, try 0–3.
 		nodeEnergy: 0.9, // Default 0.9; energy added at each arrival (cap 1.8), try 0–1.8.
-		edgeIntensity: 0.5, // Default 1; local edge palette light multiplier, try 0–2.
+		edgeIntensity: 0.5, // Default 0.5; local edge palette light multiplier, try 0–2.
+	},
+
+	// IMPACT — extra burst when a timed run ends (tool call, turn, subagent),
+	// sized by how long it ran. Duration maps log-scaled from minMs (smallest
+	// burst) to maxMs (largest); shorter runs make no impact burst. Colored by
+	// the run's activity category. At most four impact bursts per frame.
+	impact: {
+		minMs: 2000, // Default 2000 ms; shortest run that bursts, try 500–10000.
+		maxMs: 120000, // Default 120000 ms; run length for full burst, try 30000–600000.
+		minHops: 1, // Default 1; hop budget at minMs, integer 0–6.
+		maxHops: 8, // Default 8; hop budget at maxMs, integer 1–12.
+		minSpread: 1, // Default 1; initial edges at minMs, integer 1–6.
+		maxSpread: 6, // Default 6; initial edges at maxMs, integer 1–12.
+		neighbourSeeds: 4, // Default 4; adjacent seeds at maxMs (scaled from 0), integer 0–8.
+		neighbourHops: 4, // Default 4; neighbour hop budget at maxMs (scaled from 0), integer 0–10.
+		neighbourSpread: 2, // Default 2; initial edges per neighbour seed, integer 0–4.
+		branchChance: 0.35, // Default 0.35; probability of 2 rather than 1 child, 0–1.
+		seedHeat: 2, // Default 2; heat on central node at maxMs (scaled), try 0–3.
+		nodeEnergy: 0.7, // Default 0.7; energy added at each arrival (cap 1.8), try 0–1.8.
+		edgeIntensity: 0.8, // Default 0.8; edge palette light multiplier, try 0–2.
+		head: 2.6, // Default 2.6; head size factor, try 1–5.
 	},
 
 	// SCENE — ordinary load-driven ambience, independent of completion events.

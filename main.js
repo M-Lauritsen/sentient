@@ -4,10 +4,10 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity,
+import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity, impactBurst,
   createThinkingPulseClock, summarizeSubagents, createCategoryBurstPlan, createActivityTimeline,
   projectActiveHudSessions } from './activity-client.mjs';
-import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, renderSessionRows } from './session-stats-ui.mjs';
+import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from './session-stats-ui.mjs';
 import { CATEGORIES, CATEGORY_HEX, CATEGORY_INDEX, CATEGORY_RGB } from './activity-colors.mjs';
 import { VISUAL } from './visual-settings.mjs';
 
@@ -22,7 +22,8 @@ const CFG = {
   trail: 7,
 };
 
-// Pulse kinds: 0 = observed thinking, 1 = activity step, 2 = completion cascade.
+// Pulse kinds: 0 = observed thinking, 1 = activity step, 2 = completion cascade,
+// 3 = duration-scaled impact burst.
 // Motion and category are independent; RGB storage is shared and never rebuilt.
 // Shader attributes are linear; cap the palette at 0.9 before trail brightness.
 const SCENE_RGB = Float32Array.from(CATEGORY_RGB, (channel) =>
@@ -726,7 +727,8 @@ function updatePulses(dt) {
     const kind = pKind[s];
     pT[s] += (pSpeed[s] * dt) / edgeLen[e];
     const rgb = pCat[s] * 3;
-    const intensity = kind === 2 ? VISUAL.completion.edgeIntensity : kind === 1 ? 0.45 : 0.6;
+    const intensity = kind === 3 ? VISUAL.impact.edgeIntensity
+      : kind === 2 ? VISUAL.completion.edgeIntensity : kind === 1 ? 0.45 : 0.6;
     edgeR[e] = Math.max(edgeR[e], SCENE_RGB[rgb] * intensity);
     edgeG[e] = Math.max(edgeG[e], SCENE_RGB[rgb + 1] * intensity);
     edgeBColor[e] = Math.max(edgeBColor[e], SCENE_RGB[rgb + 2] * intensity);
@@ -737,9 +739,11 @@ function updatePulses(dt) {
       const to = otherEnd(e, from);
       pActive[s] = 0;
       activePulses--;
-      nodeEnergy[to] = Math.min(1.8, nodeEnergy[to] + (kind === 2 ? VISUAL.completion.nodeEnergy : 0.5));
+      nodeEnergy[to] = Math.min(1.8, nodeEnergy[to] + (kind === 3 ? VISUAL.impact.nodeEnergy
+        : kind === 2 ? VISUAL.completion.nodeEnergy : 0.5));
       if (hops > 0) {
-        const branch = kind === 2 ? (Math.random() < VISUAL.completion.branchChance ? 2 : 1) : kind === 0 ? 1 : 0;
+        const branch = kind === 3 ? (Math.random() < VISUAL.impact.branchChance ? 2 : 1)
+          : kind === 2 ? (Math.random() < VISUAL.completion.branchChance ? 2 : 1) : kind === 0 ? 1 : 0;
         if (branch > 0) fireFrom(to, hops - 1, kind, from, branch, pCat[s]);
       }
     }
@@ -757,8 +761,9 @@ function writePulseBuffers() {
     const a = pFrom[s] * 3;
     const b = otherEnd(e, pFrom[s]) * 3;
     const rgb = pCat[s] * 3;
-    const head = pKind[s] === 2 ? VISUAL.pulses.completionHead : VISUAL.pulses.head;
-    const spacing = pKind[s] === 2 ? VISUAL.pulses.completionTrailSpacing : VISUAL.pulses.trailSpacing;
+    const head = pKind[s] === 3 ? VISUAL.impact.head
+      : pKind[s] === 2 ? VISUAL.pulses.completionHead : VISUAL.pulses.head;
+    const spacing = pKind[s] >= 2 ? VISUAL.pulses.completionTrailSpacing : VISUAL.pulses.trailSpacing;
     for (let j = 0; j < T; j++) {
       const idx = base + j;
       const t = pT[s] - j * spacing;
@@ -873,6 +878,16 @@ const timelineLabels = {
   gap: 'Coverage gap · missing activity is unknown, not zero',
 };
 let lastTimelineState = '';
+createTimelineDialog({
+  preview: document.querySelector('.hud-timeline'),
+  content: document.getElementById('timeline-content'),
+  canvas: timelineCanvas,
+  dialog: document.getElementById('timeline-dialog'),
+  dialogContent: document.getElementById('timeline-dialog-content'),
+  opener: document.getElementById('timeline-open'),
+  closeButton: document.getElementById('timeline-close'),
+  redraw: () => renderTimeline(performance.now()),
+});
 const sessionStatusLabels = {
   running: 'RUNNING',
   'running-unverified': 'RUNNING · UNVERIFIED',
@@ -1098,10 +1113,24 @@ function renderCompletionCascade(node) {
   }
 }
 
+function renderImpactBurst(node, category, durationMs) {
+  const burst = impactBurst(durationMs, VISUAL.impact);
+  if (!burst) return;
+  const edges = adjacency[node];
+  nodeHot[node] = Math.max(nodeHot[node], burst.seedHeat);
+  fireFrom(node, burst.hops, 3, -1, Math.min(burst.spread, edges.length), category);
+  for (let i = 0; i < Math.min(burst.neighbourSeeds, edges.length); i++) {
+    fireFrom(otherEnd(edges[i], node), burst.neighbourHops, 3, node, burst.neighbourSpread, category);
+  }
+}
+
 function renderObservedImpulses() {
-  const { byCategory, sceneByCategory, entries } = impulseBuffer.drain();
+  const { byCategory, sceneByCategory, entries, impacts } = impulseBuffer.drain();
   if (document.hidden) return;
   timeline.add(byCategory, performance.now());
+  for (let i = 0; i < impacts.length; i++) {
+    renderImpactBurst((Math.random() * N) | 0, impacts[i].category, impacts[i].durationMs);
+  }
   for (let i = 0; i < entries.length; i++) {
     const { kind, toolName, eventType, count } = entries[i];
     impulseFeed.add(kind, toolName, eventType, count);

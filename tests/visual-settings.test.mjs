@@ -29,7 +29,12 @@ test('visual settings characterize the latest tuned defaults, not structural cap
     completion: {
       hops: 7, neighbourHops: 5, spread: 8, neighbourSeeds: 4,
       neighbourSpread: 2, branchChance: 0.42, seedHeat: 2.5,
-      nodeEnergy: 0.9, edgeIntensity: 1,
+      nodeEnergy: 0.9, edgeIntensity: 0.5,
+    },
+    impact: {
+      minMs: 2000, maxMs: 120000, minHops: 1, maxHops: 8, minSpread: 1, maxSpread: 6,
+      neighbourSeeds: 4, neighbourHops: 4, neighbourSpread: 2, branchChance: 0.35,
+      seedHeat: 2, nodeEnergy: 0.7, edgeIntensity: 0.8, head: 2.6,
     },
     scene: {
       bloomStrength: 0.85, bloomLoad: 0.3, bloomRadius: 0.45, bloomThreshold: 0.12,

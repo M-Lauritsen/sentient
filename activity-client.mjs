@@ -17,6 +17,7 @@ const EMPTY = Object.freeze({
   steps: 0,
 });
 const ACTIVITY_KINDS = new Set(['thinking', 'step', 'completion', 'activity']);
+const MAX_DURATION_MS = 1_000_000_000;
 const SOURCE_STATES = new Set(['available', 'partial', 'unavailable']);
 const COVERAGE_STATES = new Set(['journal-only', 'partial']);
 const SESSION_STATUSES = new Set(['running', 'running-unverified', 'waiting', 'idle', 'ended']);
@@ -66,13 +67,16 @@ export function projectActivity(value) {
   if (!value || !ACTIVITY_KINDS.has(value.kind) ||
       (value.eventType !== undefined && !validEventType(value.eventType)) ||
       (value.kind === 'activity' && !validEventType(value.eventType)) ||
-      (value.count !== undefined && (!integer(value.count) || value.count < 1))) return null;
+      (value.count !== undefined && (!integer(value.count) || value.count < 1)) ||
+      (value.durationMs !== undefined && (!integer(value.durationMs) ||
+        value.durationMs > MAX_DURATION_MS))) return null;
   const result = { kind: value.kind };
   if (value.eventType !== undefined) result.eventType = value.eventType;
   if ((value.kind === 'step' || value.eventType?.startsWith('tool.')) && validToolName(value.toolName)) {
     result.toolName = value.toolName;
   }
   if (value.count !== undefined) result.count = value.count;
+  if (value.durationMs !== undefined) result.durationMs = value.durationMs;
   return result;
 }
 
@@ -85,8 +89,29 @@ export function impulseIntensity(count) {
   return Math.min(8, 1 + Math.floor(Math.log2(Math.max(1, count))));
 }
 
+// Duration-driven impact: 0 below minMs, 1 at/above maxMs, log-scaled between
+// so a two-minute run reads far larger than a two-second one. Returns null when
+// the run is too short to make an impact burst.
+export function impactBurst(durationMs, settings) {
+  if (!Number.isFinite(durationMs) || durationMs < settings.minMs) return null;
+  const min = Math.max(1, settings.minMs);
+  const span = Math.log(Math.max(settings.maxMs, min + 1) / min);
+  const t = Math.min(1, Math.max(0, Math.log(durationMs / min) / span));
+  const lerp = (low, high) => Math.round(low + (high - low) * t);
+  return {
+    t,
+    hops: lerp(settings.minHops, settings.maxHops),
+    spread: lerp(settings.minSpread, settings.maxSpread),
+    neighbourSeeds: lerp(0, settings.neighbourSeeds),
+    neighbourHops: lerp(0, settings.neighbourHops),
+    neighbourSpread: settings.neighbourSpread,
+    seedHeat: settings.seedHeat * t,
+  };
+}
+
 // One drain per animation frame: fixed counters plus only the latest eight
 // metadata labels. Evicted labels still contribute to the visual totals.
+// The four longest timed runs per frame are kept for impact bursts.
 export function createImpulseBuffer() {
   const totals = { blue: 0, orange: 0 };
   const categoryCounts = Array(CATEGORIES.length).fill(0);
@@ -96,7 +121,8 @@ export function createImpulseBuffer() {
   const entries = new Map();
   // The drain result and label array belong to the buffer; consume before the
   // next drain. In particular, empty animation frames allocate nothing here.
-  const result = { blue: 0, orange: 0, byCategory, sceneByCategory, entries: [] };
+  const impacts = [];
+  const result = { blue: 0, orange: 0, byCategory, sceneByCategory, entries: [], impacts: [] };
   const appendEntry = (entry) => result.entries.push(entry);
   return {
     add(value) {
@@ -113,6 +139,17 @@ export function createImpulseBuffer() {
       entries.delete(key);
       entries.set(key, { ...activity, category, count: (previous?.count ?? 0) + count });
       if (entries.size > 8) entries.delete(entries.keys().next().value);
+      if (activity.durationMs > 0) {
+        const impact = { category: CATEGORY_INDEX[category], durationMs: activity.durationMs };
+        if (impacts.length < 4) impacts.push(impact);
+        else {
+          let shortest = 0;
+          for (let i = 1; i < impacts.length; i++) {
+            if (impacts[i].durationMs < impacts[shortest].durationMs) shortest = i;
+          }
+          if (impacts[shortest].durationMs < impact.durationMs) impacts[shortest] = impact;
+        }
+      }
     },
     clear() {
       totals.blue = totals.orange = 0;
@@ -121,6 +158,7 @@ export function createImpulseBuffer() {
       sceneByCategory.fill(0);
       idleCount = 0;
       entries.clear();
+      impacts.length = 0;
     },
     drain() {
       byCategory.fill(0);
@@ -138,6 +176,9 @@ export function createImpulseBuffer() {
       result.orange = totals.orange;
       result.entries.length = 0;
       entries.forEach(appendEntry);
+      result.impacts.length = 0;
+      for (let i = 0; i < impacts.length; i++) result.impacts.push(impacts[i]);
+      impacts.length = 0;
       totals.blue = totals.orange = 0;
       categoryCounts.fill(0);
       entries.clear();

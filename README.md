@@ -58,6 +58,9 @@ does not load a CDN or send activity outside this machine.
   hidden-tab discard and partial buckets; missing coverage is never zero.
   Events during a coverage gap are not counted. Counts live only in fixed-size
   browser memory; the strip redraws at most twice per second.
+  Click the compact lower-left strip (or focus it and press Enter/Space) to
+  enlarge the same live timeline in a centered dialog. Close it with the close
+  button, Escape, or the backdrop to restore the compact view.
 
 “Quiet · not verified idle” means SENTIENT observed no fresh active interval; it
 does not mean every Copilot session is idle. A successful `session.task_complete`
@@ -70,6 +73,11 @@ in the feed, timeline and category statistics; it does not assert task success.
 Only live-observed work with complete coverage qualifies, and idle after an
 accepted task completion does not trigger a second cascade. Historical,
 duplicate, subagent and interrupted-work idle events do not trigger it.
+When a live tool call, turn or subagent ends after running at least
+`impact.minMs` (default 2 s), it also fires an impact burst in its category
+color, sized by how long it ran (log-scaled up to `impact.maxMs`, default 2 min):
+longer runs travel more hops, spread wider and seed neighbouring nodes. Durations
+come from journal timestamps; history read at startup makes no impact bursts.
 The current journal sample did not include that event or
 `assistant.reasoning`, so those details may not appear. The journal format is
 internal and can change.
@@ -84,7 +92,8 @@ source of these visual settings.
 
 The commented sections cover node size/brightness/whiteness; pulse head size,
 trail spacing and speed; local completion spread, hops, branching, seeds and
-intensity; and scene bloom, edge fade and ambient glow. Each number documents
+intensity; duration-scaled impact bursts (min/max duration, hops, spread,
+neighbour seeds, branching and intensity); and scene bloom, edge fade and ambient glow. Each number documents
 its default, units and a useful range. Ranges are guidance, not automatic
 clamps: use finite nonnegative numbers, integer hop/count values, and a branch
 chance between 0 and 1. Start with small edits and reload to compare.

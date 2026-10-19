@@ -1474,3 +1474,106 @@ test('session stats accumulate status intervals and matched source-clock turn du
   await source.poll();
   assert.equal(source.snapshot().sessions[0].stats.turns.count, 1);
 });
+
+// Copilot writes `type` first; oversized records are classified by that prefix.
+function typeFirstEvent(type, data = {}) {
+  return JSON.stringify({ type, data, id: `event-${Math.random()}` }) + '\n';
+}
+
+async function twoSessionSource(t, options = {}) {
+  const root = await fixture(t);
+  const files = [];
+  for (const name of ['session-a', 'session-b']) {
+    await mkdir(path.join(root, name));
+    const file = path.join(root, name, 'events.jsonl');
+    await writeFile(file, '');
+    files.push(file);
+  }
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, ...options });
+  t.after(() => source.stop());
+  const activity = [];
+  source.on('activity', (value) => activity.push(value));
+  await source.start();
+  return { source, files, activity };
+}
+
+test('oversized state-neutral records are published without a coverage gap', async (t) => {
+  const { source, files: [file], activity } = await twoSessionSource(t);
+  await appendFile(file, event('assistant.turn_start', { turnId: 'turn' }));
+  await source.poll();
+  activity.length = 0;
+  await appendFile(file, typeFirstEvent('system.message', { content: `PRIVATE${'x'.repeat(70_000)}` }) +
+    event('tool.execution_start', { toolCallId: 'after-oversized', toolName: 'view' }));
+  await source.poll();
+  assert.equal(source.snapshot().sourceStatus, 'available');
+  assert.equal(source.snapshot().runningSessions, 1);
+  assert.deepEqual(activity.map(({ kind, eventType }) => [kind, eventType]),
+    [['activity', 'system.message'], ['step', 'tool.execution_start']]);
+  assert.equal(JSON.stringify(source.snapshot()).includes('PRIVATE'), false);
+});
+
+test('oversized state records remain a session gap', async (t) => {
+  const { source, files: [file] } = await twoSessionSource(t);
+  await appendFile(file, event('assistant.turn_start', { turnId: 'turn' }));
+  await source.poll();
+  await appendFile(file, typeFirstEvent('tool.execution_complete', { result: 'x'.repeat(70_000) }));
+  await source.poll();
+  assert.equal(source.snapshot().sourceStatus, 'partial');
+  assert.equal(source.snapshot().runningSessions, 0);
+});
+
+test('a read issue in one journal does not drop running state in another', async (t) => {
+  const { source, files: [first, second] } = await twoSessionSource(t);
+  await appendFile(first, event('assistant.turn_start', { turnId: 'first-turn' }));
+  await appendFile(second, event('assistant.turn_start', { turnId: 'second-turn' }));
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 2);
+  await appendFile(second, 'not json\n');
+  await source.poll();
+  assert.equal(source.snapshot().sourceStatus, 'partial');
+  assert.equal(source.snapshot().runningSessions, 1);
+  await source.poll();
+  assert.equal(source.snapshot().sourceStatus, 'available');
+  assert.equal(source.snapshot().runningSessions, 1);
+});
+function at(type, data, iso) {
+  return JSON.stringify({ id: `event-${Math.random()}`, type, timestamp: iso, data }) + '\n';
+}
+
+test('ended tool calls, turns and subagents carry their journal-timed duration', async (t) => {
+  const { source, files: [file], activity } = await twoSessionSource(t);
+  await appendFile(file,
+    at('assistant.turn_start', { turnId: 'turn' }, '2025-01-01T00:00:00.000Z') +
+    at('tool.execution_start', { toolCallId: 'grep-call', toolName: 'grep' }, '2025-01-01T00:00:01.000Z') +
+    at('tool.execution_complete', { toolCallId: 'grep-call', success: true }, '2025-01-01T00:00:04.500Z') +
+    at('tool.execution_start', { toolCallId: 'task-call', toolName: 'task' }, '2025-01-01T00:00:05.000Z') +
+    at('subagent.started', { toolCallId: 'task-call', agentName: 'explore' }, '2025-01-01T00:00:05.100Z') +
+    at('subagent.completed', { toolCallId: 'task-call', agentName: 'explore' }, '2025-01-01T00:01:05.000Z') +
+    at('tool.execution_complete', { toolCallId: 'task-call', success: true }, '2025-01-01T00:01:05.200Z') +
+    at('assistant.turn_end', { turnId: 'turn' }, '2025-01-01T00:01:10.000Z'));
+  await source.poll();
+  const timed = activity.filter((value) => value.durationMs !== undefined)
+    .map(({ eventType, durationMs }) => [eventType, durationMs]);
+  assert.deepEqual(timed.sort(), [
+    ['assistant.turn_end', 70_000],
+    ['subagent.completed', 60_000],
+    ['tool.execution_complete', 3_500],
+  ].sort());
+});
+
+test('baseline history and unmatched ends produce no duration', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file,
+    at('tool.execution_start', { toolCallId: 'old', toolName: 'view' }, '2025-01-01T00:00:00.000Z') +
+    at('tool.execution_complete', { toolCallId: 'old' }, '2025-01-01T00:00:09.000Z'));
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0 });
+  t.after(() => source.stop());
+  const activity = [];
+  source.on('activity', (value) => activity.push(value));
+  await source.start();
+  await appendFile(file, at('tool.execution_complete', { toolCallId: 'never-started' }, '2025-01-01T00:00:10.000Z'));
+  await source.poll();
+  assert.equal(activity.some((value) => value.durationMs !== undefined), false);
+});

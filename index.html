@@ -74,12 +74,23 @@
   </dialog>
 
   <aside class="hud hud-timeline" aria-label="Recent aggregate activity">
-    <p id="timeline-description">last 10 min · observed live only · aggregate · no session attribution</p>
-    <canvas id="timeline" width="960" height="48" role="img" aria-label="Stacked category activity counts; right edge is now" aria-describedby="timeline-description timeline-state">
-      Recent activity by category. Hatched buckets indicate unknown coverage, not zero activity.
-    </canvas>
-    <p id="timeline-state" role="status" aria-live="polite">Loading · awaiting live coverage</p>
+    <div id="timeline-content">
+      <p id="timeline-description">last 10 min · observed live only · aggregate · no session attribution</p>
+      <canvas id="timeline" width="960" height="48" role="img" aria-label="Stacked category activity counts; right edge is now" aria-describedby="timeline-description timeline-state">
+        Recent activity by category. Hatched buckets indicate unknown coverage, not zero activity.
+      </canvas>
+      <p id="timeline-state" role="status" aria-live="polite">Loading · awaiting live coverage</p>
+    </div>
+    <button id="timeline-open" class="timeline-open" type="button" aria-label="Enlarge recent activity" aria-haspopup="dialog" aria-controls="timeline-dialog" aria-expanded="false" title="Enlarge recent activity"></button>
   </aside>
+
+  <dialog id="timeline-dialog" class="stats-dialog timeline-dialog" aria-labelledby="timeline-dialog-title">
+    <header class="stats-dialog-header">
+      <h2 id="timeline-dialog-title">Recent activity · last 10 minutes</h2>
+      <button id="timeline-close" class="stats-close" type="button" aria-label="Close recent activity" autofocus>&times;</button>
+    </header>
+    <div id="timeline-dialog-content"></div>
+  </dialog>
 
   <footer class="hud hud-bottom">
     <h1 class="title">SENTIENT</h1>

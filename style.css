@@ -315,11 +315,13 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
 }
 
 .title {
+  position: fixed;
+  right: 24px;
+  bottom: 22px;
   margin: 0;
   font-weight: 200;
-  font-size: clamp(32px, 6vw, 64px);
-  letter-spacing: 0.45em;
-  padding-left: 0.45em;
+  font-size: 14px;
+  letter-spacing: 0.3em;
   color: #e7f0ff;
   text-shadow: 0 0 18px rgba(61, 139, 255, 0.9), 0 0 42px rgba(61, 139, 255, 0.5);
 }
@@ -337,7 +339,13 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
 
 .fallback[hidden] { display: none; }
 
+@media (max-width: 1000px) {
+  .hud-bottom { bottom: 144px; }
+}
+
 @media (max-width: 640px) {
+  .title { right: 16px; }
+  .hud-bottom { bottom: 176px; }
   .hud-top { gap: 1rem; font-size: 9px; }
   .hud-coverage { top: 74px; padding: 0 12px; font-size: 9px; }
   .hud-impulses { top: 118px; left: 16px; width: min(440px, calc(100vw - 32px)); }
@@ -350,15 +358,35 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
   #session-list { max-height: min(208px, 25vh); }
 }
 .hud-timeline {
-  bottom: 128px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(640px, calc(100% - 48px));
-  font-size: 10px;
+  bottom: 22px;
+  left: 24px;
+  right: auto;
+  width: min(256px, calc(100% - 48px));
+  font-size: 9px;
+  line-height: 1.5;
+  letter-spacing: 0.06em;
+  text-align: left;
 }
 .hud-timeline p { margin: 4px 0; }
-#timeline { display: block; width: 100%; height: 48px; }
-#timeline-state { color: var(--text); min-height: 2.4em; }
-@media (max-width: 600px) {
-  .hud-timeline { bottom: 112px; width: calc(100% - 32px); }
+#timeline-description { margin-top: 0; }
+#timeline { display: block; width: 100%; height: 24px; }
+#timeline-state { margin-bottom: 0; color: var(--text); min-height: 3em; }
+.timeline-open {
+  position: absolute;
+  inset: -6px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  pointer-events: auto;
+  cursor: zoom-in;
+}
+.timeline-open:hover { border-color: var(--blue-dim); }
+.timeline-open:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.timeline-dialog { width: min(800px, calc(100vw - 32px)); }
+.timeline-dialog #timeline-content { margin-top: 20px; line-height: 1.6; }
+.timeline-dialog #timeline { height: 160px; margin: 12px 0; }
+.timeline-dialog #timeline-state { min-height: 3.2em; }
+@media (max-width: 640px) {
+  .hud-timeline { bottom: 56px; left: 16px; width: min(256px, calc(100% - 32px)); }
 }

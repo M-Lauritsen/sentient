@@ -231,7 +231,7 @@ test('frame buffer bounds labels and render intensity while accounting for every
   assert.deepEqual([...drained.byCategory], Array(CATEGORIES.length).fill(0));
   assert.deepEqual([...drained.sceneByCategory], Array(CATEGORIES.length).fill(0));
   assert.deepEqual({ ...drained, byCategory: undefined, sceneByCategory: undefined }, {
-    blue: 0, orange: 0, entries: [], byCategory: undefined, sceneByCategory: undefined,
+    blue: 0, orange: 0, entries: [], impacts: [], byCategory: undefined, sceneByCategory: undefined,
   });
   buffer.add({ kind: 'step' });
   buffer.clear();
@@ -799,4 +799,43 @@ test('malformed session snapshots and activities clear stale statuses until a fr
   assert.equal(client.getState().connection, 'unknown');
   assert.deepEqual(client.getState().sessions, []);
   client.disconnect();
+});
+
+test('projected activity keeps only a bounded integer duration', () => {
+  const base = { kind: 'activity', eventType: 'tool.execution_complete' };
+  assert.equal(projectActivity({ ...base, durationMs: 4200 }).durationMs, 4200);
+  for (const bad of [-1, 1.5, '4200', Infinity, 1_000_000_001]) {
+    assert.equal(projectActivity({ ...base, durationMs: bad }), null, String(bad));
+  }
+  assert.equal('durationMs' in projectActivity(base), false);
+});
+
+test('impact bursts scale with run length between the configured bounds', async () => {
+  const { impactBurst } = activityUi;
+  const { VISUAL } = await import('../visual-settings.mjs');
+  const impact = VISUAL.impact;
+  assert.equal(impactBurst(impact.minMs - 1, impact), null);
+  assert.equal(impactBurst(NaN, impact), null);
+  const small = impactBurst(impact.minMs, impact);
+  const mid = impactBurst(Math.sqrt(impact.minMs * impact.maxMs), impact);
+  const large = impactBurst(impact.maxMs * 10, impact);
+  assert.deepEqual([small.hops, small.spread, small.neighbourSeeds], [impact.minHops, impact.minSpread, 0]);
+  assert.deepEqual([large.t, large.hops, large.spread, large.neighbourSeeds, large.neighbourHops],
+    [1, impact.maxHops, impact.maxSpread, impact.neighbourSeeds, impact.neighbourHops]);
+  assert.ok(Math.abs(mid.t - 0.5) < 1e-9);
+  assert.ok(small.hops < mid.hops && mid.hops < large.hops);
+});
+
+test('impulse buffer drains only the four longest timed runs per frame', () => {
+  const buffer = createImpulseBuffer();
+  for (const durationMs of [5, 900, 30, 7000, 60, 400]) {
+    buffer.add({ kind: 'activity', eventType: 'tool.execution_complete', toolName: 'view', durationMs });
+  }
+  buffer.add({ kind: 'step', eventType: 'tool.execution_start', toolName: 'view' });
+  const first = buffer.drain().impacts.map(({ durationMs }) => durationMs).sort((a, b) => a - b);
+  assert.deepEqual(first, [60, 400, 900, 7000]);
+  assert.equal(buffer.drain().impacts.length, 0);
+  buffer.add({ kind: 'activity', eventType: 'assistant.turn_end', durationMs: 10 });
+  buffer.clear();
+  assert.equal(buffer.drain().impacts.length, 0);
 });

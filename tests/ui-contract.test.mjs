@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { CATEGORIES, CATEGORY_HEX, CATEGORY_RGB, CATEGORY_INDEX } from '../activity-colors.mjs';
 import { VISUAL } from '../visual-settings.mjs';
 import { createCategoryBurstPlan, createImpulseBuffer } from '../activity-client.mjs';
-import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, renderSessionRows } from '../session-stats-ui.mjs';
+import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from '../session-stats-ui.mjs';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
@@ -36,6 +36,10 @@ class TestElement {
 
   append(...children) {
     for (const child of children) {
+      if (child.parentElement) {
+        const siblings = child.parentElement.children;
+        siblings.splice(siblings.indexOf(child), 1);
+      }
       child.parentElement = this;
       this.children.push(child);
     }
@@ -590,6 +594,56 @@ test('pulse and RGB edge writers use category channels, preserve kind motion and
   assert.match(main, /fireFrom\(to, hops - 1, kind, from, branch, pCat\[s\]\)/);
 });
 
+test('timeline enlargement reuses live content and restores compact rendering and focus on close', () => {
+  const document = new TestDocument();
+  const preview = document.createElement('aside');
+  const content = document.createElement('div');
+  const state = document.createElement('p');
+  const canvas = document.createElement('canvas');
+  canvas.height = 48;
+  content.append(canvas, state);
+  preview.append(content);
+  const dialog = document.createElement('dialog');
+  const dialogContent = document.createElement('div');
+  dialog.append(dialogContent);
+  const opener = document.createElement('button');
+  const closeButton = document.createElement('button');
+  const renders = [];
+  createTimelineDialog({
+    preview, content, canvas, dialog, dialogContent, opener, closeButton,
+    redraw: () => renders.push(canvas.height),
+  });
+  const open = () => opener.listeners.get('click')();
+  open();
+  assert.equal(dialog.open, true);
+  assert.equal(dialogContent.children[0], content);
+  assert.equal(preview.contains(canvas), false);
+  assert.equal(canvas.height, 160);
+  assert.equal(opener.getAttribute('aria-expanded'), 'true');
+  state.textContent = 'Coverage gap · missing activity is unknown, not zero';
+  assert.equal(dialogContent.textContent, state.textContent);
+  open();
+  assert.deepEqual(renders, [160], 'repeated activation must not reset the canvas');
+  dialog.listeners.get('click')({ target: dialog, clientX: 200, clientY: 200 });
+  assert.equal(dialog.open, true, 'clicking dialog padding must not dismiss it');
+  closeButton.listeners.get('click')();
+  assert.equal(dialog.open, false);
+  assert.equal(preview.children[0], content);
+  assert.equal(dialogContent.contains(canvas), false);
+  assert.equal(canvas.height, 48);
+  assert.equal(opener.getAttribute('aria-expanded'), 'false');
+  assert.equal(document.activeElement, opener);
+  assert.equal(state.textContent, 'Coverage gap · missing activity is unknown, not zero');
+  open();
+  dialog.close(); // Native Escape dismisses the dialog through the same close event.
+  assert.equal(content.parentElement, preview);
+  open();
+  dialog.listeners.get('click')({ target: dialog, clientX: 0, clientY: 0 });
+  assert.equal(dialog.open, false);
+  assert.equal(content.parentElement, preview);
+  assert.deepEqual(renders, [160, 48, 160, 48, 160, 48]);
+});
+
 test('timeline is an accessible aggregate HUD canvas with throttled stacked rendering and gap hatching', () => {
   assert.match(html, /id="timeline"[^>]*aria-describedby="timeline-description timeline-state"/);
   assert.match(html, /last 10 min · observed live only/);
@@ -661,11 +715,25 @@ test('completion pulses branch and brighten lattice nodes, edges and trails', ()
   vm.runInContext('updatePulses(0.5)', context);
   assert.deepEqual(calls, [[1, 6, 2, 0, 2, CATEGORY_INDEX.completion]]);
   assert.equal(context.nodeEnergy[1], 0.9);
-  assert.equal(context.edgeR[0], CATEGORY_RGB[CATEGORY_INDEX.completion * 3]);
+  assert.equal(context.edgeR[0], CATEGORY_RGB[CATEGORY_INDEX.completion * 3] * VISUAL.completion.edgeIntensity);
   context.pActive[0] = 1;
   context.pT[0] = 0.5;
   vm.runInContext('writePulseBuffers()', context);
   assert.ok(Math.abs(context.pulseSize[0] - 3.0) < 1e-6);
+  // Impact pulses (kind 3) use their own branching, energy, edge light and head.
+  calls.length = 0;
+  Object.assign(context, { activePulses: 1, edgeR: [0], edgeG: [0], edgeBColor: [0], nodeEnergy: [0, 0] });
+  Object.assign(context.pKind, [3]);
+  context.pCat[0] = CATEGORY_INDEX.subagent;
+  context.pT[0] = 0;
+  vm.runInContext('updatePulses(0.5)', context);
+  assert.deepEqual(calls, [[1, 6, 3, 0, 2, CATEGORY_INDEX.subagent]]);
+  assert.equal(context.nodeEnergy[1], VISUAL.impact.nodeEnergy);
+  assert.ok(Math.abs(context.edgeR[0] - CATEGORY_RGB[CATEGORY_INDEX.subagent * 3] * VISUAL.impact.edgeIntensity) < 1e-6);
+  context.pActive[0] = 1;
+  context.pT[0] = 0.5;
+  vm.runInContext('writePulseBuffers()', context);
+  assert.ok(Math.abs(context.pulseSize[0] - VISUAL.impact.head) < 1e-6);
 });
 
 test('real completion spawning respects pool capacity, reuses slots and ends after bounded hops', () => {

@@ -26,12 +26,26 @@ const MAX_STATS_IDENTIFIERS = 64;
 const MAX_STATS_TOP = 10;
 const MAX_TURN_DURATIONS = 50;
 const STALE_ACTIVITY_MS = 45_000;
+const MAX_STARTS_PER_SESSION = 256;
 const SOURCE = 'local-activity-files';
 const WAIT_EVENT_TYPES = new Set([
   'permission.requested', 'permission.completed',
   'user_input.requested', 'user_input.completed',
   'elicitation.requested', 'elicitation.completed',
 ]);
+// Event types that change session state; an oversized record of one of these
+// cannot be applied without its data, so it stays a coverage gap.
+const STATE_EVENT_TYPES = new Set([
+  ...WAIT_EVENT_TYPES,
+  'assistant.turn_start', 'assistant.turn_end',
+  'assistant.reasoning', 'assistant.reasoning_delta',
+  'tool.execution_start', 'tool.execution_complete',
+  'subagent.started', 'subagent.completed', 'subagent.failed',
+  'session.task_complete', 'abort', 'session.error', 'session.shutdown', 'session.idle',
+]);
+// Copilot writes `type` as the first key; only this bounded prefix is decoded.
+const OVERSIZED_TYPE_PREFIX = /^\{"type":"([A-Za-z0-9_.:-]{1,128})"/;
+const OVERSIZED_PREFIX_BYTES = 160;
 const STATUS_ORDER = ['waiting', 'running', 'running-unverified', 'idle', 'ended'];
 const ACTIVITY_KINDS = ['thinking', 'step', 'completion', 'activity'];
 
@@ -98,6 +112,12 @@ function snapshotStats(stats) {
 
 function safeId(value) {
   return typeof value === 'string' && value.length > 0 && value.length <= 256 ? value : null;
+}
+
+function eventTime(event) {
+  if (typeof event.timestamp !== 'string' || event.timestamp.length > 64) return null;
+  const time = Date.parse(event.timestamp);
+  return Number.isFinite(time) ? time : null;
 }
 
 function attribution(event, data) {
@@ -414,7 +434,8 @@ export class LocalActivitySource extends EventEmitter {
       }
       this.sourceStatus = this.readIssues === 0 && this.backlogFiles === 0 && !this.fileLimitHit
         ? 'available' : 'partial';
-      if (this.readIssues > 0) this.invalidateAllSessions();
+      // Per-file issues already invalidated their own session; other sessions'
+      // observed state stays valid.
     } catch (error) {
       this.sourceStatus = error?.code === 'ENOENT' ? 'unavailable' : 'partial';
       this.readIssues++;
@@ -617,6 +638,8 @@ export class LocalActivitySource extends EventEmitter {
       completedRootTurn: null,
       // Survives turn_end because session.idle can follow the final assistant turn.
       pendingIdleTurn: null,
+      // Run-start times (journal timestamp and/or live clock) for durations.
+      starts: new Map(),
       waitingPermissions: new Set(),
       waitingInputs: new Set(),
       lastEventAt: now,
@@ -746,8 +769,10 @@ export class LocalActivitySource extends EventEmitter {
       if (end > start && buffer[end - 1] === 0x0d) end--;
       const length = end - start;
       if (length > MAX_LINE_BYTES) {
-        this.readIssues++;
-        if (!baseline) this.invalidateSession(state);
+        if (!this.consumeOversizedLine(state, buffer.subarray(start, end), baseline)) {
+          this.readIssues++;
+          if (!baseline) this.invalidateSession(state);
+        }
       } else if (length > 0) {
         this.consumeLine(state, buffer.subarray(start, end).toString('utf8'), baseline);
       }
@@ -760,6 +785,17 @@ export class LocalActivitySource extends EventEmitter {
       this.readIssues++;
       if (!baseline) this.invalidateSession(state);
     }
+  }
+
+  // Classifies a record too large to parse from its leading `type` only. State
+  // events still need their data, so only state-neutral types are accepted;
+  // nothing beyond the bounded type prefix is decoded or retained.
+  consumeOversizedLine(state, record, baseline) {
+    const prefix = record.subarray(0, OVERSIZED_PREFIX_BYTES).toString('latin1');
+    const type = OVERSIZED_TYPE_PREFIX.exec(prefix)?.[1];
+    if (!type || !validEventType(type) || STATE_EVENT_TYPES.has(type)) return false;
+    this.processEvent(state, { type }, {}, baseline);
+    return true;
   }
 
   syncSessionStatus(session, now) {
@@ -847,6 +883,11 @@ export class LocalActivitySource extends EventEmitter {
     const data = validData ? event.data : {};
     const eventId = safeId(event.id);
     if (eventId && !this.uniqueKey(state.file, 'event', eventId)) return;
+    this.processEvent(state, event, data, baseline);
+  }
+
+  processEvent(state, event, data, baseline) {
+    const type = event.type;
     const session = state.session;
     const eventAt = this.clock();
     this.syncSessionStatus(session, eventAt);
@@ -862,12 +903,38 @@ export class LocalActivitySource extends EventEmitter {
       return;
     }
     session.ended = false;
+    this.eventDurationMs = undefined;
     const kind = this.applyEvent(state, event, data, baseline, attributionInfo, eventAt);
     this.syncSessionStatus(session, eventAt);
     if (!baseline && kind !== false && !WAIT_EVENT_TYPES.has(type)) {
       const toolName = type.startsWith('tool.') && validToolName(data.toolName) ? data.toolName : undefined;
       this.recordPublishedStats(session, kind || 'activity', type, toolName, data);
-      this.publish(kind || 'activity', type, toolName);
+      this.publish(kind || 'activity', type, toolName, this.eventDurationMs);
+    }
+  }
+
+  markStart(session, id, event, eventAt, baseline) {
+    const ts = eventTime(event);
+    const clock = baseline ? null : eventAt;
+    if (ts === null && clock === null) return;
+    session.starts.delete(id);
+    if (session.starts.size >= MAX_STARTS_PER_SESSION) {
+      session.starts.delete(session.starts.keys().next().value);
+    }
+    session.starts.set(id, { ts, clock });
+  }
+
+  // Duration of a run whose start was seen; journal timestamps are preferred
+  // because one poll can observe both ends of a short run.
+  takeDuration(session, id, event, eventAt, baseline) {
+    const start = session.starts.get(id);
+    session.starts.delete(id);
+    if (!start || baseline) return;
+    const ts = eventTime(event);
+    const duration = start.ts !== null && ts !== null ? ts - start.ts
+      : start.clock !== null ? eventAt - start.clock : NaN;
+    if (Number.isFinite(duration) && duration >= 0) {
+      this.eventDurationMs = Math.min(MAX_HUD_ELAPSED_MS, Math.floor(duration));
     }
   }
 
@@ -887,6 +954,7 @@ export class LocalActivitySource extends EventEmitter {
         return;
       }
       session.agents.set(key, { turnId, active: true, eligible: !baseline, live: !baseline, waiting: false, toolCalls: new Set() });
+      this.markStart(session, `turn\u0000${key}\u0000${turnId}`, event, eventAt, baseline);
       if (!baseline) session.stats.openTurns.set(key, { turnId, startedAt: eventAt });
       if (root) {
         session.eligibleRootTurn = baseline ? null : turnId;
@@ -905,6 +973,7 @@ export class LocalActivitySource extends EventEmitter {
           this.recordTurn(session, eventAt - openTurn.startedAt);
         }
         if (openTurn?.turnId === agent.turnId) session.stats.openTurns.delete(key);
+        this.takeDuration(session, `turn\u0000${key}\u0000${agent.turnId}`, event, eventAt, baseline);
         agent.active = false;
         agent.eligible = false;
         if (root) session.eligibleRootTurn = null;
@@ -917,6 +986,7 @@ export class LocalActivitySource extends EventEmitter {
       const call = safeId(data.toolCallId) || safeId(event.id);
       if (!call) return;
       if (!this.uniqueKey(state.file, 'tool', call)) return false;
+      this.markStart(session, `tool\u0000${call}`, event, eventAt, baseline);
       const agent = session.agents.get(key);
       if (agent?.active) {
         if (agent.toolCalls.size >= MAX_TOOLS_PER_AGENT) {
@@ -935,6 +1005,7 @@ export class LocalActivitySource extends EventEmitter {
     if (type === 'tool.execution_complete') {
       const call = safeId(data.toolCallId);
       if (!call) return;
+      this.takeDuration(session, `tool\u0000${call}`, event, eventAt, baseline);
       const agent = session.agents.get(key);
       if (agent?.active) agent.toolCalls.delete(call);
       return;
@@ -997,6 +1068,9 @@ export class LocalActivitySource extends EventEmitter {
         session.stats.subagents[type === 'subagent.failed' ? 'failed' : 'completed'] =
           increment(session.stats.subagents[type === 'subagent.failed' ? 'failed' : 'completed']);
       }
+      // The delegating tool call shares this id; its start drives one
+      // subagent-sized burst here instead of a second tool burst.
+      this.takeDuration(session, `tool\u0000${call}`, event, eventAt, baseline);
       // Retire the delegated call and its child agent even if the child never
       // wrote its own turn end. Duplicate terminal records are no-ops.
       const subagent = session.subagents.get(call);
@@ -1128,7 +1202,7 @@ export class LocalActivitySource extends EventEmitter {
       !this.initialBaseline && this.readIssues === 0;
   }
 
-  publish(kind, eventType, toolName) {
+  publish(kind, eventType, toolName, durationMs) {
     this.sequence++;
     const key = JSON.stringify([kind, eventType, toolName]);
     // At most 64 distinct metadata groups are retained. Flush, never drop, on
@@ -1137,6 +1211,8 @@ export class LocalActivitySource extends EventEmitter {
     const previous = this.pendingActivities.get(key);
     const value = previous || { kind, eventType, ...(toolName ? { toolName } : {}), count: 0 };
     value.count++;
+    // Grouped runs keep their longest duration as the burst's impact.
+    if (durationMs !== undefined) value.durationMs = Math.max(value.durationMs ?? 0, durationMs);
     // Move repeated groups to the newest position for the newest-first feed.
     this.pendingActivities.delete(key);
     this.pendingActivities.set(key, value);
