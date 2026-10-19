@@ -196,7 +196,7 @@ test('event types determine colors and grouped feed labels without payload inspe
   const feed = createImpulseFeed(element);
   feed.add('activity', 'functions.view', 'tool.execution_progress', 42);
   assert.equal(element.children[0].textContent, 'tool.execution_progress · functions.view ×42');
-  assert.equal(element.children[0].className, 'impulse-entry impulse-activity impulse-cat-tool');
+  assert.equal(element.children[0].className, 'impulse-entry impulse-activity impulse-cat-read');
   feed.add('activity', undefined, 'assistant.message_delta', 1000);
   assert.equal(element.children[0].className, 'impulse-entry impulse-activity impulse-cat-reasoning');
   feed.add('activity', undefined, '<PRIVATE>', 5);
@@ -494,6 +494,23 @@ test('thinking clock sustains six pulses per second per session without new even
   pulses = 0;
   for (let i = 0; i < 60; i++) pulses += clock.tick(1 / 60, { ...state, thinkingSessions: 3 }, false);
   assert.equal(pulses, 18);
+});
+
+test('running pulse settings control per-session rate, cap and disabling', () => {
+  const state = { connection: 'connected', sourceStatus: 'available', runningSessions: 1 };
+  for (const [rate, cap, sessions, expected] of [
+    [12, 2, 1, 12], [12, 2, 2, 24], [12, 2, 10, 24],
+    [0, 2, 10, 0], [12, 0, 10, 0],
+  ]) {
+    const clock = createThinkingPulseClock({ pulsesPerSecondPerSession: rate, maxSessions: cap });
+    let pulses = 0;
+    for (let frame = 0; frame < 60; frame++) {
+      pulses += clock.tick(1 / 60, { ...state, runningSessions: sessions }, false);
+    }
+    assert.equal(pulses, expected);
+    assert.equal(clock.tick(1 / 60, state, true), 0);
+    assert.equal(clock.tick(1 / 60, { ...state, connection: 'retrying' }, false), 0);
+  }
 });
 
 test('thinking clock stops and clears accumulated time on inactive or unavailable states', () => {

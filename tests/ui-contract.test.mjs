@@ -300,7 +300,7 @@ test('category activity and accepted completion preserve ordinary motion and hid
 
 test('blue running stream follows observed running work and discloses unverified lingering', () => {
   assert.match(html, /RUNNING <b id="running">/);
-  assert.match(main, /Math\.min\(activityState\.runningSessions \?\? 0, 32\)/);
+  assert.match(main, /Math\.min\(activityState\.runningSessions \?\? 0, VISUAL\.running\.maxSessions\)/);
   assert.match(main, /!\(state\.runningSessions > 0\)\) thinkingPulseClock\.reset\(\)/);
   assert.match(main, /RUNNING · UNVERIFIED/);
   assert.match(main, /may linger if it ended without a recorded end/);
@@ -543,7 +543,7 @@ test('waiting counter and scene affordances stay bounded and activity-free', () 
   assert.match(main, /activityState\.sourceStatus !== 'unavailable'\s*&&\s*activityState\.waitingSessions > 0/);
   assert.match(main, /const omitted = Math\.max\(0, \(state\.runningSessions \?\? visibleRunning\) - visibleRunning\)/);
   assert.match(main, /coreGlow\.material\.color\.lerpColors/);
-  assert.match(main, /Math\.sin\(now \* 0\.7\)/);
+  assert.match(main, /Math\.sin\(now \* VISUAL\.waiting\.breathSpeed\)/);
   assert.match(main, /CATEGORY_HEX\.waiting/);
   const markerRenderer = main.slice(main.indexOf('function renderWaitingMarkers'), main.indexOf('function renderSessions'));
   assert.doesNotMatch(markerRenderer, /fireFrom|spawnPulse|celebrateCompletion|impulseBuffer\.add/);

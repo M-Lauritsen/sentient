@@ -52,8 +52,9 @@ does not load a CDN or send activity outside this machine.
   reasoning/tool/completion motion. At most four category bursts fire per
   frame (including completion); completion reserves one cascade, then the highest-count categories
   keep their colors and the remainder coalesces into reasoning/tool motion
-  buckets. Delegated branches use the subagent role, failed branches the error
-  role, and existing waiting cues the waiting role. Status colors are unchanged.
+  buckets. Namespaced file and search tools use the read role. Delegated branches
+  use the subagent role, failed branches the error role, and existing waiting
+  cues the waiting role. Status colors are unchanged.
 - **Recent activity:** The HUD strip stacks aggregate received category counts
   across a rolling 10 minutes (120 × 5-second buckets), with the right edge at
   now. It has no per-session attribution or server history, and no backfill.
@@ -88,19 +89,38 @@ internal and can change.
 
 ## Editing visual settings
 
-Edit the numbers in **`visual-settings.mjs`**, save, then refresh the browser
+Edit the values in **`visual-settings.mjs`**, save, then refresh the browser
 (hard refresh if it still shows an older module). No build or server restart is
 needed. This is public, browser-loaded configuration: never put secrets in it.
 There are no on-screen sliders or persisted overrides; the file is the only
 source of these visual settings.
 
-The commented sections cover node size/brightness/whiteness; pulse head size,
-trail spacing and speed; local completion spread, hops, branching, seeds and
-intensity; duration-scaled impact bursts (min/max duration, hops, spread,
-neighbour seeds, branching and intensity); and scene bloom, edge fade and ambient glow. Each number documents
-its default, units and a useful range. Ranges are guidance, not automatic
-clamps: use finite nonnegative numbers, integer hop/count values, and a branch
-chance between 0 and 1. Start with small edits and reload to compare.
+All 3D appearance and animation tuning lives in these sections:
+
+| Section | Controls |
+| --- | --- |
+| `camera` | Field of view, initial position, orbit center, damping, zoom limits and automatic rotation |
+| `nodes` | Base sizes, brightness, colors, twinkle, whitening, excitation cap and decay |
+| `pulses` | Head/trail appearance, speed, arrival energy and ordinary edge light |
+| `running` | Per-session background rate, session cap, hops, spread and seed energy |
+| `activity` | Grouped-burst intensity cap, spread, hops, seed energy and heat |
+| `subagents` | Growth/fade timing, point sizes, branch brightness, anchor colors and retirement flashes |
+| `waiting` | Marker appearance and waiting-glow breathing, color blend and opacity |
+| `dust` | Point appearance, twinkle and rotation/sway |
+| `floor` | Fine/coarse grid spacing, colors and ambient light pool |
+| `completion`, `impact` | Existing local cascades and duration-scaled bursts |
+| `scene` | Background, category light multiplier, idle edges, breathing, load response, bloom and glows |
+
+The shipped values preserve the existing appearance. Inline comments describe
+units, constraints and suggested ranges. Ranges are guidance, not automatic
+clamps: use finite numbers, nonnegative except signed positions/rotation,
+integer hop/count values, positive durations/grid spacing/load divisors, and
+probabilities between 0 and 1. Decorative RGB arrays use linear 0–1 channels;
+hex colors use sRGB. Start with small edits and reload to compare.
+`running.pulsesPerSecondPerSession` defaults to 6 and `running.maxSessions`
+defaults to 32. Raising the rate makes the background stream denser; the cap
+limits how many running sessions multiply that rate. Setting either to 0
+disables only this stream, not event-triggered impulses or completion cascades.
 The shipped defaults preserve the current tuning, including completion head
 size **3.0**, active node growth **2.0**, and bright local completion branching
 without shockwaves, camera shake, ripples or completion-triggered global flashes.
@@ -109,6 +129,10 @@ Category colors remain in **`activity-colors.mjs`**. Structural geometry and
 fixed buffer capacities (including pulse/trail counts) remain in `main.js`'s
 `CFG`; they are deliberately not visual settings. Shader-facing settings are
 passed as uniforms, so tuning these values does not require editing GLSL.
+Topology, node/dust placement, branch geometry, floor mesh dimensions,
+renderer resource limits, accessibility safeguards and HUD/CSS styling are
+also unchanged and remain outside this file. Numeric shader math constants
+(such as normalized point coordinates) are implementation details, not tuning.
 Activity mapping, statuses, hidden-tab discard and network/privacy behavior
 are unaffected. Reloading still resets the page's in-memory activity totals.
 

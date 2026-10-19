@@ -17,13 +17,18 @@ test('activity category rules follow the documented first-match mapping', () => 
     [{ kind: 'activity', eventType: 'user_input.completed' }, 'waiting'],
     [{ kind: 'activity', eventType: 'elicitation.requested' }, 'waiting'],
     [{ kind: 'activity', eventType: 'subagent.started' }, 'subagent'],
-    ...['bash', 'powershell', 'shell', 'read_bash', 'write_bash', 'stop_bash']
+    ...['bash', 'powershell', 'shell', 'read_bash', 'write_bash', 'stop_bash', 'functions.powershell']
       .map((toolName) => [{ kind: 'activity', eventType: 'tool.execution_start', toolName }, 'shell']),
     ...['edit', 'create', 'write', 'apply_patch', 'str_replace_editor']
       .map((toolName) => [{ kind: 'activity', eventType: 'tool.execution_start', toolName }, 'edit']),
-    ...['view', 'read', 'grep', 'glob', 'search', 'rg', 'ls']
+    ...['view', 'read', 'read_file', 'get_file_contents', 'grep', 'glob', 'search',
+      'search_code', 'search_wiki', 'microsoft_docs_search', 'microsoft_code_sample_search',
+      'query-docs', 'resolve-library-id', 'rg', 'ls']
       .map((toolName) => [{ kind: 'activity', eventType: 'tool.execution_start', toolName }, 'read']),
-    [{ kind: 'activity', eventType: 'tool.execution_start', toolName: 'functions.view' }, 'tool'],
+    ...['functions.view', 'functions.rg', 'github-mcp-server/search_code',
+      'github-mcp-server/get_file_contents', 'context7/query-docs']
+      .map((toolName) => [{ kind: 'activity', eventType: 'tool.execution_start', toolName }, 'read']),
+    [{ kind: 'activity', eventType: 'tool.execution_start', toolName: 'functions.apply_patch' }, 'edit'],
     [{ kind: 'activity', eventType: 'tool.execution_complete', toolName: 'view' }, 'read'],
     [{ kind: 'step' }, 'tool'],
     [{ kind: 'activity', eventType: 'assistant.message_delta' }, 'reasoning'],

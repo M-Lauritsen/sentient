@@ -1,4 +1,5 @@
 import { activityCategory, CATEGORIES, CATEGORY_GLYPH, CATEGORY_INDEX } from './activity-colors.mjs';
+import { VISUAL } from './visual-settings.mjs';
 
 const EMPTY = Object.freeze({
   connection: 'connecting',
@@ -31,21 +32,21 @@ const IMPULSE_LABELS = new Map([
 // and delegated execution, including unverified long silence), not only
 // precise cognition. Legacy snapshots without runningSessions fall back to
 // thinkingSessions.
-export function createThinkingPulseClock() {
+export function createThinkingPulseClock(settings = VISUAL.running) {
   let accumulated = 0;
   return {
     reset() { accumulated = 0; },
     tick(dt, state, hidden) {
       const count = Number.isSafeInteger(state.runningSessions)
         ? state.runningSessions : state.thinkingSessions;
-      const sessions = Number.isSafeInteger(count) ? Math.min(32, Math.max(0, count)) : 0;
+      const sessions = Number.isSafeInteger(count) ? Math.min(settings.maxSessions, Math.max(0, count)) : 0;
       if (hidden || state.connection !== 'connected' ||
           state.sourceStatus === 'unavailable' || sessions === 0) {
         accumulated = 0;
         return 0;
       }
       if (!Number.isFinite(dt) || dt <= 0) return 0;
-      accumulated += Math.min(dt, 0.05) * sessions * 6;
+      accumulated += Math.min(dt, 0.05) * sessions * settings.pulsesPerSecondPerSession;
       const pulses = Math.floor(accumulated + 1e-9);
       accumulated = Math.max(0, accumulated - pulses);
       return pulses;
@@ -85,8 +86,8 @@ export function activityColor({ kind, eventType }) {
   return activityCategory({ kind, eventType }) === 'reasoning' ? 'blue' : 'orange';
 }
 
-export function impulseIntensity(count) {
-  return Math.min(8, 1 + Math.floor(Math.log2(Math.max(1, count))));
+export function impulseIntensity(count, settings = VISUAL.activity) {
+  return Math.min(settings.maxIntensity, 1 + Math.floor(Math.log2(Math.max(1, count))));
 }
 
 // Duration-driven impact: 0 below minMs, 1 at/above maxMs, log-scaled between
