@@ -447,7 +447,9 @@ test('application menu replaces top launchers and preserves the existing destina
     assert.match(menu, new RegExp(`>\\s*${label}\\s*<`));
     assert.equal((html.match(new RegExp(`id="${id}"`, 'g')) ?? []).length, 1);
   }
-  assert.doesNotMatch(html.match(/<header class="hud hud-top">[\s\S]*?<\/header>/)?.[0] ?? '', /library-open|workspace-open|visual-settings-open/);
+  const sourceHeader = html.match(/<header class="hud hud-top"[^>]*>[\s\S]*?<\/header>/)?.[0];
+  assert.ok(sourceHeader);
+  assert.doesNotMatch(sourceHeader, /library-open|workspace-open|visual-settings-open/);
   assert.match(html, /id="help-dialog"[^>]*aria-labelledby="help-title"/);
   assert.match(navigationUi, /event\.key === 'ArrowDown'/);
   assert.match(navigationUi, /event\.key === 'Escape'/);

@@ -18,16 +18,28 @@
         font: 12px/1.5 monospace;
         pointer-events: none;
       }
-      .hud-top { justify-content: flex-end; padding-right: 20px; }
     </style>
   </head>
   <body>
     <div class="harness-banner" id="harness-status" role="status">
       Loading synthetic workspace data...
     </div>
-    <header class="hud hud-top">
-    <span>Source · <b id="status">CONNECTED</b></span>
-    </header>
+    <div class="hud-top-shell" id="source-status">
+      <button id="source-status-toggle" class="source-status-toggle" type="button"
+        aria-label="Show source status" aria-controls="source-status-bar" aria-expanded="false">
+        <span class="status-reveal-icon" aria-hidden="true"></span>
+      </button>
+      <header class="hud hud-top" id="source-status-bar">
+        <span>Source · <b id="status">QUIET · NOT VERIFIED IDLE</b></span>
+        <span>Journals <b>134</b></span>
+        <span>Active sessions <b>3</b></span>
+        <span>Running <b>1</b></span>
+        <span>Waiting <b>1</b></span>
+        <span>Unverified <b>0</b></span>
+        <span>Impulses <b>0</b></span>
+        <span>Load <b>0%</b></span>
+      </header>
+    </div>
     <main id="workspace" class="workspace" aria-label="Docked workspace">
       <section class="workspace-dock workspace-dock-left" data-workspace-dock="left" aria-label="Left dock"></section>
       <section class="workspace-dock workspace-dock-right" data-workspace-dock="right" aria-label="Right dock"></section>
@@ -49,7 +61,8 @@
     <aside class="hud hud-coverage" id="coverage">Coverage complete · unknown is not zero</aside>
     <nav id="application-navigation" class="application-navigation" aria-label="Application">
       <button id="application-menu-toggle" class="application-menu-toggle" type="button"
-        aria-haspopup="menu" aria-controls="application-menu" aria-expanded="false">Menu</button>
+        aria-haspopup="menu" aria-controls="application-menu" aria-expanded="false"
+        aria-label="Application menu"><span class="application-menu-icon" aria-hidden="true"></span></button>
       <ul id="application-menu" class="application-menu" role="menu"
         aria-labelledby="application-menu-toggle" hidden>
         <li role="none"><button id="library-open" class="application-menu-item" type="button"

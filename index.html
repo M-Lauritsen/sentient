@@ -31,45 +31,57 @@
 			class="scanlines"
 			aria-hidden="true"></div>
 
-		<header class="hud hud-top">
-			<span>
-				<i class="dot"></i>
-				SOURCE ·
-				<b
-					id="status"
-					tabindex="-1">
-					CONNECTING
-				</b>
-			</span>
-			<span>
-				JOURNALS
-				<b id="journals">0</b>
-			</span>
-			<span>
-				ACTIVE SESSIONS
-				<b id="sessions">0</b>
-			</span>
-			<span>
-				RUNNING
-				<b id="running">0</b>
-			</span>
-			<span>
-				WAITING
-				<b id="waiting">0</b>
-			</span>
-			<span>
-				UNVERIFIED
-				<b id="unknown">0</b>
-			</span>
-			<span>
-				IMPULSES
-				<b id="impulses">0</b>
-			</span>
-			<span>
-				LOAD
-				<b id="load">0%</b>
-			</span>
-		</header>
+		<div class="hud-top-shell" id="source-status">
+			<button
+				id="source-status-toggle"
+				class="source-status-toggle"
+				type="button"
+				aria-label="Show source status"
+				aria-controls="source-status-bar"
+				aria-expanded="false"
+				title="Hover or focus to show source status">
+				<span class="status-reveal-icon" aria-hidden="true"></span>
+			</button>
+			<header class="hud hud-top" id="source-status-bar">
+				<span>
+					<i class="dot"></i>
+					SOURCE ·
+					<b
+						id="status"
+						tabindex="-1">
+						CONNECTING
+					</b>
+				</span>
+				<span>
+					JOURNALS
+					<b id="journals">0</b>
+				</span>
+				<span>
+					ACTIVE SESSIONS
+					<b id="sessions">0</b>
+				</span>
+				<span>
+					RUNNING
+					<b id="running">0</b>
+				</span>
+				<span>
+					WAITING
+					<b id="waiting">0</b>
+				</span>
+				<span>
+					UNVERIFIED
+					<b id="unknown">0</b>
+				</span>
+				<span>
+					IMPULSES
+					<b id="impulses">0</b>
+				</span>
+				<span>
+					LOAD
+					<b id="load">0%</b>
+				</span>
+			</header>
+		</div>
 
 		<aside
 			class="hud hud-coverage"
@@ -154,8 +166,10 @@
 				type="button"
 				aria-haspopup="menu"
 				aria-controls="application-menu"
-				aria-expanded="false">
-				Menu
+				aria-expanded="false"
+				aria-label="Application menu"
+				title="Application menu">
+				<span class="application-menu-icon" aria-hidden="true"></span>
 			</button>
 			<ul
 				id="application-menu"
@@ -229,7 +243,7 @@
 			</header>
 			<div class="help-content" id="help-description">
 				<p>Use the scene to inspect observed local Copilot activity. Drag to orbit and scroll to zoom.</p>
-				<p>Source and coverage remain visible at the top. Unknown or partial coverage is not the same as no activity.</p>
+				<p>Hover or focus the top chevron to reveal source status; tap it to keep the bar open. Coverage remains visible. Unknown or partial coverage is not the same as no activity.</p>
 				<p>Workspace arranges the activity feed, sessions, timeline and other modules. Changes affect presentation, not collection.</p>
 				<p>Library is a read-only view of selected Markdown files; it does not show or change active Copilot configuration.</p>
 				<p>Appearance previews visual settings for this page. Export is required to save them to the repository file.</p>

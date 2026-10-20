@@ -126,6 +126,7 @@ export function createWorkspaceUI({
   let isEditing = false;
   let appearanceOpen = false;
   let openSettingsId = null;
+  let openMenuId = null;
   let activeDrag = null;
   let pendingSwitch = null;
   let idSequence = 0;
@@ -312,7 +313,7 @@ export function createWorkspaceUI({
 
   function focusModule(id) {
     const view = moduleViews.get(id);
-    (view ? isEditing ? view.handle : view.settingsToggle : settingsButton)
+    (view ? isEditing ? view.handle : view.menuToggle : settingsButton)
       .focus({ preventScroll: true });
   }
 
@@ -447,7 +448,16 @@ export function createWorkspaceUI({
       view.controls.hidden = !expanded;
       view.settingsToggle.setAttribute('aria-expanded', String(expanded));
     }
-    if (restoreFocus) moduleViews.get(id)?.settingsToggle.focus({ preventScroll: true });
+    if (restoreFocus) moduleViews.get(id)?.menuToggle.focus({ preventScroll: true });
+  }
+
+  function setModuleMenu(id, open, restoreFocus = false) {
+    openMenuId = open ? id : null;
+    for (const [viewId, view] of moduleViews) {
+      view.menu.hidden = viewId !== openMenuId;
+      view.menuToggle.setAttribute('aria-expanded', String(!view.menu.hidden));
+    }
+    if (restoreFocus) moduleViews.get(id)?.menuToggle.focus({ preventScroll: true });
   }
 
   function makeModuleView(instance) {
@@ -468,13 +478,31 @@ export function createWorkspaceUI({
     const collapseButton = button(document, 'Collapse', 'workspace-collapse');
     collapseButton.setAttribute('aria-expanded', 'true');
     collapseButton.setAttribute('aria-controls', `workspace-content-${instance.id}`);
-    header.append(handle, title, settingsToggle, collapseButton);
+    const menuToggle = button(document, '', 'workspace-module-menu-toggle');
+    menuToggle.setAttribute('aria-label', `Actions for ${instance.displayName}`);
+    menuToggle.title = 'Module actions';
+    menuToggle.setAttribute('aria-haspopup', 'menu');
+    menuToggle.setAttribute('aria-expanded', 'false');
+    menuToggle.setAttribute('aria-controls', `workspace-menu-${instance.id}`);
+    const icon = element(document, 'span', 'module-menu-icon');
+    icon.setAttribute('aria-hidden', 'true');
+    menuToggle.append(icon);
+    const menu = element(document, 'div', 'workspace-module-menu');
+    menu.id = `workspace-menu-${instance.id}`;
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-labelledby', `workspace-menu-toggle-${instance.id}`);
+    menuToggle.id = `workspace-menu-toggle-${instance.id}`;
+    menu.hidden = true;
+    for (const item of [settingsToggle, collapseButton]) {
+      item.setAttribute('role', 'menuitem');
+      item.tabIndex = -1;
+      menu.append(item);
+    }
+    header.append(handle, title, menuToggle, menu);
     panel.setAttribute('aria-labelledby', title.id);
     panel.append(header);
     const content = element(document, 'div', 'workspace-module-content');
     content.id = `workspace-content-${instance.id}`;
-    const filterSummary = element(document, 'p', 'workspace-filter-summary');
-    content.append(filterSummary);
     const controls = element(document, 'section', 'workspace-module-actions');
     controls.id = `workspace-settings-${instance.id}`;
     controls.setAttribute('aria-label', `${instance.displayName} settings`);
@@ -515,10 +543,49 @@ export function createWorkspaceUI({
     controls.append(options, layout, remove, saveStatus, footer);
     panel.append(controls, content);
     const view = { panel, header, handle, title, settingsToggle, collapseButton, content,
-      filterSummary, controls, options, layout, saveStatus, save };
+      menuToggle, menu, controls, options, layout, saveStatus, save };
+
+    function focusMenuItem(index) {
+      const items = [settingsToggle, collapseButton];
+      items.forEach((item, itemIndex) => { item.tabIndex = itemIndex === index ? 0 : -1; });
+      items[index].focus({ preventScroll: true });
+    }
+    menuToggle.addEventListener('click', () => {
+      const opening = menu.hidden;
+      setModuleMenu(instance.id, opening);
+      if (opening) focusMenuItem(0);
+    });
+    menuToggle.addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+      event.preventDefault();
+      setModuleMenu(instance.id, true);
+      focusMenuItem(event.key === 'ArrowUp' ? 1 : 0);
+    });
+    menu.addEventListener('keydown', (event) => {
+      const index = [settingsToggle, collapseButton].indexOf(event.target);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        setModuleMenu(instance.id, false, true);
+      } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault();
+        focusMenuItem(event.key === 'Home' ? 0 : event.key === 'End' ? 1 : (index + 1) % 2);
+      }
+    });
+    header.addEventListener('focusout', (event) => {
+      if (!header.contains(event.relatedTarget) && openMenuId === instance.id) {
+        setModuleMenu(instance.id, false);
+      }
+    });
 
     settingsToggle.addEventListener('click', () => {
+      setModuleMenu(instance.id, false);
       setModuleSettings(instance.id, openSettingsId !== instance.id);
+      if (openSettingsId === instance.id) {
+        const firstControl = [...controls.querySelectorAll('input, select, button')]
+          .find((control) => !control.disabled && !control.closest('[hidden]'));
+        (firstControl ?? menuToggle).focus({ preventScroll: true });
+      } else menuToggle.focus({ preventScroll: true });
     });
     closeSettings.addEventListener('click', () => setModuleSettings(instance.id, false, true));
     save.addEventListener('click', () => {
@@ -526,11 +593,12 @@ export function createWorkspaceUI({
       if (saveDraft() && restoreFocus) closeSettings.focus({ preventScroll: true });
     });
     collapseButton.addEventListener('click', () => {
+      setModuleMenu(instance.id, false);
       setModuleSettings(instance.id, false);
       if (collapsed.has(instance.id)) collapsed.delete(instance.id);
       else collapsed.add(instance.id);
       renderModules();
-      collapseButton.focus({ preventScroll: true });
+      menuToggle.focus({ preventScroll: true });
     });
     controls.addEventListener('click', (event) => event.stopPropagation());
     controls.addEventListener('pointerdown', (event) => event.stopPropagation());
@@ -698,14 +766,6 @@ export function createWorkspaceUI({
 
   function renderContent(view, instance) {
     const { content } = view;
-    view.filterSummary.hidden = !['feed', 'totals', 'sessions'].includes(instance.type);
-    view.filterSummary.textContent = instance.config.categories
-      ? instance.config.categories.length === CATEGORIES.length ? 'All categories'
-        : instance.config.categories.length ? `${instance.config.categories.length} categories`
-          : 'No categories selected'
-      : instance.type === 'sessions' ? {
-        all: 'All sessions', running: 'Running', waiting: 'Waiting',
-      }[instance.config.filter] : '';
     if (instance.type === 'timeline') {
       if (timelinePreview && timelinePreview.parentElement !== content) content.append(timelinePreview);
     } else if (instance.type === 'feed') {
@@ -728,15 +788,12 @@ export function createWorkspaceUI({
       list.classList.toggle('is-compact', instance.config.density === 'compact');
       renderFeed(list, instance.config.categories, view.feedState, view.feedRows);
     } else if (instance.type === 'sessions') {
-      let state = content.querySelector('.workspace-session-state');
-      if (!state) {
-        state = element(document, 'p', 'workspace-session-state');
-        state.setAttribute('role', 'status');
+      if (!view.list) {
         const list = element(document, 'ol', 'workspace-session-list');
         list.tabIndex = 0;
         list.setAttribute('aria-label', 'Session statuses and elapsed time');
         list.setAttribute('aria-live', 'off');
-        content.append(state, list, view.more);
+        content.append(list, view.more);
         view.list = list;
         sessionStatsDialog?.registerList?.(list);
       }
@@ -745,12 +802,12 @@ export function createWorkspaceUI({
       const unknown = coverage !== '';
       content.classList.toggle('is-unknown', unknown);
       list.classList.toggle('is-compact', instance.config.density === 'compact');
+      list.setAttribute('aria-label', unknown
+        ? `Session statuses and elapsed time · coverage ${coverage}`
+        : 'Session statuses and elapsed time');
       if (unknown) {
         clearSessionStats(list, new Set());
-        list.hidden = true;
         view.more.textContent = '';
-        state.textContent = coverage === 'partial'
-          ? 'COVERAGE PARTIAL · SESSION COVERAGE UNKNOWN' : 'COVERAGE UNKNOWN';
         view.rows = [];
       } else {
         let sessions = Array.isArray(activityState.sessions) ? activityState.sessions : [];
@@ -766,9 +823,6 @@ export function createWorkspaceUI({
             : activityState.sessions?.length;
         const truncated = activityState.sessionsTruncated === true;
         const omitted = Math.max(0, (expected ?? sessions.length) - sessions.length);
-        list.hidden = sessions.length === 0;
-        state.textContent = sessions.length ? ''
-          : truncated ? 'Additional sessions not shown' : 'No matching sessions';
         const filteredRows = renderSessionRows({
           document,
           list,
@@ -845,6 +899,13 @@ export function createWorkspaceUI({
     const showEmpty = !categories.length || !entries.length && !coverage;
     let empty = list.querySelector('.workspace-empty');
     if (!showEmpty) empty?.remove();
+    const reducedMotion = document.defaultView.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const roll = entries.some(({ id }) => !rows.has(id)) &&
+      !reducedMotion && !list.closest('[hidden]');
+    const previousPositions = new Map((roll ? [...rows] : []).map(([id, row]) => [id, {
+      top: row.getBoundingClientRect().top,
+      animation: row.getAnimations?.().find((animation) => animation.id === 'feed-roll'),
+    }]));
     for (const [index, entry] of entries.entries()) {
       let row = rows.get(entry.id);
       if (!row) {
@@ -855,6 +916,19 @@ export function createWorkspaceUI({
         rows.set(entry.id, row);
       }
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
+    }
+    if (roll) {
+      for (const entry of entries) {
+        const row = rows.get(entry.id);
+        const previous = previousPositions.get(entry.id);
+        if (!previous || typeof row.animate !== 'function') continue;
+        const offset = previous.top - row.getBoundingClientRect().top;
+        previous.animation?.cancel();
+        if (offset) row.animate([
+          { transform: `translateY(${offset}px)` },
+          { transform: 'translateY(0)' },
+        ], { id: 'feed-roll', duration: 320, easing: 'ease-out' });
+      }
     }
     if (showEmpty) {
       if (!empty) {
@@ -876,6 +950,7 @@ export function createWorkspaceUI({
       if (view.list) sessionStatsDialog?.unregisterList?.(view.list);
       moduleViews.delete(id);
       if (openSettingsId === id) openSettingsId = null;
+      if (openMenuId === id) openMenuId = null;
     }
     const dockIndices = new Map(DOCKS.map((name) => [name, 0]));
     for (const instance of sortInstances(draft.instances)) {
@@ -892,6 +967,7 @@ export function createWorkspaceUI({
       view.panel.dataset.size = instance.size;
       view.panel.dataset.dock = instance.dock;
       view.title.textContent = instance.displayName;
+      view.menuToggle.setAttribute('aria-label', `Actions for ${instance.displayName}`);
       view.handle.setAttribute('aria-label', `Move ${instance.displayName}`);
       view.controls.querySelector('[data-module-size]').value = instance.size;
       view.handle.hidden = !isEditing;
@@ -1148,11 +1224,18 @@ export function createWorkspaceUI({
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     if (activeDrag) cancelDrag(event);
-    else if (openSettingsId && !dialog.open &&
+    else if (openMenuId && moduleViews.get(openMenuId)?.header.contains(event.target)) {
+      event.preventDefault();
+      setModuleMenu(openMenuId, false, true);
+    } else if (openSettingsId && !dialog.open &&
         moduleViews.get(openSettingsId)?.panel.contains(event.target)) {
       event.preventDefault();
       setModuleSettings(openSettingsId, false, true);
     }
+  });
+  document.addEventListener('click', (event) => {
+    const view = moduleViews.get(openMenuId);
+    if (view && !view.header.contains(event.target)) setModuleMenu(openMenuId, false);
   });
   feed?.subscribe?.(() => renderModules());
 

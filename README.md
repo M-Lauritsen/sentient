@@ -130,18 +130,22 @@ internal and can change.
 
 ## Application menu and workspace controls
 
-Use the lower-right **Menu** to open **Library**, **Appearance**, **Workspace**
+Use the lower-right borderless **Application menu** icon to open **Library**, **Appearance**, **Workspace**
 or **Help**. The menu opens upward; use the arrow keys to traverse it, Home and
 End to reach its first and last item, and Escape to dismiss it and return focus
-to Menu. Source and coverage status remain visible at the top.
+to the menu icon. The source bar is hidden until you hover over the top edge or
+focus its chevron; tap the chevron to keep it open, then tap outside to dismiss it.
+Coverage remains visible at the top.
 
 Open **Workspace** to manage the docked feed, sessions and live timeline. Select
 **Edit layout** to close the manager and reveal pointer drag handles. A visible
 **Done** control returns to normal viewing without silently saving.
-Each module's **Settings** opens its controls inline; **Layout** offers
+Each module's borderless ellipsis icon opens a menu with **Settings** and
+**Collapse** (or **Expand**). **Settings** opens its controls inline; **Layout** offers
 keyboard-operable dock, earlier/later, and Compact/Standard/Large controls while
 editing. Settings are closed initially and only one module's settings opens at
-a time. Close settings or press Escape to return focus to its Settings button.
+a time. Close settings or press Escape to return focus to its ellipsis icon.
+Module menus support arrow keys, Home/End, Escape and outside-click dismissal.
 Modules can use the left, right, lower-left and bottom-centre docks. The
 timeline defaults to lower left for new layouts and **Reset layout**; existing
 saved placements are preserved. Lower left accepts any module, not just the
@@ -160,9 +164,14 @@ canvas can occupy only one module.
 Feed and totals settings offer **All categories** plus individual category
 checkboxes. All categories includes every supported category, not unlimited
 history: feeds still share the latest eight accepted entries. A partial
-selection shows a mixed checkbox; clearing every category explicitly says
-**No categories selected**, rather than implying no observed activity.
-Refreshes retain existing feed rows; only new arrivals animate. The feed clips
+selection shows a mixed checkbox; clearing every category prompts you to choose
+categories, rather than implying no observed activity. Redundant filter summaries
+and session-state fallback messages are omitted. Empty session lists do not
+display placeholder text; unknown coverage retains its styling and accessible
+list label, alongside the page-wide coverage indicator.
+Refreshes retain existing feed rows; new arrivals roll vertically into view,
+shifting older rows down without resizing them. Reduced motion disables the roll.
+The feed clips
 and fades older rows without an internal scrollbar.
 Density, legend and session filters are also in Settings, not the normal feed.
 Changes preview immediately. **Save changes** saves the whole workspace;

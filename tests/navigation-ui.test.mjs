@@ -29,6 +29,8 @@ function setup(t) {
 
 test('shared menu opens upward with accurate state and wraps keyboard navigation', (t) => {
   const s = setup(t);
+  assert.equal(s.toggle.getAttribute('aria-label'), 'Application menu');
+  assert.equal(s.toggle.textContent.trim(), '');
   assert.deepEqual(s.items.map((item) => item.tabIndex), [-1, -1, -1, -1]);
   s.toggle.click();
   assert.equal(s.menu.hidden, false);
@@ -50,6 +52,36 @@ test('shared menu opens upward with accurate state and wraps keyboard navigation
   assert.equal(s.menu.hidden, true);
   assert.equal(s.toggle.getAttribute('aria-expanded'), 'false');
   assert.equal(s.document.activeElement, s.toggle);
+});
+
+test('source bar reveals on hover and focus, pins on tap and dismisses outside', (t) => {
+  const s = setup(t);
+  const shell = s.document.getElementById('source-status');
+  const toggle = s.document.getElementById('source-status-toggle');
+  const pointer = (target, name, pointerType = 'mouse') => {
+    const event = new s.dom.window.Event(name, { bubbles: true });
+    Object.defineProperty(event, 'pointerType', { value: pointerType });
+    target.dispatchEvent(event);
+  };
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(shell.classList.contains('is-revealed'), false);
+  pointer(shell, 'pointerenter');
+  assert.equal(shell.classList.contains('is-revealed'), true);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  pointer(shell, 'pointerleave');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  toggle.focus();
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  s.toggle.focus();
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+
+  pointer(shell, 'pointerenter', 'touch');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false', 'touch must not leave sticky hover state');
+  toggle.click();
+  pointer(shell, 'pointerleave', 'touch');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  pointer(s.document.body, 'pointerdown', 'touch');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
 });
 
 test('menu item activation keeps the original destination button and Help restores focus', (t) => {

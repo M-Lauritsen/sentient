@@ -121,7 +121,8 @@ test('default dock modules project bounded live data and survive source updates'
   ui.update(connectedState({ connection: 'retrying', coverage: 'unknown', sessions: [] }));
   assert.equal(feedPanel.isConnected, true);
   assert.equal(feedPanel.querySelector('.workspace-module-content').hidden, true);
-  assert.match(dock(document, 'right').textContent, /COVERAGE UNKNOWN/);
+  assert.match(dock(document, 'right').querySelector('.workspace-session-list')
+    .getAttribute('aria-label'), /coverage unknown/);
 });
 
 test('feed refresh preserves existing arrivals and only inserts new rows, including identical events', () => {
@@ -160,6 +161,34 @@ test('feed refresh preserves existing arrivals and only inserts new rows, includ
   const beforeRejected = [...list.children];
   feed.add('private unknown kind');
   assert.ok(beforeRejected.every((row, index) => list.children[index] === row));
+});
+
+test('new arrivals roll retained rows down, while refresh and reduced motion leave them still', () => {
+  const { document, dom, ui, feed } = setup();
+  ui.update(connectedState());
+  const list = document.querySelector('.workspace-feed');
+  let reducedMotion = false;
+  dom.window.matchMedia = () => ({ matches: reducedMotion });
+  const rolls = [];
+  dom.window.HTMLElement.prototype.getBoundingClientRect = function () {
+    return { top: [...(this.parentElement?.children ?? [])].indexOf(this) * 26 };
+  };
+  dom.window.HTMLElement.prototype.animate = function (frames) {
+    rolls.push({ label: this.textContent, frames });
+  };
+  feed.add('thinking');
+  feed.add('completion');
+  assert.deepEqual(rolls, [{
+    label: 'Thinking',
+    frames: [{ transform: 'translateY(-26px)' }, { transform: 'translateY(0)' }],
+  }]);
+  ui.refresh();
+  assert.equal(rolls.length, 1, 'ordinary refresh does not restart the roll');
+  reducedMotion = true;
+  feed.add('step');
+  assert.deepEqual([...list.children].map((row) => row.textContent),
+    ['Task step', 'Task completed', 'Thinking']);
+  assert.equal(rolls.length, 1, 'reduced motion still inserts activity but does not animate it');
 });
 
 test('catalogue modules render filtered totals and legend, with one live timeline', () => {
@@ -295,8 +324,10 @@ test('partial coverage does not render definitive empty activity or session resu
   const sessions = document.querySelector('.workspace-module[data-module-type="sessions"]');
   assert.match(feed.querySelector('.workspace-feed-state').textContent, /COVERAGE PARTIAL/);
   assert.doesNotMatch(feed.querySelector('.workspace-feed').textContent, /No matching activity/);
-  assert.match(sessions.querySelector('.workspace-session-state').textContent, /COVERAGE PARTIAL/);
-  assert.doesNotMatch(sessions.querySelector('.workspace-session-state').textContent, /No matching sessions/);
+  assert.equal(sessions.querySelector('.workspace-session-state'), null);
+  assert.equal(sessions.querySelector('.workspace-session-list').textContent, '');
+  assert.match(sessions.querySelector('.workspace-session-list').getAttribute('aria-label'), /coverage partial/);
+  assert.equal(sessions.querySelector('.workspace-module-content').classList.contains('is-unknown'), true);
 
   document.querySelector('.workspace-settings-open').click();
   const catalog = document.querySelector('.workspace-catalog select');
@@ -310,8 +341,30 @@ test('partial coverage does not render definitive empty activity or session resu
   ui.update(connectedState({ sourceStatus: 'available', coverage: 'journal-only', sessions: [] }));
   assert.equal(feed.querySelector('.workspace-feed-state').hidden, true);
   assert.match(feed.querySelector('.workspace-feed').textContent, /No matching activity/);
-  assert.match(sessions.querySelector('.workspace-session-state').textContent, /No matching sessions/);
+  assert.equal(sessions.querySelector('.workspace-session-list').textContent, '');
+  assert.equal(sessions.querySelector('.workspace-module-content').classList.contains('is-unknown'), false);
+  ui.update(connectedState());
+  assert.equal(sessions.querySelector('.workspace-empty'), null);
+  assert.equal(sessions.querySelectorAll('.session-row').length, 3);
   assert.equal(coverageNote.hidden, true);
+});
+
+test('empty session projections do not display relocated session-state messages', () => {
+  const { document, ui } = setup();
+  const panel = document.querySelector('[data-module-type="sessions"]');
+  const content = panel.querySelector('.workspace-module-content');
+  for (const state of [
+    connectedState({ sessions: [], sessionsTruncated: true }),
+    connectedState({ sessions: [] }),
+    connectedState({ sessions: [], coverage: 'unknown' }),
+    connectedState({ sessions: [], coverage: 'partial' }),
+  ]) {
+    ui.update(state);
+    assert.equal(content.textContent, '');
+    assert.equal(content.querySelector('.workspace-empty, .workspace-session-state'), null);
+  }
+  ui.update(connectedState());
+  assert.equal(content.querySelectorAll('.session-row').length, 3);
 });
 
 test('truncated session projections always disclose omitted rows', () => {
@@ -564,6 +617,14 @@ test('normal viewing keeps configuration hidden for every module and settings ha
   for (const panel of panels.filter((panel) => ['timeline', 'legend'].includes(panel.dataset.moduleType))) {
     assert.equal(panel.querySelector('.workspace-module-options').childElementCount, 0);
   }
+  for (const panel of panels) {
+    const toggle = panel.querySelector('.workspace-module-menu-toggle');
+    toggle.click();
+    panel.querySelector('.workspace-module-settings').click();
+    assert.ok(panel.querySelector('.workspace-module-actions').contains(document.activeElement));
+    assert.equal(document.activeElement.closest('[hidden]'), null,
+      `${panel.dataset.moduleType} must focus a visible settings control`);
+  }
 });
 
 test('All categories supports all, subset and empty results independently in feed and totals', () => {
@@ -581,7 +642,7 @@ test('All categories supports all, subset and empty results independently in fee
   const all = panel.querySelector('[data-all-categories]');
   assert.equal(all.checked, true);
   assert.equal(all.indeterminate, false);
-  assert.equal(panel.querySelector('.workspace-filter-summary').textContent, 'All categories');
+  assert.equal(panel.querySelector('.workspace-filter-summary'), null);
 
   panel.querySelector('[data-category="read"]').click();
   assert.equal(all.checked, false);
@@ -593,7 +654,7 @@ test('All categories supports all, subset and empty results independently in fee
   assert.equal(panel.querySelectorAll('.workspace-feed .impulse-entry').length, 2);
   all.click();
   assert.equal(all.indeterminate, false);
-  assert.equal(panel.querySelector('.workspace-filter-summary').textContent, 'No categories selected');
+  assert.equal(panel.querySelector('.workspace-filter-summary'), null);
   assert.equal(panel.querySelector('.workspace-feed').textContent, 'Choose categories in Settings.');
   assert.equal(totals.querySelectorAll('.page-activity-stats li:not([hidden])').length, 11);
 
@@ -632,7 +693,7 @@ test('settings retain keyboard focus during arrivals and restore trigger focus o
   assert.equal(toggle.getAttribute('aria-expanded'), 'true');
   category.dispatchEvent(new document.defaultView.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   assert.equal(panel.querySelector('.workspace-module-actions').hidden, true);
-  assert.equal(document.activeElement, toggle);
+  assert.equal(document.activeElement, panel.querySelector('.workspace-module-menu-toggle'));
   toggle.click();
   panel.querySelector('.workspace-collapse').click();
   assert.equal(panel.querySelector('.workspace-module-actions').hidden, true);
@@ -641,7 +702,68 @@ test('settings retain keyboard focus during arrivals and restore trigger focus o
   assert.equal(panel.querySelector('.workspace-module-actions').hidden, false);
   assert.equal(panel.querySelector('.workspace-module-content').hidden, true);
   panel.querySelector('.workspace-module-settings-footer button:last-child').click();
+  assert.equal(document.activeElement, panel.querySelector('.workspace-module-menu-toggle'));
+});
+
+test('module icon menus preserve actions, keyboard navigation and dismissal', () => {
+  const { document, ui } = setup();
+  ui.update(connectedState());
+  const panels = [...document.querySelectorAll('.workspace-module')];
+  const panel = panels[0];
+  const toggle = panel.querySelector('.workspace-module-menu-toggle');
+  const menu = panel.querySelector('[role="menu"]');
+  const items = [...menu.querySelectorAll('[role="menuitem"]')];
+  const key = (target, value) => target.dispatchEvent(new document.defaultView.KeyboardEvent(
+    'keydown', { key: value, bubbles: true, cancelable: true },
+  ));
+  assert.match(toggle.getAttribute('aria-label'), /Actions for/);
+  assert.equal(toggle.textContent, '');
+  assert.equal(menu.hidden, true);
+  toggle.click();
+  assert.equal(menu.hidden, false);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(document.activeElement, items[0]);
+  key(items[0], 'ArrowUp');
+  assert.equal(document.activeElement, items[1]);
+  key(items[1], 'ArrowDown');
+  assert.equal(document.activeElement, items[0]);
+  key(items[0], 'End');
+  assert.equal(document.activeElement, items[1]);
+  key(items[1], 'Home');
+  assert.equal(document.activeElement, items[0]);
+  key(items[0], 'Escape');
+  assert.equal(menu.hidden, true);
   assert.equal(document.activeElement, toggle);
+
+  toggle.click();
+  items[0].click();
+  assert.equal(menu.hidden, true);
+  assert.equal(panel.querySelector('.workspace-module-actions').hidden, false);
+  assert.equal(document.activeElement.closest('.workspace-module-actions').hidden, false);
+  key(document.activeElement, 'Escape');
+  assert.equal(panel.querySelector('.workspace-module-actions').hidden, true);
+  assert.equal(document.activeElement, toggle);
+
+  toggle.click();
+  items[1].click();
+  assert.equal(menu.hidden, true);
+  assert.equal(panel.querySelector('.workspace-module-content').hidden, true);
+  assert.equal(document.activeElement, toggle);
+  toggle.click();
+  assert.equal(items[1].textContent, 'Expand');
+  items[1].click();
+  assert.equal(panel.querySelector('.workspace-module-content').hidden, false);
+
+  toggle.click();
+  panels[1].querySelector('.workspace-module-menu-toggle').click();
+  assert.equal(menu.hidden, true, 'opening another menu closes the first');
+  toggle.click();
+  document.getElementById('fallback-focus').click();
+  assert.equal(menu.hidden, true);
+  toggle.click();
+  document.getElementById('fallback-focus').focus();
+  assert.equal(menu.hidden, true, 'tabbing outside closes the menu');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
 });
 
 test('layout editing closes the modal, exposes Done and never silently saves drafts', () => {

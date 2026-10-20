@@ -14,6 +14,43 @@ export function createNavigationUI({
   if (items.length === 0) throw new Error('Application navigation menu has no destinations.');
   for (const item of items) item.tabIndex = -1;
 
+  const statusShell = document.getElementById('source-status');
+  const statusToggle = document.getElementById('source-status-toggle');
+  if (statusShell && statusToggle) {
+    let hovering = false;
+    let pinned = false;
+    function syncStatus() {
+      const open = pinned || hovering || statusShell.contains(document.activeElement);
+      statusShell.classList.toggle('is-revealed', open);
+      statusToggle.setAttribute('aria-expanded', String(open));
+    }
+    statusShell.addEventListener('pointerenter', (event) => {
+      if (event.pointerType === 'touch') return;
+      hovering = true;
+      syncStatus();
+    });
+    statusShell.addEventListener('pointerleave', () => {
+      hovering = false;
+      syncStatus();
+    });
+    statusShell.addEventListener('focusin', syncStatus);
+    statusShell.addEventListener('focusout', (event) => {
+      const open = pinned || hovering || statusShell.contains(event.relatedTarget);
+      statusShell.classList.toggle('is-revealed', open);
+      statusToggle.setAttribute('aria-expanded', String(open));
+    });
+    statusToggle.addEventListener('click', () => {
+      pinned = !pinned;
+      syncStatus();
+    });
+    document.addEventListener('pointerdown', (event) => {
+      if (statusShell.contains(event.target)) return;
+      pinned = false;
+      if (statusShell.contains(document.activeElement)) document.activeElement.blur();
+      syncStatus();
+    });
+  }
+
   function setMenuOpen(open, { restoreFocus = false } = {}) {
     menu.hidden = !open;
     toggle.setAttribute('aria-expanded', String(open));
