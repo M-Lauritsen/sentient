@@ -50,19 +50,18 @@
     </dialog>
     <dialog id="visual-settings-dialog" class="visual-settings-dialog"
       aria-labelledby="visual-settings-title">
-      <header class="stats-dialog-header">
-        <h2 id="visual-settings-title" tabindex="-1">Appearance</h2>
-        <button id="visual-settings-close" class="stats-close" type="button">Return to scene</button>
-      </header>
       <form id="visual-settings-form">
+        <div class="visual-settings-scroll">
+        <header class="stats-dialog-header">
+          <h2 id="visual-settings-title" tabindex="-1">Appearance</h2>
+          <button id="visual-settings-close" class="stats-close" type="button">Return to scene</button>
+        </header>
         <div class="visual-settings-toolbar" aria-label="Appearance presets">
           <label>Preset <select id="visual-settings-preset"></select></label>
         </div>
         <div class="visual-settings-personal-presets" role="group" aria-label="Personal appearance presets">
           <label for="visual-settings-preset-name">Preset name</label>
           <input id="visual-settings-preset-name" type="text" maxlength="48">
-          <button id="visual-settings-preset-save-as" type="button">Save as new</button>
-          <button id="visual-settings-preset-save" type="button">Save changes</button>
           <button id="visual-settings-preset-delete" type="button">Delete preset</button>
         </div>
         <p id="visual-settings-help" class="visual-settings-help">
@@ -74,7 +73,6 @@
           <button id="visual-settings-use-file" type="button">Use file</button>
           <button id="visual-settings-keep-preview" type="button">Keep preview</button>
         </div>
-        <div class="visual-settings-scroll">
           <section id="visual-settings-quick" class="visual-settings-quick"
             aria-label="Quick appearance controls">
             <h3>Quick controls</h3>
@@ -92,10 +90,12 @@
             <summary>File actions</summary>
             <button id="visual-settings-reload" type="button">Reload from file</button>
             <label><input id="visual-settings-auto-reload" type="checkbox"> Auto reload</label>
-            <button id="visual-settings-export" type="button">Export settings</button>
           </details>
         </div>
         <footer class="visual-settings-actions">
+          <button id="visual-settings-preset-save-as" type="button">Save as new</button>
+          <button id="visual-settings-preset-save" type="button">Save changes</button>
+          <button id="visual-settings-export" type="button">Export settings</button>
           <button id="visual-settings-reset" type="button">Reset preview</button>
         </footer>
       </form>

@@ -790,6 +790,68 @@ test('hook scene effects honor per-type strength without duplicate unknown burst
   assert.equal(calls.length, 2, 'hidden hook activity does not replay later');
 });
 
+test('every setting explains its effect inline in Advanced and Quick with accessible input guidance', async () => {
+  const harness = makePanelHarness({ defaults: await settings() });
+  const descendants = (element) => [element, ...element.children.flatMap(descendants)];
+  for (const { path, type } of VISUAL_SETTING_DEFINITIONS) {
+    const presentation = VISUAL_SETTING_PRESENTATION[path];
+    assert.equal(typeof presentation.description, 'string', `${path} needs effect copy`);
+    assert.ok(presentation.description.length > 35, `${path} must explain more than its label`);
+    assert.ok(presentation.helpText.startsWith(presentation.description),
+      `${path} puts the effect before input guidance`);
+    assert.notEqual(presentation.description, `${presentation.label}.`);
+    for (const quick of presentation.quick ? [false, true] : [false]) {
+      const field = harness.field(path, { quick });
+      const help = descendants(field).find((element) =>
+        element.className === 'visual-field-help');
+      const details = descendants(field).find((element) =>
+        element.className === 'visual-field-details');
+      const guidance = descendants(details).find((element) =>
+        element.className === 'visual-field-guidance');
+      assert.equal(help.textContent, presentation.description, `${path} visible effect copy`);
+      assert.equal(help.hidden, false);
+      assert.equal(details.open, false, `${path} technical details start collapsed`);
+      assert.ok(descendants(details).some((element) =>
+        element.className === 'visual-field-path' && element.textContent === path));
+      assert.ok(descendants(details).some((element) =>
+        element.className === 'visual-field-reset' && element.textContent === 'Reset to file'));
+      assert.ok(!descendants(details).includes(help), `${path} effect stays outside disclosure`);
+      assert.ok(!descendants(details).some((element) =>
+        element.className === 'visual-field-error'), `${path} errors stay outside disclosure`);
+      for (const control of harness.control(path, { quick })) {
+        assert.ok(control.attributes.get('aria-describedby').split(' ').includes(help.id),
+          `${path} links its help to every input`);
+        assert.ok(control.attributes.get('aria-describedby').split(' ').includes(guidance.id),
+          `${path} retains constraint associations`);
+      }
+      if (type === 'number') {
+        assert.match(guidance.textContent, /Enter a finite number/);
+      }
+      assert.doesNotMatch(help.textContent, /Enter a finite|Suggested slider|Configuration path/);
+    }
+  }
+  const examples = {
+    'camera.fov': /Higher values show more of the scene/,
+    'nodes.decay': /Higher values fade faster; 0 stops this decay/,
+    'effects.dust': /Shows or hides the background dust particles/,
+    'floor.fineSpacing': /Higher values spread lines farther apart/,
+    'pulses.speedRange': /fastest pulse travel speed/,
+    'hooks.startImpact': /feed text and counts remain unchanged/,
+    'activity.errorHops': /does not extend their travel/,
+  };
+  for (const [path, expected] of Object.entries(examples)) {
+    assert.match(harness.field(path).attributes.get('data-setting-help'), expected);
+  }
+  assert.match(harness.field('pulses.speedRange').attributes.get('data-setting-help'),
+    /source stores maximum minus minimum/, 'special input semantics are retained');
+  assert.match(harness.field('nodes.count').attributes.get('data-setting-help'),
+    /whole number.*Minimum 2.*Maximum 4000/, 'valid bounds are retained');
+  assert.match(harness.field('nodes.baseColor').attributes.get('data-setting-help'),
+    /saved as a linear RGB array/, 'color conversion guidance is retained');
+  assert.equal(descendants(harness.fields).filter((element) =>
+    element.className === 'visual-settings-guidance').length, 1, 'slider guidance appears once');
+});
+
 test('all advanced paths appear once and quick controls share the same canonical draft', async () => {
   const harness = makePanelHarness({ defaults: await settings() });
   const descendants = (element) => [element, ...element.children.flatMap(descendants)];

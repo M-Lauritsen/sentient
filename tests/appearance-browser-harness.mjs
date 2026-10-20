@@ -130,6 +130,36 @@ window.appearanceHarness = {
         workspaceOpener.disabled !== true || getComputedStyle(dialog).display !== 'flex') {
       throw new Error('Appearance did not open without suspending Workspace.');
     }
+    const fovField = document.querySelector(
+      '#visual-settings-fields [data-setting-path="camera.fov"]',
+    );
+    const fovInput = fovField.querySelector('input[type="number"]');
+    const fovDetails = fovField.querySelector('.visual-field-details');
+    const fovHelp = fovField.querySelector('.visual-field-help');
+    const fovError = fovField.querySelector('.visual-field-error');
+    if (fovDetails.open || fovDetails.contains(fovHelp) ||
+        fovDetails.contains(fovError) || /Enter a finite/.test(fovHelp.textContent)) {
+      throw new Error('Effect descriptions and errors must remain outside technical Details.');
+    }
+    fovInput.value = '-1';
+    fovInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise(requestAnimationFrame);
+    if (fovError.hidden || !fovError.getClientRects().length || fovDetails.open) {
+      throw new Error('Invalid values must show errors with Details closed.');
+    }
+    fovInput.value = '65';
+    fovInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise(requestAnimationFrame);
+    fovDetails.querySelector('summary').click();
+    if (!fovDetails.open) throw new Error('Native setting Details did not open.');
+    const fieldReset = fovDetails.querySelector('.visual-field-reset');
+    fieldReset.focus();
+    if (document.activeElement !== fieldReset) throw new Error('Field reset cannot receive focus.');
+    fieldReset.click();
+    if (appliedSettings.camera.fov !== defaults.camera.fov || !fovError.hidden) {
+      throw new Error('Reset inside Details did not restore the file value and clear the error.');
+    }
+    fovDetails.querySelector('summary').click();
     const numericFields = [...document.querySelectorAll(
       '#visual-settings-fields [data-setting-path][data-quick-projection="false"]',
     )].filter((field) => field.querySelectorAll('input[type="number"]').length === 1);

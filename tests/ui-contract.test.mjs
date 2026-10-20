@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { JSDOM } from 'jsdom';
 import { CATEGORIES, CATEGORY_HEX, CATEGORY_RGB, CATEGORY_INDEX, HOOK_TYPES } from '../activity-colors.mjs';
 import { VISUAL } from '../visual-settings.mjs';
 import { createCategoryBurstPlan, createImpulseBuffer } from '../activity-client.mjs';
@@ -14,6 +15,26 @@ const statsUi = await readFile(new URL('../session-stats-ui.mjs', import.meta.ur
 const workspaceUi = await readFile(new URL('../workspace-ui.mjs', import.meta.url), 'utf8');
 const navigationUi = await readFile(new URL('../navigation-ui.mjs', import.meta.url), 'utf8');
 const visualSettingsUi = await readFile(new URL('../visual-settings-ui.mjs', import.meta.url), 'utf8');
+
+test('Appearance scrolls its header and preset controls while save actions stay in the footer', () => {
+  const document = new JSDOM(html).window.document;
+  const form = document.querySelector('#visual-settings-form');
+  const scroll = form.querySelector('.visual-settings-scroll');
+  const footer = form.querySelector('.visual-settings-actions');
+  for (const selector of ['.stats-dialog-header', '#visual-settings-preset',
+    '#visual-settings-preset-name', '#visual-settings-quick', '#visual-settings-fields']) {
+    assert.ok(scroll.contains(form.querySelector(selector)), `${selector} scrolls with content`);
+  }
+  for (const id of ['visual-settings-preset-save-as', 'visual-settings-preset-save',
+    'visual-settings-export', 'visual-settings-reset']) {
+    const button = document.getElementById(id);
+    assert.ok(footer.contains(button), `${id} remains in footer`);
+    assert.equal(button.type, 'button');
+    assert.equal(document.querySelectorAll(`#${id}`).length, 1);
+  }
+  assert.equal(scroll.contains(footer), false);
+  assert.equal(footer.parentElement, form);
+});
 
 test('source recovery retains the header, running indicators and workspace while marking coverage unknown', () => {
   const context = {

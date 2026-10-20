@@ -291,18 +291,19 @@
 			id="visual-settings-dialog"
 			class="visual-settings-dialog"
 			aria-labelledby="visual-settings-title">
-			<header class="stats-dialog-header">
-				<h2 id="visual-settings-title" tabindex="-1">Appearance</h2>
-				<button
-					id="visual-settings-close"
-					class="stats-close"
-					type="button"
-					aria-label="Return to scene"
-					autofocus>
-					Return to scene
-				</button>
-			</header>
 			<form id="visual-settings-form">
+				<div class="visual-settings-scroll">
+				<header class="stats-dialog-header">
+					<h2 id="visual-settings-title" tabindex="-1">Appearance</h2>
+					<button
+						id="visual-settings-close"
+						class="stats-close"
+						type="button"
+						aria-label="Return to scene"
+						autofocus>
+						Return to scene
+					</button>
+				</header>
 				<div class="visual-settings-toolbar" aria-label="Appearance presets">
 					<label>
 						Preset
@@ -321,17 +322,6 @@
 						type="text"
 						maxlength="48"
 						autocomplete="off" />
-					<button
-						id="visual-settings-preset-save-as"
-						type="button">
-						Save as new
-					</button>
-					<button
-						id="visual-settings-preset-save"
-						type="button"
-						disabled>
-						Save changes
-					</button>
 					<button
 						id="visual-settings-preset-delete"
 						type="button"
@@ -371,7 +361,6 @@
 						Keep preview
 					</button>
 				</div>
-				<div class="visual-settings-scroll">
 				<section
 					id="visual-settings-quick"
 					class="visual-settings-quick"
@@ -409,11 +398,13 @@
 							<input id="visual-settings-auto-reload" type="checkbox" />
 							Auto reload every 5 seconds
 						</label>
-						<button id="visual-settings-export" type="button">Export settings</button>
 					</div>
 				</details>
 				</div>
 				<footer class="visual-settings-actions">
+					<button id="visual-settings-preset-save-as" type="button">Save as new</button>
+					<button id="visual-settings-preset-save" type="button" disabled>Save changes</button>
+					<button id="visual-settings-export" type="button">Export settings</button>
 					<button
 						id="visual-settings-reset"
 						type="button">

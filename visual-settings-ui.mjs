@@ -234,13 +234,15 @@ export function createVisualSettingsPanel({
   ];
   const sectionHosts = new Map();
   const sectionDetails = new Map();
+  fields.append(createElement(document, 'p', 'visual-settings-guidance',
+    'Sliders show suggested ranges, not limits. Use the exact value inputs for other valid values. Open Details for constraints, configuration paths and individual resets.'));
   for (const [key, label] of sections) {
     const details = createElement(document, 'details', 'visual-settings-section');
     details.open = key === 'camera';
     const summary = createElement(document, 'summary', '', label);
     const host = createElement(document, 'div', 'visual-settings-section-fields');
     const sectionRow = createElement(document, 'div', 'visual-settings-section-row');
-    const resetGroup = createElement(document, 'button', 'visual-group-reset', 'Reset section to file');
+    const resetGroup = createElement(document, 'button', 'visual-group-reset', 'Reset section');
     resetGroup.type = 'button';
     resetGroup.setAttribute('aria-label', `Reset ${label} settings to file values`);
     resetGroup.addEventListener('click', () => {
@@ -278,13 +280,14 @@ export function createVisualSettingsPanel({
 
   function createProjection(definition, host, quick = false) {
     const presentation = VISUAL_SETTING_PRESENTATION[definition.path];
-    const settingHelp = definition.path === 'pulses.speedMin'
-      ? `${presentation.helpText} Changing the minimum keeps the displayed maximum fixed when valid.`
+    const inputGuidance = definition.path === 'pulses.speedMin'
+      ? `${presentation.inputGuidance} Changing the minimum keeps the displayed maximum fixed when valid.`
       : definition.path === 'pulses.speedRange'
-        ? `${presentation.helpText} This displays the maximum; the source stores maximum minus minimum.`
+        ? `${presentation.inputGuidance} This displays the maximum; the source stores maximum minus minimum.`
         : definition.path === 'camera.autoRotateSpeed'
-          ? `${presentation.helpText} Direction changes the signed multiplier; zero remains stopped.`
-          : presentation.helpText;
+          ? `${presentation.inputGuidance} Direction changes the signed multiplier; zero remains stopped.`
+          : presentation.inputGuidance;
+    const settingHelp = `${presentation.description} ${inputGuidance}`;
     const wrapper = createElement(document, 'div', `visual-field${quick ? ' visual-field-quick' : ''}`);
     wrapper.setAttribute('data-setting-path', definition.path);
     wrapper.setAttribute('data-setting-label', presentation.label);
@@ -299,8 +302,15 @@ export function createVisualSettingsPanel({
     const inputs = [];
     let slider = null;
     let direction = null;
-    const help = createElement(document, 'span', 'visual-field-help', settingHelp);
+    const help = createElement(document, 'span', 'visual-field-help', presentation.description);
     help.id = `visual-help-${idSuffix}`;
+    const details = createElement(document, 'details', 'visual-field-details');
+    const detailsSummary = createElement(document, 'summary', '', 'Details');
+    detailsSummary.setAttribute('aria-label', `Details for ${presentation.label}`);
+    const guidance = createElement(document, 'p', 'visual-field-guidance', inputGuidance);
+    guidance.id = `visual-guidance-${idSuffix}`;
+    details.append(detailsSummary,
+      createElement(document, 'code', 'visual-field-path', definition.path), guidance);
     const error = createElement(document, 'span', 'visual-field-error');
     error.id = `visual-error-${idSuffix}`;
     error.hidden = true;
@@ -376,26 +386,20 @@ export function createVisualSettingsPanel({
     if (definition.type !== 'vector3') wrapper.append(label, ...inputs);
     if (inputs[0]?.id) label.htmlFor = inputs[0].id;
     if (direction) wrapper.append(direction);
+    wrapper.append(help);
     if (slider) wrapper.append(slider);
     if (slider || definition.path === 'camera.autoRotateSpeed') {
       rangeHint.textContent = 'Outside the suggested slider range; the exact value is preserved.';
       wrapper.append(rangeHint);
     }
-    if (!quick) {
-      const pathLabel = createElement(document, 'code', 'visual-field-path', definition.path);
-      wrapper.append(pathLabel, help);
-      const resetField = createElement(document, 'button', 'visual-field-reset', 'Reset to file');
-      resetField.type = 'button';
-      resetField.setAttribute('aria-label', `Reset ${presentation.label} to file value`);
-      resetField.addEventListener('click', () => resetSettingPaths([definition.path]));
-      wrapper.append(resetField);
-    } else {
-      wrapper.title = `${definition.path} · ${settingHelp}`;
-      wrapper.append(help);
-    }
-    wrapper.append(error);
+    const resetField = createElement(document, 'button', 'visual-field-reset', 'Reset to file');
+    resetField.type = 'button';
+    resetField.setAttribute('aria-label', `Reset ${presentation.label} to file value`);
+    resetField.addEventListener('click', () => resetSettingPaths([definition.path]));
+    details.append(resetField);
+    wrapper.append(error, details);
     for (const input of [...inputs, ...(slider ? [slider] : []), ...(direction ? [direction] : [])]) {
-      input.setAttribute('aria-describedby', `${help.id} ${error.id}`);
+      input.setAttribute('aria-describedby', `${help.id} ${guidance.id} ${error.id}`);
       input.addEventListener('input', () => updateFromControl(definition, projection, input));
       if (input.tagName === 'SELECT') {
         input.addEventListener('change', () => updateFromControl(definition, projection, input));

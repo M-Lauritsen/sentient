@@ -199,9 +199,18 @@ plugins and external integrations remain intentionally deferred.
 
 Open **Appearance** from the application menu to preview the `balanced`, `subtle` or
 `intense` preset and edit any in-scope setting. The nonmodal drawer keeps the
-scene visible; closing it retains the current preview. Quick controls cover
-common adjustments, while searchable Advanced sections expose all 172
+scene visible; closing it retains the current preview.
+The header and preset controls scroll with the settings, leaving more room for
+controls. Save as new, Save changes, Export settings and Reset preview remain
+available in the footer.
+Quick controls cover common adjustments, while searchable Advanced sections expose all 172
 configuration paths with friendly labels, help and exact numeric inputs.
+Each setting includes an always-visible description of what it changes in the
+scene. Quick and Advanced use full-width rows with compact exact-value inputs
+and share the same descriptions; no hover or tooltip is needed to understand a
+control. Open **Details** for constraints, the configuration path and a small
+**Reset to file** action. Errors and out-of-slider-range notices remain visible
+without opening Details. Slider guidance is shown once above Advanced settings.
 All 143 scalar numeric settings include a slider; vectors keep named X/Y/Z inputs.
 Suggested slider ranges are guidance only: valid values outside them remain
 unchanged and can be edited exactly. Pulse minimum/maximum and automatic
@@ -211,8 +220,8 @@ Valid edits preview the running scene; invalid drafts never apply. Node-count
 edits preview in the draft and rebuild the network only on Enter, blur or slider
 commit. **Reset to file** restores a setting, **Reset section to file** restores
 that section, and **Reset preview** returns to the whole last-loaded file
-configuration. Changes remain temporary until **Export settings** in **File
-actions** downloads a replacement `visual-settings.mjs` and you save it over
+configuration. Changes remain temporary until **Export settings** in the footer
+downloads a replacement `visual-settings.mjs` and you save it over
 the source file. Create personal presets from the current preview, select them
 later, save edits, or delete them. Personal preset definitions are stored only
 in this browser's local storage for this site; they are not written to
