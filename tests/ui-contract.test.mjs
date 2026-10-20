@@ -7,14 +7,104 @@ import { CATEGORIES, CATEGORY_HEX, CATEGORY_RGB, CATEGORY_INDEX, HOOK_TYPES } fr
 import { VISUAL } from '../visual-settings.mjs';
 import { createCategoryBurstPlan, createImpulseBuffer } from '../activity-client.mjs';
 import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from '../session-stats-ui.mjs';
+import { createVisualSettingsPanel } from '../visual-settings-ui.mjs';
+import { resolveVisualSettings } from '../visual-config.mjs';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
+const server = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
 const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
 const statsUi = await readFile(new URL('../session-stats-ui.mjs', import.meta.url), 'utf8');
 const workspaceUi = await readFile(new URL('../workspace-ui.mjs', import.meta.url), 'utf8');
 const navigationUi = await readFile(new URL('../navigation-ui.mjs', import.meta.url), 'utf8');
 const visualSettingsUi = await readFile(new URL('../visual-settings-ui.mjs', import.meta.url), 'utf8');
+
+test('Appearance search visibly filters settings and empty groups, then restores them on clear', () => {
+  const dom = new JSDOM(html);
+  const { document, Event, getComputedStyle } = dom.window;
+  const style = document.createElement('style');
+  style.textContent = css;
+  document.head.append(style);
+  const ids = {
+    opener: 'open', dialog: 'dialog', form: 'form', presetSelect: 'preset',
+    fields: 'fields', quickFields: 'quick', searchInput: 'search',
+    searchStatus: 'search-status', clearSearchButton: 'search-clear', title: 'title',
+    status: 'status', errorSummary: 'errors', conflict: 'conflict',
+    useFileButton: 'use-file', keepPreviewButton: 'keep-preview', closeButton: 'close',
+    resetButton: 'reset', exportButton: 'export', reloadButton: 'reload',
+    autoReloadInput: 'auto-reload', presetNameInput: 'preset-name',
+    saveAsPresetButton: 'preset-save-as', savePresetButton: 'preset-save',
+    deletePresetButton: 'preset-delete',
+  };
+  const elements = Object.fromEntries(Object.entries(ids).map(([key, suffix]) =>
+    [key, document.getElementById(`visual-settings-${suffix}`)]));
+  const resolved = resolveVisualSettings(VISUAL, 'balanced');
+  createVisualSettingsPanel({
+    document,
+    ...elements,
+    initialConfiguration: {
+      defaults: VISUAL, preset: 'balanced', overrides: {}, settings: resolved.settings,
+    },
+    getStorage: () => ({ getItem: () => null }),
+    applySettings() {},
+  });
+  elements.dialog.setAttribute('open', '');
+  const fields = [...elements.fields.querySelectorAll('[data-setting-path]')];
+  const groups = [...elements.fields.querySelectorAll('.visual-settings-section-row')];
+  const sections = groups.map((group) => group.querySelector('details'));
+  const originalOpen = sections.map((section, index) => {
+    section.open = index % 2 === 1;
+    return section.open;
+  });
+  const search = (value) => {
+    elements.searchInput.value = value;
+    elements.searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  const hasDisplay = (element) => getComputedStyle(element).display !== 'none';
+  try {
+    search('  HeAt  ');
+    const hotColor = fields.find((field) => field.dataset.settingPath === 'nodes.hotColor');
+    const fov = fields.find((field) => field.dataset.settingPath === 'camera.fov');
+    assert.equal(hasDisplay(hotColor), true, 'related controls remain visible');
+    assert.equal(hasDisplay(fov), false, 'CSS must not override hidden nonmatching grid rows');
+    for (const field of fields.filter(hasDisplay)) {
+      assert.match(field.textContent, /heat/i, 'only heat-related controls are shown');
+    }
+    for (const group of groups) {
+      const hasMatches = [...group.querySelectorAll('[data-setting-path]')]
+        .some((field) => !field.hidden);
+      assert.equal(hasDisplay(group), hasMatches, 'empty sections and their reset buttons disappear');
+      if (hasMatches) assert.equal(group.querySelector('details').open, true);
+    }
+    assert.equal(hasDisplay(elements.quickFields), false, 'Quick duplicates do not clutter results');
+    assert.match(elements.searchStatus.textContent, /\d+ settings found/);
+    assert.equal(hasDisplay(elements.clearSearchButton), true);
+
+    search('no-such-appearance-setting');
+    assert.ok(fields.every((field) => !hasDisplay(field)));
+    assert.ok(groups.every((group) => !hasDisplay(group)));
+    assert.equal(hasDisplay(elements.quickFields), false);
+    assert.match(elements.searchStatus.textContent, /No settings match/);
+
+    elements.clearSearchButton.click();
+    assert.ok(fields.every(hasDisplay), 'clearing restores all controls');
+    assert.ok(groups.every(hasDisplay), 'clearing restores all sections');
+    assert.equal(hasDisplay(elements.quickFields), true);
+    assert.equal(hasDisplay(elements.clearSearchButton), false);
+    assert.deepEqual(sections.map((section) => section.open), originalOpen,
+      'clearing restores every section to its original expansion state');
+    assert.equal(document.activeElement, elements.searchInput);
+
+    search('heat');
+    search('   ');
+    assert.ok(fields.every(hasDisplay), 'deleting the query also restores controls');
+    assert.ok(groups.every(hasDisplay));
+    assert.equal(hasDisplay(elements.quickFields), true);
+    assert.deepEqual(sections.map((section) => section.open), originalOpen);
+  } finally {
+    dom.window.close();
+  }
+});
 
 test('Appearance scrolls its header and preset controls while save actions stay in the footer', () => {
   const document = new JSDOM(html).window.document;
@@ -744,7 +834,8 @@ test('pulse and RGB edge writers use category channels, preserve kind motion and
       (base + SCENE_RGB[offset + channel] * 0.45 * Math.exp(-2.4 / 60))) < 1e-6);
   }
   for (const name of ['fireFrom', 'updatePulses', 'writePulseBuffers', 'writeEdgeColors',
-    'renderSubagentTree', 'renderCompletionCascade', 'renderObservedImpulses', 'renderTimeline']) {
+    'renderSubagentTree', 'renderCompletionCascade', 'renderObservedImpulses', 'renderTimeline',
+    'renderDemoActivity', 'observedWaitingIds', 'updateSceneFraming']) {
     assert.doesNotMatch(sceneFunction(name), /new |\.filter\(|\.slice\(|\.map\(|\.sort\(|=>/,
       `${name} must not introduce per-frame constructors, array copies or callbacks`);
   }
@@ -864,6 +955,7 @@ test('completion pulses branch and brighten lattice nodes, edges and trails', ()
     pSpeed: [2], pHops: [7], pKind: [2], pCat: [CATEGORY_INDEX.completion],
     edgeLen: [1], edgeR: [0], edgeG: [0], edgeBColor: [0],
     nodeEnergy: [0, 0], activePulses: 1, otherEnd: () => 1,
+    pDemo: new Uint8Array(1), demoSpawn: 0, demoPulses: 0,
     fireFrom: (...args) => calls.push(args),
     nodePos: [0, 0, 0, 1, 2, 3],
     pulsePos: new Float32Array(6), pulseCol: new Float32Array(6), pulseSize: new Float32Array(2),
@@ -899,7 +991,7 @@ test('real completion spawning respects pool capacity, reuses slots and ends aft
   const context = vm.createContext({
     Math: Object.assign(Object.create(Math), { random: () => 0.2 }),
     P, CATEGORY_INDEX, VISUAL, SCENE_RGB: CATEGORY_RGB,
-    pCursor: 0, activePulses: 0,
+    pCursor: 0, activePulses: 0, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(P),
     pActive: new Uint8Array(P), pEdge: new Int32Array(P), pFrom: new Int32Array(P),
     pT: new Float32Array(P), pSpeed: new Float32Array(P), pHops: new Uint8Array(P),
     pKind: new Uint8Array(P), pCat: new Uint8Array(P),
@@ -921,6 +1013,120 @@ test('real completion spawning respects pool capacity, reuses slots and ends aft
   assert.equal(context.activePulses, 0, 'finite hops extinguish every branch');
   assert.equal(vm.runInContext('spawnPulse(0, 0, 3, 2, CATEGORY_INDEX.completion)', context), true);
   assert.equal(context.activePulses, 1, 'exhausted pool slots can be reused');
+});
+
+test('demo-tagged pulses and their branches stay separately counted and are released', () => {
+  const P = 64;
+  const context = vm.createContext({
+    Math: Object.assign(Object.create(Math), { random: () => 0.2 }),
+    P, CATEGORY_INDEX, VISUAL, SCENE_RGB: CATEGORY_RGB,
+    pCursor: 0, activePulses: 0, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(P),
+    pActive: new Uint8Array(P), pEdge: new Int32Array(P), pFrom: new Int32Array(P),
+    pT: new Float32Array(P), pSpeed: new Float32Array(P), pHops: new Uint8Array(P),
+    pKind: new Uint8Array(P), pCat: new Uint8Array(P),
+    edgeA: [0, 1, 2], edgeB: [1, 2, 0], edgeLen: [1, 1, 1],
+    adjacency: [[0, 2], [0, 1], [1, 2]], fireEdges: new Int32Array(2),
+    edgeR: new Float32Array(3), edgeG: new Float32Array(3), edgeBColor: new Float32Array(3),
+    nodeEnergy: new Float32Array(3),
+  });
+  vm.runInContext(['otherEnd', 'spawnPulse', 'fireFrom', 'updatePulses']
+    .map(sceneFunction).join('\n'), context);
+  vm.runInContext('spawnPulse(0, 0, 3, 2, CATEGORY_INDEX.completion)', context);
+  vm.runInContext('demoSpawn = 1; spawnPulse(0, 0, 3, 2, CATEGORY_INDEX.completion); demoSpawn = 0', context);
+  assert.equal(context.activePulses, 2);
+  assert.equal(context.demoPulses, 1);
+  for (let step = 0; step < 40; step++) {
+    vm.runInContext('updatePulses(0.1)', context);
+    let tagged = 0;
+    for (let s = 0; s < P; s++) tagged += context.pActive[s] && context.pDemo[s];
+    assert.equal(context.demoPulses, tagged, 'branches inherit the demo tag');
+    assert.ok(context.demoPulses <= context.activePulses);
+    assert.equal(context.demoSpawn, 0);
+  }
+  assert.equal(context.activePulses, 0);
+  assert.equal(context.demoPulses, 0);
+});
+
+test('appearance demo shares scene bursts but never reaches timeline, feed, statistics or HUD counts', () => {
+  const calls = [];
+  const timelineAdds = [];
+  const feedAdds = [];
+  const demoFrame = {
+    byCategory: new Uint32Array(CATEGORIES.length), sceneByCategory: new Uint32Array(CATEGORIES.length),
+    hookCounts: new Uint32Array(HOOK_TYPES.length), entries: [], impacts: [],
+  };
+  demoFrame.sceneByCategory[CATEGORY_INDEX.edit] = 4;
+  const context = vm.createContext({
+    CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, VISUAL, document: { hidden: false }, performance: { now: () => 1 }, Math, N: 1,
+    nodeEnergy: new Float32Array(1), nodeHot: new Float32Array(1),
+    adjacency: [[0, 1, 2, 3, 4]], otherEnd: (edge) => edge + 1,
+    impulseBuffer: { drain() { throw new Error('observed buffer must not drain for the demo'); } },
+    timeline: { add: (...args) => timelineAdds.push(args) },
+    categoryBurstPlan: createCategoryBurstPlan(),
+    impulseIntensity: () => 2,
+    impulseFeed: { add: (...args) => feedAdds.push(args) },
+    fireFrom: (...args) => calls.push(args),
+    demoSource: { drain: () => demoFrame },
+  });
+  vm.runInContext([sceneFunction('renderCompletionCascade'), sceneFunction('renderHookPulses'),
+    sceneFunction('renderObservedImpulses')].join('\n'), context);
+  vm.runInContext('renderObservedImpulses(demoSource, false)', context);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][5], CATEGORY_INDEX.edit);
+  assert.deepEqual(timelineAdds, []);
+  assert.deepEqual(feedAdds, []);
+  const demo = sceneFunction('renderDemoActivity');
+  assert.match(demo, /renderObservedImpulses\(demoSource, false\)/);
+  // Waiting markers (which copy IDs) are re-rendered only on transitions, not every frame.
+  assert.match(demo, /if \(demoFrame\.active !== wasActive \|\| demoFrame\.waiting !== wasWaiting \|\|\s*\(demoMarkersDirty && demoFrame\.active\)\) \{/);
+  assert.match(demo, /const badgeVisible = demoFrame\.active \|\| demoPulses > 0;/);
+  assert.match(main, /renderActivityState\(state\);\s*demoMarkersDirty = true;/);
+  // onState fires synchronously during connect(), so the flag must exist before the client is created.
+  assert.ok(main.indexOf('let demoMarkersDirty = false;') > 0 &&
+    main.indexOf('let demoMarkersDirty = false;') < main.indexOf('\nconst activityClient ='));
+  assert.match(main, /return applyVisualSettings\(candidate\);\s*\} finally \{\s*demoMarkersDirty = true;/);
+  assert.doesNotMatch(demo, /impulseBuffer|timeline|pageActivityTotals|sessionStatsDialog|workspaceUI|activityState\s*=/);
+  assert.match(main, /\$impulses\.textContent = String\(activePulses - demoPulses\)/);
+  assert.match(main, /\$load\.textContent = Math\.round\(smoothedObservedLoad \* 100\)/);
+  assert.match(html, /id="visual-settings-demo" type="checkbox"/);
+  assert.match(html, /id="demo-badge"[\s\S]*?hidden>[\s\S]*?DEMO · synthetic activity, not observed/);
+  assert.match(main, /setDemoRunning\(open && !reducedMotion\)/);
+});
+
+test('settings hover focuses the demo and the open panel re-frames the scene without touching camera settings', () => {
+  assert.match(main, /previewMode: \(\) => \(!demoActivity\.isRunning\(\) \? 'off' : reducedMotion \? 'focus' : 'sweep'\)/);
+  assert.match(main, /onPreviewFocus: \(path\) => demoActivity\.setFocus\(demoFocusForPath\(path\)\)/);
+  assert.match(main, /framingOpen = open;\s*updateFramingTarget\(\);/);
+  assert.match(main, /bloom\.setSize\(w, h\);\s*updateFramingTarget\(\);/);
+  assert.match(main, /updateSceneFraming\(dt\);/);
+  assert.match(server, /\['\/visual-settings-preview\.mjs', \['visual-settings-preview\.mjs'/);
+
+  const calls = [];
+  const camera = {
+    setViewOffset: (...args) => calls.push(['set', ...args]),
+    clearViewOffset: () => calls.push(['clear']),
+  };
+  const context = vm.createContext({
+    Math, camera, window: { innerWidth: 1600, innerHeight: 900 },
+    visualSettingsDialog: { getBoundingClientRect: () => ({ width: 620 }) },
+    FRAMING_MIN_WIDTH: 900, FRAMING_EASE: 6, reducedMotion: false,
+    framingOpen: true, framingTarget: 0, framingOffset: 0, framingApplied: 0, framingWidth: 0, framingHeight: 0,
+  });
+  vm.runInContext([sceneFunction('updateFramingTarget'), sceneFunction('updateSceneFraming')].join('\n'), context);
+  vm.runInContext('updateFramingTarget()', context);
+  assert.equal(context.framingTarget, 310);
+  vm.runInContext('updateSceneFraming(0.05)', context);
+  assert.equal(calls.at(-1)[0], 'set');
+  assert.ok(calls.at(-1)[3] > 0 && calls.at(-1)[3] < 310, 'eases toward the target');
+  for (let i = 0; i < 120; i++) vm.runInContext('updateSceneFraming(0.05)', context);
+  assert.deepEqual(calls.at(-1), ['set', 1600, 900, 310, 0, 1600, 900]);
+  const settled = calls.length;
+  vm.runInContext('updateSceneFraming(0.05)', context);
+  assert.equal(calls.length, settled, 'no projection churn once settled');
+
+  context.window.innerWidth = 800;
+  vm.runInContext('updateFramingTarget(); reducedMotion = true; updateSceneFraming(0.05)', context);
+  assert.deepEqual(calls.at(-1), ['clear'], 'narrow windows and reduced motion jump back without easing');
 });
 
 test('real timeline drawing stacks category counts and overlays unknown coverage, never creating history', () => {

@@ -49,6 +49,7 @@ class TestElement {
   }
   click() { this.dispatch('click'); }
   setAttribute(name, value) { this.attributes.set(name, value); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
   removeAttribute(name) { this.attributes.delete(name); }
   show() { this.open = true; }
   showModal() { this.open = true; }
@@ -58,7 +59,7 @@ class TestElement {
 
 function makePanelHarness({
   defaults, preset = 'balanced', overrides = {}, loadFile, scheduleTimer, cancelTimer,
-  storage = makeMemoryStorage(), applySettings = () => true,
+  storage = makeMemoryStorage(), applySettings = () => true, panelOptions = {},
 }) {
   const resolved = resolveVisualSettings(defaults, preset, overrides);
   const document = new TestElement();
@@ -93,6 +94,7 @@ function makePanelHarness({
     ...(cancelTimer ? { cancelTimer } : {}),
     requestFrame: (callback) => { queueMicrotask(callback); return 1; },
     cancelFrame() {},
+    ...panelOptions,
   };
   const panel = createVisualSettingsPanel(options);
   const control = (path, { quick = false } = {}) => {
@@ -1226,23 +1228,90 @@ test('effect switches leave synthetic feed, timeline, and page totals unchanged'
   assert.equal(results[0].timeline.length, 1);
 });
 
-test('presets and overrides resolve deterministically without mutating definitions', async () => {
+test('presets and overrides resolve deterministically without mutating definitions', async (t) => {
   const defaults = await settings();
+  const authored = await import('../visual-settings.mjs');
   const balanced = resolveVisualSettings(defaults, 'balanced');
   const subtle = resolveVisualSettings(defaults, 'subtle');
   const intense = resolveVisualSettings(defaults, 'intense');
+  const aurora = resolveVisualSettings(defaults, 'aurora');
+  const ember = resolveVisualSettings(defaults, 'ember');
+  const monochrome = resolveVisualSettings(defaults, 'monochrome');
   assert.deepEqual(balanced.errors, []);
   assert.deepEqual(balanced.settings, defaults);
   assert.deepEqual(subtle.errors, []);
   assert.deepEqual(intense.errors, []);
+  for (const preset of [aurora, ember, monochrome]) assert.deepEqual(preset.errors, []);
   assert.equal(subtle.settings.running.pulsesPerSecondPerSession, 2);
   assert.equal(subtle.settings.nodes.idleBrightness, 0.25);
   assert.equal(subtle.settings.scene.bloomStrength, 0.55);
   assert.equal(intense.settings.running.pulsesPerSecondPerSession, 10);
   assert.equal(intense.settings.activity.maxIntensity, 10);
   assert.equal(intense.settings.scene.coreLoad, 0.17);
+  assert.deepEqual(aurora.settings.nodes.baseColor, [0.08, 0.52, 0.46]);
+  assert.equal(aurora.settings.effects.floor, true);
+  assert.deepEqual(ember.settings.nodes.baseColor, [0.85, 0.13, 0.025]);
+  assert.equal(ember.settings.effects.floor, false);
+  assert.equal(ember.settings.scene.bloomStrength, 1.3);
+  assert.equal(monochrome.settings.effects.dust, false);
+  assert.equal(monochrome.settings.scene.edgeVisibility, 'active');
+  assert.equal(monochrome.settings.scene.bloomStrength, 0.45);
+  assert.notDeepEqual(aurora.settings.scene.background, ember.settings.scene.background);
+  assert.notDeepEqual(ember.settings.scene.background, monochrome.settings.scene.background);
+  const authoredAurora = resolveVisualSettings(
+    authored.VISUAL, 'aurora', authored.VISUAL_OVERRIDES);
+  assert.deepEqual(authoredAurora.errors, []);
+  assert.deepEqual(authoredAurora.settings.nodes.baseColor, VISUAL_PRESETS.aurora.nodes.baseColor);
+  assert.equal(authoredAurora.settings.scene.background, VISUAL_PRESETS.aurora.scene.background);
+  assert.equal(authoredAurora.settings.scene.bloomStrength, VISUAL_PRESETS.aurora.scene.bloomStrength);
+  const authoredEmber = resolveVisualSettings(
+    authored.VISUAL, 'ember', authored.VISUAL_OVERRIDES);
+  assert.deepEqual(authoredEmber.settings.nodes.baseColor, VISUAL_PRESETS.ember.nodes.baseColor);
+  const authoredMonochrome = resolveVisualSettings(
+    authored.VISUAL, 'monochrome', authored.VISUAL_OVERRIDES);
+  assert.equal(authoredMonochrome.settings.effects.dust, false);
+  const tunedAurora = resolveVisualSettings(authored.VISUAL, 'aurora',
+    authored.VISUAL_OVERRIDES, { scene: { bloomStrength: 0.73 } });
+  assert.equal(tunedAurora.settings.scene.bloomStrength, 0.73);
   assert.equal(defaults.running.pulsesPerSecondPerSession, 6);
   assert.ok(Object.isFrozen(VISUAL_PRESETS.subtle));
+  assert.ok(Object.isFrozen(VISUAL_PRESETS.aurora));
+  assert.ok(Object.isFrozen(VISUAL_PRESETS.ember));
+  assert.ok(Object.isFrozen(VISUAL_PRESETS.monochrome));
+  const presetPanel = makePanelHarness({
+    defaults: authored.VISUAL,
+    overrides: authored.VISUAL_OVERRIDES,
+  });
+  assert.deepEqual(presetPanel.elements.presetSelect.children.map(({ value }) => value),
+    Object.keys(VISUAL_PRESETS));
+  presetPanel.elements.presetSelect.value = 'aurora';
+  presetPanel.elements.presetSelect.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(presetPanel.panel.state.preset, 'aurora');
+  assert.deepEqual(presetPanel.applied.at(-1).nodes.baseColor, [0.08, 0.52, 0.46]);
+  const [bloomStrength] = presetPanel.control('scene.bloomStrength');
+  bloomStrength.value = '0.73';
+  bloomStrength.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(presetPanel.applied.at(-1).scene.bloomStrength, 0.73);
+  let exportedBlob;
+  t.mock.method(URL, 'createObjectURL', (blob) => {
+    exportedBlob = blob;
+    return 'blob:theme-export';
+  });
+  presetPanel.elements.exportButton.click();
+  const exportSource = await exportedBlob.text();
+  const readExport = (name) => {
+    const match = new RegExp(`export const ${name} = ([\\s\\S]*?);`).exec(exportSource);
+    assert.ok(match, `export includes ${name}`);
+    return JSON.parse(match[1]);
+  };
+  const exportedPreview = resolveVisualSettings(
+    readExport('VISUAL'), readExport('VISUAL_PRESET'), readExport('VISUAL_OVERRIDES'));
+  assert.deepEqual(exportedPreview.errors, []);
+  assert.equal(readExport('VISUAL_PRESET'), 'balanced');
+  assert.deepEqual(exportedPreview.settings, presetPanel.applied.at(-1),
+    'export preserves the exact preview as a balanced snapshot');
 
   const filePosition = [5, 6, 7];
   const previewPosition = [8, 9, 10];
@@ -1461,6 +1530,7 @@ test('file reload conflicts preserve previews, support both choices, and recover
 
   await harness.panel.reload();
   assert.equal(harness.elements.conflict.hidden, false);
+  assert.equal(harness.applied.at(-1).scene.floorGlow, preview.scene.floorGlow);
   assert.equal(harness.applied.at(-1), preview);
   harness.elements.keepPreviewButton.click();
   assert.equal(harness.elements.conflict.hidden, true);
@@ -1469,7 +1539,8 @@ test('file reload conflicts preserve previews, support both choices, and recover
   await harness.panel.reload();
   assert.equal(harness.elements.conflict.hidden, false, 'a newer file version prompts again');
   harness.elements.useFileButton.click();
-  assert.equal(harness.applied.at(-1).scene.floorGlow, 0.9);
+  assert.equal(harness.applied.at(-1).scene.floorGlow, 0.7,
+    'the selected preset takes precedence over that file value');
   assert.equal(harness.panel.state.dirty, false);
 
   const lastValid = harness.applied.at(-1);
@@ -1902,7 +1973,7 @@ test('nondefault pulse speed, head, spacing, brightness and completion controls 
   const context = vm.createContext({
     VISUAL, CATEGORY_INDEX, SCENE_RGB: CATEGORY_RGB,
     Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
-    P: 1, T: 2, pCursor: 0, activePulses: 0,
+    P: 1, T: 2, pCursor: 0, activePulses: 0, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(1),
     pActive: [0], pEdge: [0], pFrom: [0], pT: [0], pSpeed: [0],
     pHops: [0], pKind: [0], pCat: [0],
     edgeLen: [1], edgeR: [0], edgeG: [0], edgeBColor: [0],
@@ -1972,7 +2043,7 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
     VISUAL, Math, E: 1, edgeR: [1], edgeG: [1], edgeBColor: [1],
     edgeBase: [0], edgeColors: new Float32Array(6), edgeGeo: { attributes: { color: {} } },
     edgeLines: { visible: true },
-    dt: 0, now: 0, smoothedLoad: 0.5, activePulses: 0,
+    dt: 0, now: 0, smoothedLoad: 0.5, activePulses: 0, demoFrame: { waiting: false },
     activityState: { activeSessions: 0, connection: 'connected', sourceStatus: 'available', waitingSessions: 0 },
     brain: { scale: { setScalar() {} } },
     coreGlow: { material: { color: { lerpColors() {} } } }, haloGlow: { material: {} },
@@ -2025,7 +2096,7 @@ test('node decay and ordinary arrival/trail settings alter the actual animation 
   const context = vm.createContext({
     VISUAL, Math, SCENE_RGB: CATEGORY_RGB, P: 1, T: 2, N: 2, dt: 1,
     pActive: [1], pEdge: [0], pFrom: [0], pT: [0.5], pKind: [1], pCat: [CATEGORY_INDEX.tool],
-    pSpeed: [1], pHops: [0], activePulses: 1, edgeLen: [1],
+    pSpeed: [1], pHops: [0], activePulses: 1, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(1), edgeLen: [1],
     edgeR: [0], edgeG: [0], edgeBColor: [0],
     nodeEnergy: [1, 0], nodeHot: [1, 0], nodePos: [0, 0, 0, 1, 0, 0],
     nodeGeo: { attributes: { aEnergy: {}, aHot: {} } },
@@ -2047,4 +2118,184 @@ test('node decay and ordinary arrival/trail settings alter the actual animation 
   vm.runInContext(main.slice(start, main.indexOf('  writeEdgeColors(dt)', start)), context);
   assert.ok(Math.abs(context.nodeEnergy[0] - Math.exp(-1)) < 1e-6);
   assert.ok(Math.abs(context.nodeHot[0] - Math.exp(-1)) < 1e-6);
+});
+
+function makePreviewHarness({ mode = 'sweep', preset = 'balanced' } = {}) {
+  let clock = 0;
+  let frames = [];
+  const focusCalls = [];
+  const state = { mode };
+  return (async () => {
+    const defaults = await settings();
+    const harness = makePanelHarness({
+      defaults,
+      preset,
+      panelOptions: {
+        requestFrame: (callback) => { frames.push(callback); return frames.length; },
+        cancelFrame: (handle) => { if (frames[handle - 1]) frames[handle - 1] = null; },
+        now: () => clock,
+        previewMode: () => state.mode,
+        onPreviewFocus: (path) => focusCalls.push(path),
+      },
+    });
+    const advance = (ms) => {
+      clock += ms;
+      const pending = frames;
+      frames = [];
+      for (const callback of pending) callback?.();
+    };
+    const target = (path) => ({ closest: () => harness.field(path) });
+    const hover = (path) => harness.fields.dispatch('pointerover', { target: target(path) });
+    const leave = () => harness.fields.dispatch('pointerleave', { target: harness.fields });
+    harness.elements.opener.click();
+    const base = resolveVisualSettings(defaults, preset, {}).settings;
+    return { ...harness, defaults, base, advance, hover, leave, target, focusCalls, state,
+      pendingFrames: () => frames.filter(Boolean).length };
+  })();
+}
+
+test('hovering a setting previews it in the scene without staging or saving it', async () => {
+  const preview = await makePreviewHarness();
+  const base = structuredClone(preview.base);
+  const input = preview.control('scene.bloomStrength')[0];
+  const shownValue = input.value;
+  preview.hover('scene.bloomStrength');
+  assert.deepEqual(preview.focusCalls, ['scene.bloomStrength']);
+  assert.equal(preview.field('scene.bloomStrength').attributes.get('data-preview'), 'sweep');
+  for (let index = 0; index < 12; index++) preview.advance(60);
+  const swept = preview.applied.filter((value) => value.scene.bloomStrength !== base.scene.bloomStrength);
+  assert.ok(swept.length >= 5, `swept ${swept.length}`);
+  for (const value of swept) {
+    const copy = structuredClone(value);
+    copy.scene.bloomStrength = base.scene.bloomStrength;
+    assert.deepEqual(copy, base, 'only the hovered setting changes');
+  }
+  assert.equal(input.value, shownValue, 'the input keeps the real value');
+  assert.equal(preview.panel.state.dirty, false);
+
+  preview.leave();
+  assert.deepEqual(preview.applied.at(-1), base, 'leaving restores the applied settings exactly');
+  assert.equal(preview.focusCalls.at(-1), null);
+  assert.equal(preview.field('scene.bloomStrength').attributes.has('data-preview'), false);
+  const count = preview.applied.length;
+  preview.advance(60);
+  assert.equal(preview.applied.length, count);
+  assert.equal(preview.pendingFrames(), 0);
+});
+
+test('clicking or typing in a previewed setting stops the sweep and restores first', async () => {
+  const preview = await makePreviewHarness();
+  const base = structuredClone(preview.base);
+  preview.hover('scene.bloomStrength');
+  preview.advance(300);
+  preview.advance(300);
+  preview.fields.dispatch('pointerdown', { target: preview.target('scene.bloomStrength') });
+  assert.deepEqual(preview.applied.at(-1), base);
+  assert.equal(preview.field('scene.bloomStrength').attributes.has('data-preview'), false);
+  const count = preview.applied.length;
+  preview.advance(300);
+  assert.equal(preview.applied.length, count);
+  // Moving within the same row does not restart it.
+  preview.hover('scene.bloomStrength');
+  preview.advance(300);
+  assert.equal(preview.applied.length, count);
+  preview.hover('nodes.size');
+  preview.advance(300);
+  assert.ok(preview.applied.length > count);
+  preview.fields.dispatch('input', { target: preview.target('nodes.size') });
+  assert.deepEqual(preview.applied.at(-1), base);
+});
+
+test('unsweepable settings and focus mode only focus the demo; closing clears everything', async () => {
+  const preview = await makePreviewHarness();
+  const before = preview.applied.length;
+  preview.hover('nodes.count');
+  preview.advance(300);
+  preview.hover('hooks.startColor');
+  preview.advance(300);
+  assert.equal(preview.applied.length, before);
+  assert.deepEqual(preview.focusCalls, ['nodes.count', 'hooks.startColor']);
+  assert.equal(preview.field('hooks.startColor').attributes.get('data-preview'), 'focus');
+  assert.equal(preview.field('nodes.count').attributes.has('data-preview'), false);
+
+  preview.state.mode = 'focus';
+  preview.hover('scene.bloomStrength');
+  preview.advance(300);
+  assert.equal(preview.applied.length, before, 'no sweep under reduced motion');
+
+  preview.state.mode = 'sweep';
+  preview.hover('nodes.size');
+  preview.advance(300);
+  assert.ok(preview.applied.length > before);
+  preview.elements.dialog.close();
+  assert.deepEqual(preview.applied.at(-1), structuredClone(preview.base));
+  assert.equal(preview.focusCalls.at(-1), null);
+  assert.equal(preview.pendingFrames(), 0);
+});
+
+test('turning preview off mid-sweep restores; keyboard focus focuses the demo without sweeping', async () => {
+  const preview = await makePreviewHarness();
+  preview.hover('nodes.size');
+  preview.advance(300);
+  preview.state.mode = 'off';
+  preview.advance(60);
+  assert.deepEqual(preview.applied.at(-1), structuredClone(preview.base));
+  assert.equal(preview.field('nodes.size').attributes.has('data-preview'), false);
+  preview.leave();
+
+  preview.state.mode = 'sweep';
+  const before = preview.applied.length;
+  preview.fields.dispatch('focusin', { target: preview.target('impact.maxHops') });
+  preview.advance(300);
+  assert.equal(preview.applied.length, before);
+  assert.equal(preview.focusCalls.at(-1), 'impact.maxHops');
+  // Hover wins while present; keyboard focus remains the fallback.
+  preview.hover('hooks.endImpact');
+  assert.equal(preview.focusCalls.at(-1), 'hooks.endImpact');
+  preview.leave();
+  assert.equal(preview.focusCalls.at(-1), 'impact.maxHops');
+  preview.fields.dispatch('focusout', { target: preview.target('impact.maxHops'), relatedTarget: null });
+  assert.equal(preview.focusCalls.at(-1), null);
+});
+
+test('typing in another row keeps the hovered row paused', async () => {
+  const preview = await makePreviewHarness();
+  preview.hover('scene.bloomStrength');
+  preview.advance(300);
+  preview.fields.dispatch('pointerdown', { target: preview.target('scene.bloomStrength') });
+  const count = preview.applied.length;
+  preview.fields.dispatch('focusin', { target: preview.target('nodes.size') });
+  preview.fields.dispatch('input', { target: preview.target('nodes.size') });
+  preview.advance(300);
+  preview.advance(300);
+  assert.equal(preview.applied.length, count, 'the paused sweep does not restart');
+  assert.equal(preview.pendingFrames(), 0);
+});
+
+test('real edits and Reset preview during a sweep become the restore point', async () => {
+  const preview = await makePreviewHarness();
+  preview.hover('scene.bloomStrength');
+  preview.advance(300);
+  const [floorGlow] = preview.control('scene.floorGlow');
+  floorGlow.value = '0.8';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  for (let index = 0; index < 8; index++) preview.advance(100);
+  const editIndex = preview.applied.findIndex((value) => value.scene.floorGlow === 0.8);
+  const sweptAfterEdit = preview.applied.slice(editIndex + 1);
+  assert.ok(sweptAfterEdit.length > 0 && sweptAfterEdit.every((value) => value.scene.floorGlow === 0.8),
+    'the sweep builds on the edit');
+  assert.ok(sweptAfterEdit.some((value) => value.scene.bloomStrength !== preview.base.scene.bloomStrength));
+  preview.leave();
+  const edited = structuredClone(preview.base);
+  edited.scene.floorGlow = 0.8;
+  assert.deepEqual(preview.applied.at(-1), edited);
+
+  preview.hover('nodes.size');
+  preview.advance(300);
+  preview.elements.resetButton.click();
+  preview.advance(300);
+  preview.leave();
+  assert.deepEqual(preview.applied.at(-1), structuredClone(preview.base));
+  assert.equal(preview.pendingFrames(), 0);
 });

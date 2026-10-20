@@ -607,6 +607,73 @@ export const VISUAL_PRESETS = freezeTree({
       coreLoad: 0.17, floorGlow: 0.7, dustBrightness: 0.24,
     },
   },
+  aurora: {
+    nodes: {
+      baseColor: [0.08, 0.52, 0.46],
+      hotColor: [0.18, 0.9, 0.67],
+      whiteColor: [0.75, 0.98, 0.9],
+    },
+    dust: { color: [0.08, 0.42, 0.34] },
+    floor: {
+      color: [0.04, 0.2, 0.17],
+      poolColor: [0.03, 0.48, 0.32],
+    },
+    scene: {
+      background: 0x03100e,
+      edgeBaseColor: [0.01, 0.07, 0.055],
+      coreColor: 0x42ffc7,
+      haloColor: 0x159b87,
+      bloomStrength: 0.95,
+      bloomLoad: 0.35,
+      floorGlow: 0.65,
+    },
+  },
+  ember: {
+    nodes: {
+      baseColor: [0.85, 0.13, 0.025],
+      hotColor: [1, 0.48, 0.08],
+      whiteColor: [1, 0.85, 0.62],
+      activeGrowth: 2.3,
+    },
+    running: { pulsesPerSecondPerSession: 8 },
+    dust: { color: [0.6, 0.12, 0.025] },
+    floor: {
+      color: [0.28, 0.07, 0.025],
+      poolColor: [0.78, 0.18, 0.035],
+    },
+    effects: { floor: false },
+    scene: {
+      background: 0x110604,
+      edgeBaseColor: [0.09, 0.025, 0.012],
+      coreColor: 0xff7138,
+      haloColor: 0xd83c1c,
+      bloomStrength: 1.3,
+      bloomLoad: 0.48,
+      floorGlow: 0.75,
+    },
+  },
+  monochrome: {
+    nodes: {
+      baseColor: [0.48, 0.55, 0.66],
+      hotColor: [0.78, 0.84, 0.94],
+      whiteColor: [0.95, 0.97, 1],
+    },
+    running: { pulsesPerSecondPerSession: 4 },
+    effects: { dust: false, floor: false, latticeBreathing: false },
+    scene: {
+      background: 0x05070a,
+      edgeVisibility: 'active',
+      edgeBaseColor: [0.035, 0.045, 0.06],
+      categoryBrightness: 0.55,
+      coreColor: 0xcbd5e1,
+      haloColor: 0x64748b,
+      bloomStrength: 0.45,
+      bloomLoad: 0.18,
+      dustBrightness: 0,
+      floorBrightness: 0,
+      floorGlow: 0,
+    },
+  },
 });
 
 function isPlainRecord(value) {
@@ -707,8 +774,8 @@ export function resolveVisualSettings(defaults, presetName = 'balanced', fileOve
 
   const settings = cloneValue({ ...defaults, hooks: defaults.hooks ?? HOOK_DEFAULTS });
   for (const [layerName, overrides] of [
-    [`preset:${presetName}`, VISUAL_PRESETS[presetName]],
     ['fileOverrides', fileOverrides],
+    [`preset:${presetName}`, VISUAL_PRESETS[presetName]],
     ['previewOverrides', previewOverrides],
   ]) {
     const shapeErrors = applyOverrides(settings, overrides, layerName);

@@ -17,6 +17,8 @@ import { validateVisualSettings } from './visual-config.mjs';
 import { createVisualSettingsPanel } from './visual-settings-ui.mjs';
 import { createLibraryDialog } from './copilot-library-ui.mjs';
 import { createNavigationUI } from './navigation-ui.mjs';
+import { createDemoActivity, DEMO_WAITING_IDS } from './demo-activity.mjs';
+import { demoFocusForPath } from './visual-settings-preview.mjs';
 
 // Structural geometry and fixed buffer capacities; node count can rebuild the network.
 const CFG = {
@@ -275,6 +277,7 @@ function installNetwork(next) {
 
   // Old pulse endpoints refer to the previous graph, not observed activity.
   pActive.fill(0);
+  pDemo.fill(0);
   pulseSize.fill(0);
   pulseCol.fill(0);
   pulsePos.fill(0);
@@ -283,6 +286,7 @@ function installNetwork(next) {
   pulseGeo.attributes.aColor.needsUpdate = true;
   pCursor = 0;
   activePulses = 0;
+  demoPulses = 0;
   for (const session of subagentAnchors) session.anchorIndex = hashTreeSid(session.sid) % N;
   for (const branch of [...activeSubagentBranches, ...fadingSubagentBranches]) {
     branch.anchorIndex = hashTreeSid(branch.sessionSid) % N;
@@ -419,8 +423,12 @@ const pSpeed = new Float32Array(P);
 const pHops = new Int16Array(P);
 const pKind = new Uint8Array(P);
 const pCat = new Uint8Array(P);
+// Demo pulses render like real ones but are excluded from HUD counters.
+const pDemo = new Uint8Array(P);
 let pCursor = 0;
 let activePulses = 0;
+let demoPulses = 0;
+let demoSpawn = 0;
 
 const pulsePos = new Float32Array(P * T * 3);
 const pulseCol = new Float32Array(P * T * 3);
@@ -789,7 +797,9 @@ function spawnPulse(from, edge, hops, kind, category) {
     pHops[s] = hops;
     pKind[s] = kind;
     pCat[s] = category;
+    pDemo[s] = demoSpawn;
     activePulses++;
+    demoPulses += demoSpawn;
     return true;
   }
   return false;
@@ -832,12 +842,17 @@ function updatePulses(dt) {
       const to = otherEnd(e, from);
       pActive[s] = 0;
       activePulses--;
+      demoPulses -= pDemo[s];
       nodeEnergy[to] = Math.min(VISUAL.nodes.energyCap, nodeEnergy[to] + (kind === 3 ? VISUAL.impact.nodeEnergy
         : kind === 2 ? VISUAL.completion.nodeEnergy : VISUAL.pulses.nodeEnergy));
       if (hops > 0) {
         const branch = kind === 3 ? (Math.random() < VISUAL.impact.branchChance ? 2 : 1)
           : kind === 2 ? (Math.random() < VISUAL.completion.branchChance ? 2 : 1) : kind === 0 ? 1 : 0;
-        if (branch > 0) fireFrom(to, hops - 1, kind, from, branch, pCat[s]);
+        if (branch > 0) {
+          demoSpawn = pDemo[s];
+          fireFrom(to, hops - 1, kind, from, branch, pCat[s]);
+          demoSpawn = 0;
+        }
       }
     }
   }
@@ -1043,6 +1058,11 @@ const workspaceUI = createWorkspaceUI({
   expandedSessionStats,
 });
 
+const demoActivity = createDemoActivity();
+let demoFrame = demoActivity.tick(0, VISUAL);
+// Set when observed state or settings re-render the waiting markers without demo IDs.
+let demoMarkersDirty = false;
+
 function renderWaitingMarkers(sessionIds) {
   const waiting = Array.isArray(sessionIds) ? sessionIds.slice(0, 8) : [];
   for (let index = 0; index < waitingMarkerGroups.length; index++) {
@@ -1150,7 +1170,10 @@ function renderActivityState(state) {
 }
 
 const activityClient = createActivityClient({
-  onState: renderActivityState,
+  onState: (state) => {
+    renderActivityState(state);
+    demoMarkersDirty = true;
+  },
   onTree: applySubagentTree,
   onActivity: (activity) => {
     if (!document.hidden) impulseBuffer.add(activity);
@@ -1207,14 +1230,16 @@ function renderImpactBurst(node, category, durationMs) {
   }
 }
 
-function renderObservedImpulses() {
-  const { byCategory, sceneByCategory, hookCounts, entries, impacts } = impulseBuffer.drain();
+// The appearance demo passes its synthetic source with observed = false so it
+// shares scene rendering but never reaches the timeline or impulse feed.
+function renderObservedImpulses(source = impulseBuffer, observed = true) {
+  const { byCategory, sceneByCategory, hookCounts, entries, impacts } = source.drain();
   if (document.hidden) return;
-  timeline.add(byCategory, performance.now());
+  if (observed) timeline.add(byCategory, performance.now());
   for (let i = 0; i < impacts.length; i++) {
     renderImpactBurst((Math.random() * N) | 0, impacts[i].category, impacts[i].durationMs);
   }
-  for (let i = 0; i < entries.length; i++) {
+  for (let i = 0; observed && i < entries.length; i++) {
     const { kind, toolName, eventType, count } = entries[i];
     impulseFeed.add(kind, toolName, eventType, count);
   }
@@ -1252,6 +1277,74 @@ function renderHookPulses(counts) {
       nodeHot[node] + VISUAL.activity.stepHeat * intensity);
   }
 }
+
+const NO_WAITING_IDS = Object.freeze([]);
+
+function observedWaitingIds() {
+  return (activityState.connection === 'connected' || activityState.connection === 'recovering') &&
+    activityState.sourceStatus !== 'unavailable' ? activityState.waitingSessionIds : NO_WAITING_IDS;
+}
+
+// Appearance demo: synthetic scene-only bursts. It bypasses the timeline,
+// impulse feed, statistics, activity state and HUD counters.
+const demoSource = { drain: () => demoFrame };
+const demoThinkingPulseClock = createThinkingPulseClock(VISUAL.running);
+const demoThinkingState = { connection: 'connected', sourceStatus: 'available', runningSessions: 0 };
+const demoMarkerIds = [];
+let demoBadgeVisible = false;
+
+function renderDemoActivity(dt) {
+  const wasActive = demoFrame.active;
+  const wasWaiting = demoFrame.waiting;
+  demoFrame = demoActivity.tick(dt, VISUAL);
+  if (demoFrame.active !== wasActive || demoFrame.waiting !== wasWaiting ||
+      (demoMarkersDirty && demoFrame.active)) {
+    demoMarkersDirty = false;
+    const observedIds = observedWaitingIds();
+    demoMarkerIds.length = 0;
+    for (let i = 0; Array.isArray(observedIds) && i < observedIds.length; i++) demoMarkerIds.push(observedIds[i]);
+    for (let i = 0; demoFrame.waiting && i < DEMO_WAITING_IDS.length; i++) demoMarkerIds.push(DEMO_WAITING_IDS[i]);
+    renderWaitingMarkers(demoMarkerIds);
+  }
+  // The badge stays until the last tagged demo pulse has finished.
+  const badgeVisible = demoFrame.active || demoPulses > 0;
+  if (badgeVisible !== demoBadgeVisible) {
+    demoBadgeVisible = badgeVisible;
+    demoBadge.hidden = !badgeVisible;
+  }
+  if (!demoFrame.active) return;
+  demoSpawn = 1;
+  renderObservedImpulses(demoSource, false);
+  demoThinkingState.runningSessions = demoFrame.runningSessions;
+  const pulses = demoThinkingPulseClock.tick(dt, demoThinkingState, document.hidden);
+  const hops = VISUAL.running.baseHops +
+    Math.min(VISUAL.running.maxExtraHops, Math.floor(Math.log2(demoFrame.runningSessions + 1)));
+  for (let i = 0; i < pulses; i++) {
+    const node = (Math.random() * N) | 0;
+    fireFrom(node, hops, 0, -1, VISUAL.running.spread);
+    nodeEnergy[node] = Math.min(VISUAL.nodes.energyCap, nodeEnergy[node] + VISUAL.running.nodeEnergy);
+  }
+  demoSpawn = 0;
+}
+
+const demoToggle = document.getElementById('visual-settings-demo');
+const demoBadge = document.getElementById('demo-badge');
+
+function setDemoRunning(running) {
+  if (running === demoActivity.isRunning()) return;
+  if (running) demoActivity.start();
+  else {
+    demoActivity.stop();
+    demoThinkingPulseClock.reset();
+  }
+  demoToggle.checked = running;
+  if (running) {
+    demoBadgeVisible = true;
+    demoBadge.hidden = false;
+  }
+}
+
+demoToggle.addEventListener('change', () => setDemoRunning(demoToggle.checked));
 
 function renderTimeline(now) {
   const view = timeline.read(now);
@@ -1304,6 +1397,7 @@ function renderTimeline(now) {
 // ---------- loop ----------
 const clock = new THREE.Clock();
 let smoothedLoad = 0;
+let smoothedObservedLoad = 0;
 let hudTimer = 0;
 let sessionTimer = 0;
 let timelineTimer = 0;
@@ -1313,6 +1407,8 @@ function frame() {
   const now = clock.elapsedTime;
 
   renderObservedImpulses();
+  renderDemoActivity(dt);
+  updateSceneFraming(dt);
   renderThinking(dt);
   renderSubagentTree(performance.now() / 1000);
   timelineTimer -= dt;
@@ -1340,8 +1436,8 @@ function frame() {
   const breathe = VISUAL.effects.latticeBreathing
     ? 1 + Math.sin(now * VISUAL.scene.breathSpeed) * VISUAL.scene.breathAmplitude : 1;
   brain.scale.setScalar(breathe);
-  const waitingGlow = (activityState.connection === 'connected' || activityState.connection === 'recovering') &&
-    activityState.sourceStatus !== 'unavailable' && activityState.waitingSessions > 0;
+  const waitingGlow = ((activityState.connection === 'connected' || activityState.connection === 'recovering') &&
+    activityState.sourceStatus !== 'unavailable' && activityState.waitingSessions > 0) || demoFrame.waiting;
   const waitBreath = VISUAL.waiting.colorMixMin +
     VISUAL.waiting.colorMixRange * (0.5 + 0.5 * Math.sin(now * VISUAL.waiting.breathSpeed));
   const showWaitingGlow = VISUAL.effects.waitingGlow && waitingGlow;
@@ -1359,10 +1455,14 @@ function frame() {
   floorMat.uniforms.uGlow.value = smoothedLoad * VISUAL.scene.floorGlow;
 
   hudTimer -= dt;
+  // HUD readouts exclude demo pulses; the scene load above includes them.
+  const observedLoad = Math.min(1, (activePulses - demoPulses) / VISUAL.scene.loadPulseScale +
+    activityState.activeSessions / VISUAL.scene.loadSessionScale);
+  smoothedObservedLoad += (observedLoad - smoothedObservedLoad) * Math.min(1, dt * VISUAL.scene.loadSmoothing);
   if (hudTimer <= 0) {
     hudTimer = 0.15;
-    $impulses.textContent = String(activePulses);
-    $load.textContent = Math.round(smoothedLoad * 100) + '%';
+    $impulses.textContent = String(activePulses - demoPulses);
+    $load.textContent = Math.round(smoothedObservedLoad * 100) + '%';
   }
   sessionTimer -= dt;
   if (sessionTimer <= 0) {
@@ -1382,7 +1482,41 @@ window.addEventListener('resize', () => {
   renderer.setSize(w, h);
   composer.setSize(w, h);
   bloom.setSize(w, h);
+  updateFramingTarget();
+  framingWidth = 0;
 });
+
+// While the Appearance panel covers the right of a wide window, shift the
+// projection so the brain stays centred in the uncovered area.
+const visualSettingsDialog = document.getElementById('visual-settings-dialog');
+const FRAMING_MIN_WIDTH = 900;
+const FRAMING_EASE = 6;
+let framingOpen = false;
+let framingTarget = 0;
+let framingOffset = 0;
+let framingApplied = 0;
+let framingWidth = 0;
+let framingHeight = 0;
+
+function updateFramingTarget() {
+  framingTarget = 0;
+  if (!framingOpen || window.innerWidth < FRAMING_MIN_WIDTH) return;
+  const panelWidth = visualSettingsDialog.getBoundingClientRect().width;
+  if (panelWidth > 0 && panelWidth < window.innerWidth * 0.75) framingTarget = panelWidth / 2;
+}
+
+function updateSceneFraming(dt) {
+  if (reducedMotion) framingOffset = framingTarget;
+  else framingOffset += (framingTarget - framingOffset) * Math.min(1, dt * FRAMING_EASE);
+  if (Math.abs(framingTarget - framingOffset) < 0.5) framingOffset = framingTarget;
+  const w = window.innerWidth, h = window.innerHeight;
+  if (framingOffset === framingApplied && w === framingWidth && h === framingHeight) return;
+  framingApplied = framingOffset;
+  framingWidth = w;
+  framingHeight = h;
+  if (framingOffset === 0) camera.clearViewOffset();
+  else camera.setViewOffset(w, h, framingOffset, 0, w, h);
+}
 
 function applyVisualSettings(candidate) {
   const errors = validateVisualSettings(candidate);
@@ -1565,10 +1699,23 @@ createVisualSettingsPanel({
     overrides: VISUAL_OVERRIDES,
     settings: VISUAL,
   },
-  applySettings: applyVisualSettings,
+  applySettings: (candidate) => {
+    try {
+      return applyVisualSettings(candidate);
+    } finally {
+      demoMarkersDirty = true;
+    }
+  },
   onOpenChange(open) {
     workspaceUI.setAppearanceOpen(open);
+    setDemoRunning(open && !reducedMotion);
+    framingOpen = open;
+    updateFramingTarget();
   },
+  // Hovering or focusing a setting narrows the demo to the matching effect;
+  // the hover sweep is motion, so reduced motion keeps only the focus.
+  previewMode: () => (!demoActivity.isRunning() ? 'off' : reducedMotion ? 'focus' : 'sweep'),
+  onPreviewFocus: (path) => demoActivity.setFocus(demoFocusForPath(path)),
 });
 
 createNavigationUI({ document });

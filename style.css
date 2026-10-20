@@ -338,6 +338,8 @@ html, body {
 }
 .visual-settings-toolbar label { display: flex; flex: 1 1 220px; align-items: center; gap: 7px; }
 .visual-settings-toolbar select { flex: 1; }
+.visual-settings-toolbar .visual-settings-demo-toggle { flex: 0 0 auto; color: #9fc3ff; }
+.visual-settings-demo-toggle input { accent-color: var(--blue); }
 .visual-settings-personal-presets label { color: #9fc3ff; }
 .visual-settings-personal-presets input { flex: 1 1 130px; }
 .visual-settings-dialog button:disabled { cursor: not-allowed; opacity: 0.55; }
@@ -463,6 +465,9 @@ html, body {
 .visual-group-reset { position: absolute; top: 8px; right: 0; max-width: 125px; white-space: normal; }
 .visual-range-hint { color: #ffcc8a; }
 .visual-field input[type="checkbox"] { justify-self: start; accent-color: var(--blue); }
+.visual-field[data-preview] { margin-left: -10px; padding-left: 8px; border-left: 2px solid var(--blue); background: rgba(110, 165, 255, 0.06); }
+.visual-field[data-preview]::before { content: attr(data-preview-label); grid-column: 1 / -1; color: var(--blue); font-size: 0.6875rem; letter-spacing: 0.08em; text-transform: uppercase; }
+.visual-field[data-preview="focus"] { border-left-style: dashed; }
 .visual-field input[type="color"] { width: 48px; height: 30px; padding: 2px; }
 .visual-tuple { display: flex; gap: 4px; }
 .visual-tuple input { width: 33.33%; min-width: 0; }
@@ -470,6 +475,7 @@ html, body {
 .visual-settings-search label, .visual-settings-search p { grid-column: 1 / -1; }
 .visual-settings-search input { width: 100%; }
 .visual-settings-search p { margin: 0; text-transform: none; letter-spacing: 0; }
+.visual-settings-dialog [hidden] { display: none !important; }
 .visual-file-actions { border-top: 1px solid rgba(110, 165, 255, 0.18); padding: 10px 0; }
 .visual-file-actions summary { padding: 4px 3px; cursor: pointer; color: #d8e7ff; font-weight: 600; }
 .visual-file-actions p { max-width: 70ch; margin: 8px 0; color: #b8d2fa; font-size: 0.8rem; line-height: 1.45; text-transform: none; letter-spacing: 0; }
@@ -522,6 +528,15 @@ html, body {
 }
 
 body.has-activity #status { color: #d8e7ff; }
+
+.demo-badge {
+  top: 84px;
+  margin: 0;
+  text-align: center;
+  font-size: 10px;
+  color: var(--orange);
+}
+.demo-badge[hidden] { display: none; }
 body.source-error #status, body.source-unknown #status { color: var(--orange); }
 
 .hud-impulses {
