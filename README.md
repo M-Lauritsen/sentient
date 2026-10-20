@@ -47,6 +47,9 @@ helper build; Library support must not be inferred from activity availability.
 Open <http://127.0.0.1:43187/>. Stop with Ctrl+C. If the port is already in use,
 the server fails closed; it does not choose another port or bind to the network.
 `npm test` runs the synthetic source, HTTP/SSE, client, and UI-contract tests.
+Library integration tests compile disposable helpers on supported x64 Windows
+with the existing .NET Framework compiler; they do not require or replace the
+application's `native/bin/LibraryHelper.exe`.
 
 Three.js 0.160.0 is pinned and served locally, including its license. The page
 does not load a CDN or send activity outside this machine.
@@ -197,14 +200,20 @@ plugins and external integrations remain intentionally deferred.
 
 ## Editing visual settings
 
-Open **Appearance** from the application menu to preview the `balanced`, `subtle` or
-`intense` preset and edit any in-scope setting. The nonmodal drawer keeps the
-scene visible; closing it retains the current preview.
+Open **Appearance** from the application menu to preview the `balanced`,
+`subtle`, `intense`, `aurora`, `ember` or `monochrome` preset and edit any
+in-scope setting. The new presets offer teal/cyan and warm red/orange themes,
+plus a muted grayscale base scene that keeps the existing activity-category
+colors recognizable. Each also has distinct glow and atmosphere effects. The
+nonmodal drawer keeps the scene visible; closing it retains the current preview.
 The header and preset controls scroll with the settings, leaving more room for
 controls. Save as new, Save changes, Export settings and Reset preview remain
 available in the footer.
 Quick controls cover common adjustments, while searchable Advanced sections expose all 172
 configuration paths with friendly labels, help and exact numeric inputs.
+Searching shows only matching Advanced controls and hides empty sections and
+duplicate Quick controls. Clear the search to restore all controls and the
+previously expanded sections.
 Each setting includes an always-visible description of what it changes in the
 scene. Quick and Advanced use full-width rows with compact exact-value inputs
 and share the same descriptions; no hover or tooltip is needed to understand a
@@ -227,7 +236,28 @@ later, save edits, or delete them. Personal preset definitions are stored only
 in this browser's local storage for this site; they are not written to
 `visual-settings.mjs`, shared with other browsers, or sent to the server.
 Clearing this site's browser data removes them.
+Built-in presets override file values only for settings they define. Export
+saves the exact current appearance as a `balanced` snapshot; the selected
+preset name itself is not retained in the exported file.
 
+While Appearance is open, **Demo activity** plays synthetic scene activity so
+edits are visible without live sessions: pulses for every activity category,
+hook pulses, completion cascades, duration impacts, a running stream and a
+periodic waiting glow with markers. It starts each time the panel opens (unless
+the system requests reduced motion), can be switched off in the panel, and
+always stops when the panel closes. A **DEMO** badge is shown while it runs.
+Demo pulses only drive the 3D scene; they are excluded from the impulse feed,
+timeline, statistics, session counts and the HUD impulse and load readouts.
+
+While the demo runs, hovering or keyboard-focusing a setting narrows the demo
+to the effect it controls (for example hook settings show only hook pulses and
+waiting settings hold the waiting glow). Resting the pointer on a numeric or
+on/off setting also sweeps it gently through its suggested range in the scene,
+marked **Previewing in scene**; the field, draft and saved values never change,
+and clicking, typing or leaving the row stops the sweep and restores the scene.
+Colours, choices, node count, random sizes and camera limits are not swept.
+Under reduced motion only the focus applies. On wide windows the scene
+re-centres in the area left of the open panel.
 Use **Reload from file** to read the current repository-authored
 `visual-settings.mjs` without refreshing the page. Automatic reload is optional,
 off by default, and checks every five seconds only while the page is visible.

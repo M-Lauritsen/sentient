@@ -10,8 +10,12 @@ import {
   validateVisualSettings,
   visualConfigurationSignature,
 } from './visual-config.mjs';
+import { applyPreviewSweep, demoFocusForPath, sweepablePath } from './visual-settings-preview.mjs';
 
 const RELOAD_INTERVAL_MS = 5000;
+// Applying settings re-validates and diffs the whole configuration, so the
+// hover sweep updates the scene at ~20 Hz rather than every frame.
+const PREVIEW_SWEEP_INTERVAL_MS = 50;
 const PERSONAL_PRESETS_STORAGE_KEY = 'sentient-os.visual-presets.v1';
 const PERSONAL_PRESET_PREFIX = 'user:';
 const PERSONAL_PRESET_NAME_MAX_LENGTH = 48;
@@ -189,6 +193,10 @@ export function createVisualSettingsPanel({
   cancelFrame = (handle) => cancelAnimationFrame(handle),
   scheduleTimer = setTimeout,
   cancelTimer = clearTimeout,
+  // 'off' | 'focus' (demo focus only) | 'sweep' (demo focus plus hover sweep).
+  previewMode = () => 'off',
+  onPreviewFocus = () => {},
+  now = () => performance.now(),
 }) {
   let fileConfiguration = {
     defaults: clone(initialConfiguration.defaults),
@@ -204,6 +212,8 @@ export function createVisualSettingsPanel({
   let fieldErrors = new Map();
   let invalidDraftPaths = new Set();
   let previewSettings = clone(initialConfiguration.settings);
+  // What the scene currently shows (excludes staged, uncommitted drafts such as node count).
+  let sceneSettings = clone(initialConfiguration.settings);
   let presetStorage = null;
   let personalPresets = [];
   let presetStorageError = null;
@@ -234,6 +244,8 @@ export function createVisualSettingsPanel({
   ];
   const sectionHosts = new Map();
   const sectionDetails = new Map();
+  const sectionRows = new Map();
+  let searchSectionState = null;
   fields.append(createElement(document, 'p', 'visual-settings-guidance',
     'Sliders show suggested ranges, not limits. Use the exact value inputs for other valid values. Open Details for constraints, configuration paths and individual resets.'));
   for (const [key, label] of sections) {
@@ -256,6 +268,7 @@ export function createVisualSettingsPanel({
     fields.append(sectionRow);
     sectionHosts.set(key, host);
     sectionDetails.set(key, details);
+    sectionRows.set(key, sectionRow);
   }
   const quickHosts = new Map();
   if (quickFields) {
@@ -449,9 +462,17 @@ export function createVisualSettingsPanel({
     for (const projection of advancedProjections) {
       projection.wrapper.hidden = Boolean(query) && !matches.includes(projection);
     }
-    if (query) {
-      for (const [section, details] of sectionDetails) details.open = matchedSections.has(section);
+    if (query && searchSectionState === null) {
+      searchSectionState = new Map([...sectionDetails].map(([section, details]) =>
+        [section, details.open]));
     }
+    for (const [section, details] of sectionDetails) {
+      sectionRows.get(section).hidden = Boolean(query) && !matchedSections.has(section);
+      if (query) details.open = matchedSections.has(section);
+      else if (searchSectionState) details.open = searchSectionState.get(section);
+    }
+    if (!query) searchSectionState = null;
+    if (quickFields) quickFields.hidden = Boolean(query);
     clearSearchButton.hidden = !query;
     searchStatus.textContent = query
       ? matches.length
@@ -509,6 +530,7 @@ export function createVisualSettingsPanel({
 
   function applyLiveSettings(settings) {
     if (applySettings(clone(settings)) === false) throw new Error('The scene rejected the visual update.');
+    sceneSettings = clone(settings);
   }
 
   function clearErrors() {
@@ -848,6 +870,141 @@ export function createVisualSettingsPanel({
     }, RELOAD_INTERVAL_MS);
   }
 
+  // Hover/focus preview: report which setting is being tuned so the scene can
+  // focus its demo, and while the pointer rests on a cheap setting, sweep it in
+  // the scene only. Staged, saved and displayed values are never touched.
+  let hoverRow = null;
+  let hoverPath = null;
+  let focusRow = null;
+  let focusPath = null;
+  let pausedPath = null;
+  let reportedPreviewPath = null;
+  let markedRow = null;
+  let sweep = null;
+  let sweepFrame = 0;
+
+  function rowFrom(target) {
+    return target?.closest?.('[data-setting-path]') ?? null;
+  }
+
+  function markRow(row, kind) {
+    if (markedRow) {
+      markedRow.removeAttribute('data-preview');
+      markedRow.removeAttribute('data-preview-label');
+      markedRow = null;
+    }
+    if (!row || !kind) return;
+    row.setAttribute('data-preview', kind);
+    row.setAttribute('data-preview-label',
+      kind === 'sweep' ? 'Previewing in scene' : 'Demo focused on this effect');
+    markedRow = row;
+  }
+
+  function stopSweep() {
+    if (sweepFrame) {
+      cancelFrame(sweepFrame);
+      sweepFrame = 0;
+    }
+    const restore = sweep?.applied;
+    sweep = null;
+    if (!restore) return;
+    try {
+      applySettings(clone(sceneSettings));
+    } catch {
+      // The scene keeps its last valid state.
+    }
+  }
+
+  function runSweep() {
+    sweepFrame = 0;
+    if (!sweep) return;
+    if (!dialog.open || previewMode() !== 'sweep') {
+      refreshPreview();
+      return;
+    }
+    const elapsed = now() - sweep.startedAt;
+    if (elapsed - sweep.appliedAt >= PREVIEW_SWEEP_INTERVAL_MS) {
+      sweep.appliedAt = elapsed;
+      const candidate = applyPreviewSweep(clone(sceneSettings), sweep.definition, sweep.presentation, elapsed);
+      if (!validateVisualSettings(candidate).length) {
+        try {
+          if (applySettings(candidate) !== false) sweep.applied = true;
+        } catch {
+          sweep.applied = true;
+          stopSweep();
+          markRow(null);
+          return;
+        }
+      }
+    }
+    sweepFrame = requestFrame(runSweep);
+  }
+
+  function refreshPreview() {
+    const mode = dialog.open ? previewMode() : 'off';
+    const path = mode === 'off' ? null : hoverPath ?? focusPath;
+    if (path !== reportedPreviewPath) {
+      reportedPreviewPath = path;
+      onPreviewFocus(path);
+    }
+    const row = path === null ? null : hoverPath !== null ? hoverRow : focusRow;
+    const definition = path === null ? undefined : controls.get(path)?.definition;
+    const canSweep = mode === 'sweep' && path !== null && path === hoverPath && path !== pausedPath &&
+      sweepablePath(definition, VISUAL_SETTING_PRESENTATION[path]);
+    if (!canSweep || sweep?.row !== row) stopSweep();
+    if (canSweep && !sweep) {
+      sweep = {
+        row,
+        definition,
+        presentation: VISUAL_SETTING_PRESENTATION[path],
+        startedAt: now(),
+        appliedAt: 0,
+        applied: false,
+      };
+      sweepFrame = requestFrame(runSweep);
+    }
+    markRow(row, canSweep ? 'sweep' : path !== null && demoFocusForPath(path) ? 'focus' : null);
+  }
+
+  function pausePreview() {
+    // Clicking or typing anywhere pauses the hovered row's sweep until the pointer moves to another row.
+    if (hoverPath === null || hoverPath === pausedPath) return;
+    pausedPath = hoverPath;
+    refreshPreview();
+  }
+
+  for (const host of [fields, quickFields]) {
+    if (!host) continue;
+    host.addEventListener('pointerover', (event) => {
+      const row = rowFrom(event.target);
+      if (row === hoverRow) return;
+      const path = row?.getAttribute('data-setting-path') ?? null;
+      if (path !== hoverPath) pausedPath = null;
+      hoverRow = row;
+      hoverPath = path;
+      refreshPreview();
+    });
+    host.addEventListener('pointerleave', () => {
+      hoverRow = null;
+      hoverPath = null;
+      pausedPath = null;
+      refreshPreview();
+    });
+    host.addEventListener('pointerdown', pausePreview);
+    host.addEventListener('input', pausePreview);
+    host.addEventListener('focusin', (event) => {
+      focusRow = rowFrom(event.target);
+      focusPath = focusRow?.getAttribute('data-setting-path') ?? null;
+      refreshPreview();
+    });
+    host.addEventListener('focusout', (event) => {
+      if (rowFrom(event.relatedTarget)) return;
+      focusRow = null;
+      focusPath = null;
+      refreshPreview();
+    });
+  }
+
   opener.addEventListener('click', () => {
     if (!dialog.open) {
       dialog.show();
@@ -862,6 +1019,12 @@ export function createVisualSettingsPanel({
     dialog.close();
   });
   dialog.addEventListener('close', () => {
+    hoverRow = null;
+    hoverPath = null;
+    focusRow = null;
+    focusPath = null;
+    pausedPath = null;
+    refreshPreview();
     onOpenChange(false);
     opener.setAttribute('aria-expanded', 'false');
     opener.focus({ preventScroll: true });
@@ -988,13 +1151,10 @@ export function createVisualSettingsPanel({
       setStatus('Resolve pending or invalid edits before exporting.');
       return;
     }
-    const isPersonalPreset = personalPresetNameFromKey(activePreset) !== null;
-    const preset = isPersonalPreset ? 'balanced' : activePreset;
-    const overrides = isPersonalPreset
-      ? clone(previewSettings)
-      : mergeVisualOverrides(fileConfiguration.overrides, previewOverrides);
     const source = createVisualSettingsModuleSource({
-      defaults: fileConfiguration.defaults, preset, overrides,
+      defaults: fileConfiguration.defaults,
+      preset: 'balanced',
+      overrides: clone(previewSettings),
     });
     const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
     const link = createElement(document, 'a');

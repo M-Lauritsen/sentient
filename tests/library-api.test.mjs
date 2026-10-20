@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSentientServer } from '../server.mjs';
 import { createLibrarySource } from '../copilot/library-source.mjs';
+import { buildLibraryHelper } from '../copilot/library-native.mjs';
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'sentient-library-api-'));
@@ -175,12 +176,22 @@ test('slow library request bodies time out with bounded JSON before source const
 });
 
 test('loopback API lists, reads, registers and rejects hostile requests using synthetic roots', async (t) => {
-  const directory = await fixture(t);
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'sentient-library-api-'));
+  let app;
+  t.after(async () => {
+    try {
+      await app?.stop();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
   const activityRoot = path.join(directory, 'activity');
   const libraryRoot = path.join(directory, 'default');
   const extraRoot = path.join(directory, 'extra');
   const rootExtra = path.join(directory, 'root-extra');
   const settingsPath = path.join(directory, 'private', 'library');
+  const executable = path.join(directory, 'LibraryHelper.exe');
+  await buildLibraryHelper(executable);
   await mkdir(activityRoot);
   await mkdir(path.join(libraryRoot, 'agents'), { recursive: true });
   await mkdir(extraRoot);
@@ -189,17 +200,16 @@ test('loopback API lists, reads, registers and rejects hostile requests using sy
   await writeFile(path.join(extraRoot, 'Custom.md'), '# Extra Instructions\n');
   await writeFile(path.join(rootExtra, 'agents', 'Root.md'), '# Additional Root Agent\n');
   let constructions = 0;
-  const app = createSentientServer({
+  app = createSentientServer({
     activityRoot,
     libraryRoot,
     librarySettingsPath: settingsPath,
     port: 0,
     librarySourceFactory: (options) => {
       constructions++;
-      return createLibrarySource(options);
+      return createLibrarySource({ ...options, executable });
     },
   });
-  t.after(() => app.stop());
   const { port } = await app.start();
   const origin = `http://127.0.0.1:${port}`;
   const bootstrap = await fetch(`${origin}/api/library/bootstrap`, {

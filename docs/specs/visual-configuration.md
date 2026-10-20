@@ -25,7 +25,8 @@ The following behavior is present in the current workspace:
 - `visual-config.mjs` owns setting metadata, validation, preset resolution and
   startup error handling. Invalid startup configuration prevents scene startup.
 - The HUD's Visual settings dialog previews all in-scope settings and the
-  `balanced`, `subtle` and `intense` presets without reloading the document.
+  `balanced`, `subtle`, `intense`, `aurora`, `ember` and `monochrome` presets
+  without reloading the document.
 - Export downloads a complete, loadable `visual-settings.mjs`; it does not write
   the repository file. Manual reload and opt-in five-second polling use a
   short-lived same-origin module worker.
@@ -84,7 +85,7 @@ and README sections "Editing visual settings" and "Privacy and limitations".
 | D1 | Saved source of truth | Keep `visual-settings.mjs` authoritative. UI changes are temporary until explicitly exported and manually saved. No localStorage or automatic file writes. |
 | D2 | Automatic file hot reload | Automatic reload is opt-in and off by default; it checks every five seconds while the page is visible. Always provide manual "Reload from file". |
 | D3 | Preview coverage | All in-scope visual settings can be edited. Settings requiring regeneration rebuild only their affected visual resources, not the full scene or activity state. |
-| D4 | Presets | Ship `balanced`, `subtle` and `intense`; `balanced` matches current defaults. Exact `subtle` and `intense` values are listed in section 7. |
+| D4 | Presets | Ship `balanced`, `subtle`, `intense`, `aurora`, `ember` and `monochrome`; `balanced` matches the maintained file configuration. |
 | D5 | File reload versus unsaved preview | Never silently overwrite a dirty preview. Offer explicit "Use file" or "Keep preview" actions. Keeping preview suppresses repeated prompts/application for that file version; a later file change prompts again. |
 | D6 | Invalid startup configuration | Show an actionable configuration error and do not start the 3D scene with a silent substitute. A failed later update preserves the last valid configuration. |
 
@@ -98,14 +99,16 @@ interval and ten-second per-reload timeout are implementation details.
 Proposed resolution order, from lowest to highest precedence:
 
 1. Maintained complete defaults.
-2. Selected preset's explicit overrides.
-3. Explicit file overrides.
+2. Explicit file overrides.
+3. Selected preset's explicit overrides.
 4. Temporary preview overrides.
 
-Preset definitions must not duplicate the full defaults. Objects merge only
-through known setting paths; arrays replace whole values rather than merging
-individual indices. Unknown keys are rejected, including keys that could alter
-object prototypes. Resolution must not mutate defaults or preset definitions.
+Presets override file values only for paths they define; all other file tuning
+remains in effect. Preset definitions must not duplicate the full defaults.
+Objects merge only through known setting paths; arrays replace whole values
+rather than merging individual indices. Unknown keys are rejected, including
+keys that could alter object prototypes. Resolution must not mutate defaults or
+preset definitions.
 
 The implementation should maintain one setting definition per configurable
 path for type, constraints, label, unit and suitable editor. Reuse that metadata
@@ -174,14 +177,18 @@ the running stream remains supported.
 
 **Dependency:** Slice 1's resolution and validation.
 
-Provide `balanced`, `subtle` and `intense` presets using the existing setting
-groups and effect switches. Preset names describe visual density/brightness,
-not activity volume, session health or success.
+Provide `balanced`, `subtle`, `intense`, `aurora`, `ember` and `monochrome`
+presets using the existing setting groups and effect switches. Preset names
+describe appearance, not activity volume, session health or success.
 
 - `balanced`: Current defaults, with no preset overrides.
 - `subtle`: Lower decorative brightness/motion and running-stream density.
 - `intense`: Higher visible activity emphasis without increasing fixed pool
   capacities, creating fabricated activity or adding global flashes/shake.
+- `aurora`: Teal/cyan colors with a dark green-blue backdrop and brighter glow.
+- `ember`: Warm red/orange colors with stronger glow and no floor grid.
+- `monochrome`: Muted grayscale base scene, reduced glow, and no dust or floor;
+  activity-category colors remain visible.
 
 Approved `subtle` overrides: `running.pulsesPerSecondPerSession=2`,
 `running.baseHops=1`, `nodes.idleBrightness=0.25`,
@@ -207,8 +214,9 @@ durations, colors and probability fields have different meanings.
 - **S2-AC1:** `balanced` resolves to the same effective settings as slice 1's
   initial configuration.
 - **S2-AC2:** Every preset resolves to a valid complete configuration.
-- **S2-AC3:** File overrides win over preset values; temporary overrides win over
-  file values. Array replacement and unknown-preset rejection are deterministic.
+- **S2-AC3:** Preset values win over file values on paths they define; temporary
+  overrides win over both. Array replacement and unknown-preset rejection are
+  deterministic.
 - **S2-AC4:** Switching presets does not mutate preset/default definitions or
   alter any activity state or category palette.
 - **S2-AC5:** `subtle` and `intense` are visibly distinguishable using synthetic
@@ -254,8 +262,10 @@ re-enabled.
 ### Export
 
 Export downloads a loadable `visual-settings.mjs` containing the complete
-defaults, selected preset and merged file/preview overrides. It uses the same
-resolver and is tested by importing the downloaded module format.
+defaults and current effective appearance as overrides on the `balanced`
+preset. This snapshot preserves the exact current preview after reload; it
+does not preserve the selected preset's label. It uses the same resolver and is
+tested by importing the downloaded module format.
 
 The export must reproduce the active valid appearance after manual save and
 refresh, without depending on browser memory. Identify that export/download
