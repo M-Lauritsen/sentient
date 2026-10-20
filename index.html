@@ -31,62 +31,57 @@
 			class="scanlines"
 			aria-hidden="true"></div>
 
-		<header class="hud hud-top">
-			<span>
-				<i class="dot"></i>
-				SOURCE ·
-				<b
-					id="status"
-					tabindex="-1">
-					CONNECTING
-				</b>
-			</span>
-			<span>
-				JOURNALS
-				<b id="journals">0</b>
-			</span>
-			<span>
-				ACTIVE SESSIONS
-				<b id="sessions">0</b>
-			</span>
-			<span>
-				RUNNING
-				<b id="running">0</b>
-			</span>
-			<span>
-				WAITING
-				<b id="waiting">0</b>
-			</span>
-			<span>
-				UNVERIFIED
-				<b id="unknown">0</b>
-			</span>
-			<span>
-				IMPULSES
-				<b id="impulses">0</b>
-			</span>
-			<span>
-				LOAD
-				<b id="load">0%</b>
-			</span>
+		<div class="hud-top-shell" id="source-status">
 			<button
-				id="library-open"
-				class="visual-settings-open library-open"
+				id="source-status-toggle"
+				class="source-status-toggle"
 				type="button"
-				aria-haspopup="dialog"
-				aria-controls="library-dialog"
-				aria-expanded="false">
-				Library
+				aria-label="Show source status"
+				aria-controls="source-status-bar"
+				aria-expanded="false"
+				title="Hover or focus to show source status">
+				<span class="status-reveal-icon" aria-hidden="true"></span>
 			</button>
-			<button
-				id="visual-settings-open"
-				class="visual-settings-open"
-				type="button"
-				aria-haspopup="dialog"
-				aria-controls="visual-settings-dialog">
-				VISUAL SETTINGS
-			</button>
-		</header>
+			<header class="hud hud-top" id="source-status-bar">
+				<span>
+					<i class="dot"></i>
+					SOURCE ·
+					<b
+						id="status"
+						tabindex="-1">
+						CONNECTING
+					</b>
+				</span>
+				<span>
+					JOURNALS
+					<b id="journals">0</b>
+				</span>
+				<span>
+					ACTIVE SESSIONS
+					<b id="sessions">0</b>
+				</span>
+				<span>
+					RUNNING
+					<b id="running">0</b>
+				</span>
+				<span>
+					WAITING
+					<b id="waiting">0</b>
+				</span>
+				<span>
+					UNVERIFIED
+					<b id="unknown">0</b>
+				</span>
+				<span>
+					IMPULSES
+					<b id="impulses">0</b>
+				</span>
+				<span>
+					LOAD
+					<b id="load">0%</b>
+				</span>
+			</header>
+		</div>
 
 		<aside
 			class="hud hud-coverage"
@@ -103,159 +98,158 @@
 			Delegated work status unavailable until connected to local activity.
 		</p>
 
-		<aside
-			class="hud hud-impulses"
-			aria-label="Recent impulses">
-			<h2>Impulse stream</h2>
-			<details
-				id="activity-legend"
-				class="activity-legend">
-				<summary>Activity legend</summary>
-				<ul class="activity-legend-list">
-					<li
-						class="legend-row impulse-cat-completion"
-						data-category="completion">
-						<span
-							class="legend-swatch"
-							data-category="completion"
-							data-glyph="✓">
-							✓
-						</span>
-						<span class="legend-name">completion</span>
-					</li>
-					<li
-						class="legend-row impulse-cat-error"
-						data-category="error">
-						<span
-							class="legend-swatch"
-							data-category="error"
-							data-glyph="!">
-							!
-						</span>
-						<span class="legend-name">error</span>
-					</li>
-					<li
-						class="legend-row impulse-cat-waiting"
-						data-category="waiting">
-						<span
-							class="legend-swatch"
-							data-category="waiting"
-							data-glyph="…">
-							…
-						</span>
-						<span class="legend-name">waiting</span>
-					</li>
-					<li
-						class="legend-row impulse-cat-subagent"
-						data-category="subagent">
-						<span
-							class="legend-swatch"
-							data-category="subagent"
-							data-glyph="⑂">
-							⑂
-						</span>
-						<span class="legend-name">subagent</span>
-					</li>
-					<li
-						class="legend-row impulse-cat-shell"
-						data-category="shell">
-						<span
-							class="legend-swatch"
-							data-category="shell"
-							data-glyph="$">
-							$
-						</span>
-						<span class="legend-name">shell</span>
-					</li>
-					<li
-						class="legend-row impulse-cat-edit"
-						data-category="edit">
-						<span
-							class="legend-swatch"
-							data-category="edit"
-							data-glyph="✎">
-							✎
-						</span>
-						<span class="legend-name">edit</span>
-					</li>
-					<li
-						class="legend-row impulse-cat-read"
-						data-category="read">
-						<span
-							class="legend-swatch"
-							data-category="read"
-							data-glyph="◇">
-							◇
-						</span>
-						<span class="legend-name">read</span>
-					</li>
-					<li
-						class="legend-row impulse-cat-tool"
-						data-category="tool">
-						<span
-							class="legend-swatch"
-							data-category="tool"
-							data-glyph="›">
-							›
-						</span>
-						<span class="legend-name">tool</span>
-					</li>
-					<li
-						class="legend-row impulse-cat-reasoning"
-						data-category="reasoning">
-						<span
-							class="legend-swatch"
-							data-category="reasoning"
-							data-glyph="~">
-							~
-						</span>
-						<span class="legend-name">reasoning</span>
-					</li>
-					<li
-						class="legend-row impulse-cat-lifecycle"
-						data-category="lifecycle">
-						<span
-							class="legend-swatch"
-							data-category="lifecycle"
-							data-glyph="·">
-							·
-						</span>
-						<span class="legend-name">lifecycle</span>
-					</li>
-					<li
-						class="legend-row impulse-cat-unknown"
-						data-category="unknown">
-						<span
-							class="legend-swatch"
-							data-category="unknown"
-							data-glyph="?">
-							?
-						</span>
-						<span class="legend-name">unknown</span>
-					</li>
-				</ul>
-			</details>
-			<ol
-				id="impulse-feed"
-				aria-live="off"></ol>
-		</aside>
+		<main
+			id="workspace"
+			class="workspace"
+			aria-label="Docked workspace">
+			<section
+				class="workspace-dock workspace-dock-left"
+				data-workspace-dock="left"
+				aria-label="Left dock"></section>
+			<section
+				class="workspace-dock workspace-dock-right"
+				data-workspace-dock="right"
+				aria-label="Right dock"></section>
+			<section
+				class="workspace-dock workspace-dock-bottom-left"
+				data-workspace-dock="bottom-left"
+				aria-label="Lower-left dock"></section>
+			<section
+				class="workspace-dock workspace-dock-bottom"
+				data-workspace-dock="bottom"
+				aria-label="Bottom dock"></section>
+			<div
+				class="workspace-assets"
+				data-workspace-assets
+				hidden>
+				<aside
+					class="hud-timeline"
+					aria-label="Recent aggregate activity">
+					<div id="timeline-content">
+						<p id="timeline-description">last 10 min · observed live only · aggregate · no session attribution</p>
+						<canvas
+							id="timeline"
+							width="960"
+							height="48"
+							role="img"
+							aria-label="Stacked category activity counts; right edge is now"
+							aria-describedby="timeline-description timeline-state">
+							Recent activity by category. Hatched buckets indicate unknown coverage, not zero activity.
+						</canvas>
+						<p
+							id="timeline-state"
+							role="status"
+							aria-live="polite">
+							Loading · awaiting live coverage
+						</p>
+					</div>
+					<button
+						id="timeline-open"
+						class="timeline-open"
+						type="button"
+						aria-label="Enlarge recent activity"
+						aria-haspopup="dialog"
+						aria-controls="timeline-dialog"
+						aria-expanded="false"
+						title="Enlarge recent activity"></button>
+				</aside>
+			</div>
+		</main>
 
-		<aside
-			class="hud hud-sessions"
-			id="session-hud"
-			aria-label="Active sessions"
-			hidden>
-			<h2>Active sessions</h2>
-			<p
-				id="session-state"
-				aria-live="polite"></p>
-			<ol
-				id="session-list"
-				tabindex="0"
-				aria-label="Active session statuses and elapsed time"
-				aria-live="off"></ol>
-			<p id="session-more"></p>
-		</aside>
+		<nav
+			id="application-navigation"
+			class="application-navigation"
+			aria-label="Application">
+			<button
+				id="application-menu-toggle"
+				class="application-menu-toggle"
+				type="button"
+				aria-haspopup="menu"
+				aria-controls="application-menu"
+				aria-expanded="false"
+				aria-label="Application menu"
+				title="Application menu">
+				<span class="application-menu-icon" aria-hidden="true"></span>
+			</button>
+			<ul
+				id="application-menu"
+				class="application-menu"
+				role="menu"
+				aria-labelledby="application-menu-toggle"
+				hidden>
+				<li role="none">
+					<button
+						id="library-open"
+						class="application-menu-item library-open"
+						type="button"
+						role="menuitem"
+						aria-haspopup="dialog"
+						aria-controls="library-dialog"
+						aria-expanded="false">
+						Library
+					</button>
+				</li>
+				<li role="none">
+					<button
+						id="visual-settings-open"
+						class="application-menu-item"
+						type="button"
+						role="menuitem"
+						aria-haspopup="dialog"
+						aria-controls="visual-settings-dialog"
+						aria-expanded="false">
+						Appearance
+					</button>
+				</li>
+				<li role="none">
+					<button
+						id="workspace-open"
+						class="application-menu-item workspace-open"
+						type="button"
+						role="menuitem"
+						aria-controls="workspace workspace-dialog"
+						aria-expanded="false">
+						Workspace
+					</button>
+				</li>
+				<li role="none">
+					<button
+						id="help-open"
+						class="application-menu-item"
+						type="button"
+						role="menuitem"
+						aria-haspopup="dialog"
+						aria-controls="help-dialog">
+						Help
+					</button>
+				</li>
+			</ul>
+		</nav>
+
+		<dialog
+			id="help-dialog"
+			class="help-dialog"
+			aria-labelledby="help-title"
+			aria-describedby="help-description">
+			<header class="stats-dialog-header">
+				<h2 id="help-title">SENTIENT OS help</h2>
+				<button
+					id="help-close"
+					class="stats-close"
+					type="button"
+					aria-label="Close help">
+					&times;
+				</button>
+			</header>
+			<div class="help-content" id="help-description">
+				<p>Use the scene to inspect observed local Copilot activity. Drag to orbit and scroll to zoom.</p>
+				<p>Hover or focus the top chevron to reveal source status; tap it to keep the bar open. Coverage remains visible. Unknown or partial coverage is not the same as no activity.</p>
+				<p>Workspace arranges the activity feed, sessions, timeline and other modules. Changes affect presentation, not collection.</p>
+				<p>Library is a read-only view of selected Markdown files; it does not show or change active Copilot configuration.</p>
+				<p>Appearance previews visual settings for this page. Export is required to save them to the repository file.</p>
+				<p>Activity stays local to this machine. Prompts, paths, session titles and raw session identifiers are not shown in the interface.</p>
+			</div>
+		</dialog>
 
 		<dialog
 			id="session-stats-dialog"
@@ -274,38 +268,6 @@
 			</header>
 			<div id="session-stats-content"></div>
 		</dialog>
-
-		<aside
-			class="hud hud-timeline"
-			aria-label="Recent aggregate activity">
-			<div id="timeline-content">
-				<p id="timeline-description">last 10 min · observed live only · aggregate · no session attribution</p>
-				<canvas
-					id="timeline"
-					width="960"
-					height="48"
-					role="img"
-					aria-label="Stacked category activity counts; right edge is now"
-					aria-describedby="timeline-description timeline-state">
-					Recent activity by category. Hatched buckets indicate unknown coverage, not zero activity.
-				</canvas>
-				<p
-					id="timeline-state"
-					role="status"
-					aria-live="polite">
-					Loading · awaiting live coverage
-				</p>
-			</div>
-			<button
-				id="timeline-open"
-				class="timeline-open"
-				type="button"
-				aria-label="Enlarge recent activity"
-				aria-haspopup="dialog"
-				aria-controls="timeline-dialog"
-				aria-expanded="false"
-				title="Enlarge recent activity"></button>
-		</aside>
 
 		<dialog
 			id="timeline-dialog"
@@ -329,58 +291,37 @@
 			id="visual-settings-dialog"
 			class="visual-settings-dialog"
 			aria-labelledby="visual-settings-title">
-			<header class="stats-dialog-header">
-				<h2 id="visual-settings-title">Visual settings</h2>
-				<button
-					id="visual-settings-close"
-					class="stats-close"
-					type="button"
-					aria-label="Close visual settings"
-					autofocus>
-					&times;
-				</button>
-			</header>
 			<form id="visual-settings-form">
-				<div class="visual-settings-toolbar">
+				<div class="visual-settings-scroll">
+				<header class="stats-dialog-header">
+					<h2 id="visual-settings-title" tabindex="-1">Appearance</h2>
+					<button
+						id="visual-settings-close"
+						class="stats-close"
+						type="button"
+						aria-label="Return to scene"
+						autofocus>
+						Return to scene
+					</button>
+				</header>
+				<div class="visual-settings-toolbar" aria-label="Appearance presets">
 					<label>
 						Preset
 						<select
 							id="visual-settings-preset"
-							aria-label="Visual preset"></select>
-					</label>
-					<button
-						id="visual-settings-reload"
-						type="button">
-						Reload from file
-					</button>
-					<label class="visual-auto-reload">
-						<input
-							id="visual-settings-auto-reload"
-							type="checkbox" />
-						Auto reload every 5 seconds
+							aria-label="Appearance preset"></select>
 					</label>
 				</div>
 				<div
 					class="visual-settings-personal-presets"
 					role="group"
-					aria-label="Personal visual presets">
+					aria-label="Personal appearance presets">
 					<label for="visual-settings-preset-name">Preset name</label>
 					<input
 						id="visual-settings-preset-name"
 						type="text"
 						maxlength="48"
 						autocomplete="off" />
-					<button
-						id="visual-settings-preset-save-as"
-						type="button">
-						Save as new
-					</button>
-					<button
-						id="visual-settings-preset-save"
-						type="button"
-						disabled>
-						Save changes
-					</button>
 					<button
 						id="visual-settings-preset-delete"
 						type="button"
@@ -391,12 +332,12 @@
 				<p
 					id="visual-settings-help"
 					class="visual-settings-help">
-					Valid edits preview immediately. Personal presets are stored in this browser; export downloads a file for repository settings.
+					Quick controls are shown first. Advanced settings keep their original paths and exact numeric values. Valid changes preview live; personal presets are stored in this browser only.
 				</p>
 				<p
 					id="visual-settings-status"
 					role="status"
-					aria-live="polite"></p>
+					aria-live="polite">Preview matches the loaded file.</p>
 				<p
 					id="visual-settings-errors"
 					class="visual-settings-errors"
@@ -420,72 +361,54 @@
 						Keep preview
 					</button>
 				</div>
+				<section
+					id="visual-settings-quick"
+					class="visual-settings-quick"
+					aria-label="Quick appearance controls">
+					<h3>Quick controls</h3>
+				</section>
+				<div class="visual-settings-search">
+					<label for="visual-settings-search">Search advanced settings</label>
+					<input
+						id="visual-settings-search"
+						type="search"
+						autocomplete="off"
+						aria-describedby="visual-settings-search-status" />
+					<button
+						id="visual-settings-search-clear"
+						type="button"
+						hidden>
+						Clear search
+					</button>
+					<p
+						id="visual-settings-search-status"
+						role="status"
+						aria-live="polite"></p>
+				</div>
 				<div
 					id="visual-settings-fields"
-					class="visual-settings-fields">
-					<details open>
-						<summary>Camera</summary>
-						<div data-visual-group="camera"></div>
-					</details>
-					<details>
-						<summary>Nodes</summary>
-						<div data-visual-group="nodes"></div>
-					</details>
-					<details>
-						<summary>Pulses</summary>
-						<div data-visual-group="pulses"></div>
-					</details>
-					<details>
-						<summary>Running</summary>
-						<div data-visual-group="running"></div>
-					</details>
-					<details>
-						<summary>Activity</summary>
-						<div data-visual-group="activity"></div>
-					</details>
-					<details>
-						<summary>Subagents</summary>
-						<div data-visual-group="subagents"></div>
-					</details>
-					<details>
-						<summary>Waiting</summary>
-						<div data-visual-group="waiting"></div>
-					</details>
-					<details open>
-						<summary>Effects</summary>
-						<div data-visual-group="effects"></div>
-					</details>
-					<details>
-						<summary>Dust</summary>
-						<div data-visual-group="dust"></div>
-					</details>
-					<details>
-						<summary>Floor</summary>
-						<div data-visual-group="floor"></div>
-					</details>
-					<details>
-						<summary>Completion</summary>
-						<div data-visual-group="completion"></div>
-					</details>
-					<details>
-						<summary>Impact</summary>
-						<div data-visual-group="impact"></div>
-					</details>
-					<details>
-						<summary>Scene</summary>
-						<div data-visual-group="scene"></div>
-					</details>
+					class="visual-settings-fields"
+					aria-label="Advanced appearance settings"></div>
+				<details class="visual-file-actions">
+					<summary>File actions</summary>
+					<p>File actions affect the page configuration only when you export and save the downloaded file yourself.</p>
+					<div class="visual-file-actions-controls">
+						<button id="visual-settings-reload" type="button">Reload from file</button>
+						<label class="visual-auto-reload">
+							<input id="visual-settings-auto-reload" type="checkbox" />
+							Auto reload every 5 seconds
+						</label>
+					</div>
+				</details>
 				</div>
 				<footer class="visual-settings-actions">
+					<button id="visual-settings-preset-save-as" type="button">Save as new</button>
+					<button id="visual-settings-preset-save" type="button" disabled>Save changes</button>
+					<button id="visual-settings-export" type="button">Export settings</button>
 					<button
 						id="visual-settings-reset"
 						type="button">
 						Reset preview
-					</button>
-					<button
-						id="visual-settings-export"
-						type="button">
-						Export settings
 					</button>
 				</footer>
 			</form>

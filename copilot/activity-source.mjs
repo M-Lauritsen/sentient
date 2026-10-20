@@ -998,7 +998,9 @@ export class LocalActivitySource extends EventEmitter {
     if (type === 'assistant.turn_start') {
       const turnId = safeId(data.turnId);
       if (!turnId) return;
-      const dedup = this.uniqueKey(state.file, 'turn-start', turnId);
+      // Copilot can restart turn numbering for each interaction and agent.
+      const turnKey = JSON.stringify([key, safeId(data.interactionId), turnId]);
+      const dedup = this.uniqueKey(state.file, 'turn-start', turnKey);
       if (!dedup) return false;
       if (!session.agents.has(key) && session.agents.size >= MAX_AGENTS_PER_SESSION) {
         this.readIssues++;

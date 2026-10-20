@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { CATEGORIES, CATEGORY_HEX, CATEGORY_RGB, CATEGORY_INDEX } from '../activity-colors.mjs';
+import { JSDOM } from 'jsdom';
+import { CATEGORIES, CATEGORY_HEX, CATEGORY_RGB, CATEGORY_INDEX, HOOK_TYPES } from '../activity-colors.mjs';
 import { VISUAL } from '../visual-settings.mjs';
 import { createCategoryBurstPlan, createImpulseBuffer } from '../activity-client.mjs';
 import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from '../session-stats-ui.mjs';
@@ -11,6 +12,68 @@ const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
 const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
 const statsUi = await readFile(new URL('../session-stats-ui.mjs', import.meta.url), 'utf8');
+const workspaceUi = await readFile(new URL('../workspace-ui.mjs', import.meta.url), 'utf8');
+const navigationUi = await readFile(new URL('../navigation-ui.mjs', import.meta.url), 'utf8');
+const visualSettingsUi = await readFile(new URL('../visual-settings-ui.mjs', import.meta.url), 'utf8');
+
+test('Appearance scrolls its header and preset controls while save actions stay in the footer', () => {
+  const document = new JSDOM(html).window.document;
+  const form = document.querySelector('#visual-settings-form');
+  const scroll = form.querySelector('.visual-settings-scroll');
+  const footer = form.querySelector('.visual-settings-actions');
+  for (const selector of ['.stats-dialog-header', '#visual-settings-preset',
+    '#visual-settings-preset-name', '#visual-settings-quick', '#visual-settings-fields']) {
+    assert.ok(scroll.contains(form.querySelector(selector)), `${selector} scrolls with content`);
+  }
+  for (const id of ['visual-settings-preset-save-as', 'visual-settings-preset-save',
+    'visual-settings-export', 'visual-settings-reset']) {
+    const button = document.getElementById(id);
+    assert.ok(footer.contains(button), `${id} remains in footer`);
+    assert.equal(button.type, 'button');
+    assert.equal(document.querySelectorAll(`#${id}`).length, 1);
+  }
+  assert.equal(scroll.contains(footer), false);
+  assert.equal(footer.parentElement, form);
+});
+
+test('source recovery retains the header, running indicators and workspace while marking coverage unknown', () => {
+  const context = {
+    thinkingPulseClock: { reset() {} },
+    impulseBuffer: { clear() {} },
+    timeline: { setCoverage(covered) { context.covered = covered; } },
+    document: { hidden: false, body: { classList: { toggle() {} } } },
+    performance: { now: () => 0 },
+    updateSubagentSummary() {},
+    renderWaitingMarkers(ids) { context.waitingIds = ids; },
+    workspaceUI: { update(state) { context.workspaceState = state; } },
+    activityState: null,
+  };
+  for (const name of ['$journals', '$sessions', '$waiting', '$unknown', '$running',
+    '$coverage', '$status', '$subtitle']) context[name] = { textContent: '' };
+  vm.createContext(context);
+  vm.runInContext(main.slice(main.indexOf('function renderActivityState(state) {'),
+    main.indexOf('\nconst activityClient =', main.indexOf('function renderActivityState(state) {'))), context);
+  const connected = { connection: 'connected', sourceStatus: 'available', coverage: 'journal-only',
+    activeSessions: 1, runningSessions: 1, waitingSessions: 0, waitingSessionIds: [] };
+  context.renderActivityState(connected);
+  assert.equal(context.$status.textContent, 'RUNNING');
+  const subtitle = context.$subtitle.textContent;
+  context.renderActivityState({ ...connected, connection: 'recovering', coverage: 'unknown' });
+  assert.equal(context.$status.textContent, 'RUNNING');
+  assert.equal(context.$subtitle.textContent, subtitle);
+  assert.equal(context.covered, false);
+  assert.equal(context.$running.textContent, '1');
+  assert.equal(context.workspaceState, connected, 'the workspace is not cleared during the grace period');
+  assert.equal(context.activityState.connection, 'recovering');
+  assert.match(context.$coverage.textContent, /CONNECTION GAP/);
+  assert.equal(context.waitingIds.length, 0);
+  context.renderActivityState({ ...connected, connection: 'retrying', coverage: 'unknown',
+    activeSessions: 0, runningSessions: 0 });
+  assert.equal(context.$status.textContent, 'RECONNECTING · UNKNOWN');
+  assert.equal(context.$running.textContent, '0');
+  context.renderActivityState(connected);
+  assert.equal(context.$status.textContent, 'RUNNING');
+});
 
 class TestElement {
   constructor(tagName, document) {
@@ -183,6 +246,7 @@ test('page category accumulation runs on accepted arrival, not frame drain, and 
     impulseBuffer: { add() {} },
     pageActivityTotals,
     sessionStatsDialog: { refreshActivity() { refreshes++; } },
+    workspaceUI: { refresh() {} },
   });
   vm.runInContext(`function receive(activity) { ${callback} }`, context);
   vm.runInContext("receive({ kind: 'step', count: 37 })", context);
@@ -260,9 +324,10 @@ test('statistics dialog labels all page-wide categories separately from unchange
 });
 
 test('impulse titles follow observed events with a bottom fade and reduced-motion support', () => {
-  assert.match(html, /id="impulse-feed"/);
-  assert.match(html, /aria-label="Recent impulses"/);
+  assert.match(workspaceUi, /element\(document, 'li', `impulse-entry/);
+  assert.match(html, /data-workspace-dock="left"/);
   assert.match(main, /impulseFeed\.add\(kind, toolName, eventType, count\)/);
+  assert.match(css, /\.workspace-feed,\s*\.workspace-session-list/);
   assert.match(css, /mask-image: linear-gradient\(to bottom,/);
   assert.match(css, /prefers-reduced-motion: reduce/);
 });
@@ -273,7 +338,7 @@ test('page identity is SENTIENT OS in the browser title and visible heading', ()
 });
 
 test('personal visual preset controls are labelled, wired, and storage is disclosed', () => {
-  assert.match(html, /aria-label="Personal visual presets"/);
+  assert.match(html, /aria-label="Personal appearance presets"/);
   assert.match(html, /id="visual-settings-preset-name"/);
   assert.match(html, /id="visual-settings-preset-save-as"/);
   assert.match(html, /id="visual-settings-preset-save"/);
@@ -282,6 +347,24 @@ test('personal visual preset controls are labelled, wired, and storage is disclo
   assert.match(main, /savePresetButton: document\.getElementById\('visual-settings-preset-save'\)/);
   assert.match(main, /deletePresetButton: document\.getElementById\('visual-settings-preset-delete'\)/);
   assert.match(html, /stored in this browser/);
+});
+
+test('Appearance is a searchable nonmodal drawer and suspends Workspace interaction', () => {
+  assert.match(html, /aria-controls="visual-settings-dialog"/);
+  assert.match(html, /aria-label="Quick appearance controls"/);
+  assert.match(html, /aria-label="Advanced appearance settings"/);
+  assert.match(html, /aria-live="polite"[\s\S]*visual-settings-search-status/);
+  assert.match(html, /id="visual-settings-search-clear"/);
+  assert.match(html, /<summary>File actions<\/summary>/);
+  assert.match(visualSettingsUi, /dialog\.show\(\)/);
+  assert.doesNotMatch(visualSettingsUi, /dialog\.showModal\(\)/);
+  assert.match(visualSettingsUi, /opener\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(css, /\.visual-settings-dialog\s*\{[^}]*inset:\s*0 0 0 auto/s);
+  assert.match(css, /\.visual-settings-dialog\s*\{[^}]*display:\s*none/s);
+  assert.match(css, /\.visual-settings-dialog\[open\]\s*\{\s*display:\s*flex/);
+  assert.match(css, /\.visual-settings-dialog::backdrop\s*\{\s*background:\s*transparent/);
+  assert.match(main, /workspaceUI\.setAppearanceOpen\(open\)/);
+  assert.match(workspaceUi, /root\.toggleAttribute\('inert', appearanceOpen\)/);
 });
 
 test('live UI has no fabricated/demo activity controls or external dependency URL', () => {
@@ -347,42 +430,59 @@ test('subagent trees use bounded preallocated scene buffers and reset safely', (
   assert.doesNotMatch(frame, /new THREE\./);
 });
 
-test('session HUD matches the impulse field, shows only active sessions, and fails closed on gaps', () => {
-  assert.match(html, /<aside[^>]+id="session-hud"[^>]+aria-label="Active sessions"/);
-  assert.match(html, /id="session-list"/);
-  assert.match(html, /id="session-list"[^>]*tabindex="0"/);
-  assert.match(html, /id="session-state"/);
-  assert.match(html, /id="session-more"/);
-  assert.match(main, /function renderSessions\(state\)/);
-  assert.match(main, /const hasHudProjection = Array\.isArray\(state\.hudSessions\)/);
-  assert.match(main, /projectActiveHudSessions\(state\)/);
-  assert.match(main, /projectActiveHudSessions/);
-  assert.match(main, /state\.hudSessionsTruncated/);
-  assert.match(main, /state\.waitingSessionIds/);
-  assert.match(main, /No active sessions/);
-  assert.match(main, /COVERAGE UNKNOWN/);
-  assert.match(main, /RUNNING · UNVERIFIED/);
-  assert.match(main, /textContent/);
-  assert.match(main, /performance\.now\(\)/);
-  assert.match(main, /hudTimer/);
+test('workspace modules keep session visibility separate from bounded source state', () => {
+  assert.match(html, /data-workspace-dock="left"/);
+  assert.match(html, /data-workspace-dock="right"/);
+  assert.match(html, /data-workspace-dock="bottom"/);
+  assert.match(html, /data-workspace-dock="bottom-left"/);
+  assert.match(main, /workspaceUI\.update\(state\)/);
+  assert.match(workspaceUi, /projectActiveHudSessions\(activityState\)/);
+  assert.match(workspaceUi, /COVERAGE UNKNOWN · ACTIVITY VIEW UNKNOWN/);
+  assert.match(workspaceUi, /Session statuses and elapsed time · coverage/);
+  assert.doesNotMatch(workspaceUi, /No matching sessions|Additional sessions not shown|workspace-session-more/);
+  assert.match(workspaceUi, /instance\.config\.filter === 'waiting'/);
+  assert.match(workspaceUi, /SESSION_LABELS/);
+  assert.match(workspaceUi, /sessionStatsDialog\?\.registerList/);
+  assert.doesNotMatch(workspaceUi, /localStorage|innerHTML/);
   assert.match(css, /\.session-running/);
   assert.match(css, /\.session-running-unverified/);
-  const sessionRenderer = main.slice(main.indexOf('function renderSessions'), main.indexOf('// ---------- interaction ----------'));
-  assert.match(sessionRenderer, /renderSessionRows\(/);
   assert.ok(statsUi.indexOf('document.activeElement') < statsUi.indexOf('list.replaceChildren()'),
     'focused stats control is captured before the list is replaced');
-  assert.match(sessionRenderer, /hasHudProjection\s*\?\s*state\.hudSessionsTruncated === true : state\.sessionsTruncated === true/);
-  assert.match(css, /\.hud-impulses h2, \.hud-sessions h2/);
-  assert.match(css, /\.hud-sessions\s*\{[^}]*right:\s*24px/);
-  assert.match(css, /#session-list\s*\{[^}]*pointer-events:\s*auto/);
-  assert.match(css, /#session-list:focus-visible/);
+  assert.match(css, /\.workspace-session-list\s*\{/);
+  assert.match(css, /\.workspace-dock-right/);
   assert.match(css, /prefers-reduced-motion: reduce/);
 });
 
+test('application menu replaces top launchers and preserves the existing destination controls', () => {
+  const menu = html.match(/<nav\s+id="application-navigation"[\s\S]*?<\/nav>/)?.[0];
+  assert.ok(menu);
+  assert.match(menu, /id="application-menu-toggle"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"/);
+  assert.match(menu, /role="menu"[^>]*hidden/);
+  for (const [id, label] of [
+    ['library-open', 'Library'],
+    ['visual-settings-open', 'Appearance'],
+    ['workspace-open', 'Workspace'],
+    ['help-open', 'Help'],
+  ]) {
+    assert.match(menu, new RegExp(`id="${id}"[^>]*role="menuitem"`));
+    assert.match(menu, new RegExp(`>\\s*${label}\\s*<`));
+    assert.equal((html.match(new RegExp(`id="${id}"`, 'g')) ?? []).length, 1);
+  }
+  const sourceHeader = html.match(/<header class="hud hud-top"[^>]*>[\s\S]*?<\/header>/)?.[0];
+  assert.ok(sourceHeader);
+  assert.doesNotMatch(sourceHeader, /library-open|workspace-open|visual-settings-open/);
+  assert.match(html, /id="help-dialog"[^>]*aria-labelledby="help-title"/);
+  assert.match(navigationUi, /event\.key === 'ArrowDown'/);
+  assert.match(navigationUi, /event\.key === 'Escape'/);
+  assert.match(main, /createNavigationUI\(\{ document \}\)/);
+  assert.match(css, /\.application-menu\s*\{[\s\S]*bottom: calc\(100% \+ 8px\)/);
+  assert.match(css, /\.application-navigation\s*\{[\s\S]*right: 24px;[\s\S]*bottom: 22px/);
+});
+
 test('session statistics use an accessible centered native dialog and text-only content', () => {
-  assert.match(main, /renderSessionRows\(/);
+  assert.match(workspaceUi, /renderSessionRows\(/);
   assert.match(main, /createSessionStatsDialog\(/);
-  assert.match(main, /clearSessionStats\(/);
+  assert.match(workspaceUi, /clearSessionStats\(/);
   assert.match(html, /<dialog[^>]*id="session-stats-dialog"[^>]*aria-labelledby="session-stats-title"/);
   assert.match(html, /id="session-stats-close"[^>]*aria-label="Close session statistics"/);
   assert.match(statsUi, /dialog\.showModal\(\)/);
@@ -515,6 +615,46 @@ test('session stats open in an overlay, update live, clear on gaps, and restore 
     'legacy rows without stats do not expose a details control');
 });
 
+test('session stats open from waiting and ended rows outside the active-session projection', () => {
+  const document = new TestDocument();
+  const list = document.createElement('ol');
+  const dialog = document.createElement('dialog');
+  const content = document.createElement('div');
+  const expanded = new Set();
+  const sessions = [
+    { id: 'K3F2QA', status: 'waiting', elapsedMs: 42, stats: sessionStats({ errors: 2 }) },
+    { id: 'T4M7QA', status: 'ended', elapsedMs: 84, stats: sessionStats({ errors: 3 }) },
+  ];
+  const controller = createSessionStatsDialog({
+    document, dialog, content,
+    title: document.createElement('h2'),
+    closeButton: document.createElement('button'),
+    fallbackFocus: document.body,
+    list,
+    expandedSessionStats: expanded,
+    formatElapsed: String,
+  });
+  const showRows = () => renderSessionRows({
+    document,
+    list,
+    sessions,
+    expandedSessionStats: expanded,
+    receivedAt: 0,
+    formatElapsed: String,
+    statusLabels: { waiting: 'WAITING', ended: 'ENDED' },
+  });
+  controller.update(sessions, true, []);
+  showRows();
+  for (const [index, errors] of [[0, 2], [1, 3]]) {
+    const toggle = list.querySelectorAll('button[data-session-stats-toggle]')[index];
+    controller.open({ target: toggle });
+    assert.equal(dialog.open, true);
+    assert.match(content.textContent, new RegExp(`Errors: ${errors}`));
+    dialog.close();
+    showRows();
+  }
+});
+
 test('stats modal distinguishes colliding opaque handles and fails closed when identity becomes ambiguous', () => {
   const document = new TestDocument();
   const list = document.createElement('ol');
@@ -553,11 +693,10 @@ test('waiting counter and scene affordances stay bounded and activity-free', () 
   assert.match(main, /sessionIds\.slice\(0, 8\)/);
   assert.match(main, /\$waiting\.textContent = String\(state\.connection === 'connected' && state\.sourceStatus !== 'unavailable'[\s\S]*?state\.waitingSessions \?\? 0 : 0\)/);
   assert.match(main, /activityState\.sourceStatus !== 'unavailable'\s*&&\s*activityState\.waitingSessions > 0/);
-  assert.match(main, /const omitted = Math\.max\(0, \(state\.runningSessions \?\? visibleRunning\) - visibleRunning\)/);
   assert.match(main, /coreGlow\.material\.color\.lerpColors/);
   assert.match(main, /Math\.sin\(now \* VISUAL\.waiting\.breathSpeed\)/);
   assert.match(main, /CATEGORY_HEX\.waiting/);
-  const markerRenderer = main.slice(main.indexOf('function renderWaitingMarkers'), main.indexOf('function renderSessions'));
+  const markerRenderer = main.slice(main.indexOf('function renderWaitingMarkers'), main.indexOf('function tickSessionTimes'));
   assert.doesNotMatch(markerRenderer, /fireFrom|spawnPulse|celebrateCompletion|impulseBuffer\.add/);
 });
 
@@ -573,7 +712,7 @@ function sceneFunction(name) {
 test('pulse and RGB edge writers use category channels, preserve kind motion and reuse buffers', () => {
   const SCENE_RGB = Float32Array.from(CATEGORY_RGB, (channel) =>
     0.9 * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
-  assert.match(main, /const SCENE_RGB = Float32Array\.from\(CATEGORY_RGB/);
+  assert.match(main, /const SCENE_RGB = createScenePalette\(VISUAL\)/);
   const context = vm.createContext({
     Math, SCENE_RGB, CATEGORY_INDEX, VISUAL,
     P: 1, T: 2, E: 1,
@@ -686,7 +825,7 @@ test(`${activity.eventType} produces one network cascade per frame without explo
   const impulseBuffer = createImpulseBuffer();
   impulseBuffer.add(activity);
   const context = vm.createContext({
-    CATEGORY_INDEX, VISUAL, document: { hidden: false }, performance: { now: () => 1 }, Math, N: 1,
+    CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, VISUAL, document: { hidden: false }, performance: { now: () => 1 }, Math, N: 1,
     nodeEnergy: new Float32Array(1), nodeHot: new Float32Array(1),
     adjacency: [[0, 1, 2, 3, 4]],
     otherEnd: (edge) => edge + 1,
@@ -697,7 +836,8 @@ test(`${activity.eventType} produces one network cascade per frame without explo
     impulseFeed: { add() {} },
     fireFrom: (...args) => calls.push(args),
   });
-  vm.runInContext([sceneFunction('renderCompletionCascade'), sceneFunction('renderObservedImpulses')].join('\n'), context);
+  vm.runInContext([sceneFunction('renderCompletionCascade'), sceneFunction('renderHookPulses'),
+    sceneFunction('renderObservedImpulses')].join('\n'), context);
   vm.runInContext('renderObservedImpulses()', context);
   assert.equal(calls.length, 5, 'grouped completions share one central and four neighbouring seeds');
   assert.deepEqual(calls[0], [0, 7, 2, -1, 5, CATEGORY_INDEX.completion]);

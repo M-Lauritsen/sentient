@@ -63,6 +63,8 @@ does not load a CDN or send activity outside this machine.
   show RUNNING when their journal timestamps place the work within that observation
   window; their existing events are not replayed. Sessions already running at
   startup become visible when fresh tool work, reasoning, or message deltas arrive.
+  Turn starts are deduplicated per interaction and agent, so reused turn numbers
+  in later requests or delegated work do not hide running sessions.
 - **Activity scene:** Pulses represent observed work, not hidden cognition.
   Waiting pauses pulses. If work ends without a journal end event, pulses may
   continue until SENTIENT OS observes a terminal event or loses/re-baselines the
@@ -97,7 +99,17 @@ does not load a CDN or send activity outside this machine.
   button, Escape, or the backdrop to restore the compact view.
 
 “Quiet · not verified idle” means SENTIENT OS observed no fresh active interval; it
-does not mean every Copilot session is idle. A successful `session.task_complete`
+does not mean every Copilot session is idle. If the local activity stream reports
+a connection error, the source header keeps its previous text for up to 15 seconds
+before showing “Reconnecting · unknown”. Reconnection attempts start immediately;
+the delay only affects the warning. A valid recovery snapshot cancels the warning,
+and repeated errors do not extend the grace period. Activity coverage becomes
+unknown immediately. During the grace period, the scene keeps animating the
+last-known session state and session displays remain in place; no activity events
+are invented or counted. If the error persists for 15 seconds, stale session
+indicators and delegated branches are cleared and running-state pulses stop.
+
+A successful `session.task_complete`
 event lights up a bright, branching cascade of impulses, nodes and edges within
 the lattice. Grouped completions share one bounded cascade per frame, with no
 shockwave, camera shake, floor ripple or completion-triggered global flash.
@@ -116,19 +128,105 @@ The current journal sample did not include that event or
 `assistant.reasoning`, so those details may not appear. The journal format is
 internal and can change.
 
+## Application menu and workspace controls
+
+Use the lower-right borderless **Application menu** icon to open **Library**, **Appearance**, **Workspace**
+or **Help**. The menu opens upward; use the arrow keys to traverse it, Home and
+End to reach its first and last item, and Escape to dismiss it and return focus
+to the menu icon. The source bar is hidden until you hover over the top edge or
+focus its chevron; tap the chevron to keep it open, then tap outside to dismiss it.
+Coverage remains visible at the top.
+
+Open **Workspace** to manage the docked feed, sessions and live timeline. Select
+**Edit layout** to close the manager and reveal pointer drag handles. A visible
+**Done** control returns to normal viewing without silently saving.
+Each module's borderless ellipsis icon opens a menu with **Settings** and
+**Collapse** (or **Expand**). **Settings** opens its controls inline; **Layout** offers
+keyboard-operable dock, earlier/later, and Compact/Standard/Large controls while
+editing. Settings are closed initially and only one module's settings opens at
+a time. Close settings or press Escape to return focus to its ellipsis icon.
+Module menus support arrow keys, Home/End, Escape and outside-click dismissal.
+Modules can use the left, right, lower-left and bottom-centre docks. The
+timeline defaults to lower left for new layouts and **Reset layout**; existing
+saved placements are preserved. Lower left accepts any module, not just the
+timeline, with the same movement, ordering and size controls.
+Modules have transparent backgrounds and fixed content areas: Compact reserves
+128px, Standard 200px and Large 320px. Live arrivals, empty states and coverage
+updates do not resize them. Settings and Collapse can still intentionally
+expand or shrink a panel; overflowing content stays within its selected size.
+Collapsing or removing a module changes only its presentation; activity
+collection, coverage, timeline history and page totals continue independently.
+To add a module, choose its catalogue type, name, type-specific options and dock
+in Workspace settings. New instances start with validated catalogue defaults;
+names are rendered as text. The timeline remains a singleton because its live
+canvas can occupy only one module.
+
+Feed and totals settings offer **All categories** plus individual category
+checkboxes. All categories includes every supported category, not unlimited
+history: feeds still share the latest eight accepted entries. A partial
+selection shows a mixed checkbox; clearing every category prompts you to choose
+categories, rather than implying no observed activity. Redundant filter summaries
+and session-state fallback messages are omitted, including the more-sessions
+notice on truncated lists. Session rows still reflect the bounded projection,
+not necessarily every running session. Empty session lists do not
+display placeholder text; unknown coverage retains its styling and accessible
+list label, alongside the page-wide coverage indicator.
+Refreshes retain existing feed rows; new arrivals slide vertically into view,
+shifting older rows down without resizing, fading or flipping them. Rapid arrivals
+continue from the current scroll position. Reduced motion disables the slide.
+The feed clips
+and fades older rows without an internal scrollbar.
+Density, legend and session filters are also in Settings, not the normal feed.
+Changes preview immediately. **Save changes** saves the whole workspace;
+closing Settings or choosing Done leaves unsaved changes visible.
+
+Workspace profiles, dock order, sizes and module filters are stored in this
+browser under `sentient-os.workspaces.v1`. They do not contain activity,
+session identifiers, prompts, paths or Library content. Use **Save changes**,
+**Save as**, **Rename**, **Delete profile**, and **Reset layout** in Workspace
+settings. A dirty profile switch offers Save, Discard or Cancel. Storage errors
+leave the current layout available in memory and are reported as not saved;
+corrupt stored data is preserved until **Replace corrupt workspace** is chosen.
+The default profile cannot be deleted, and reset restores the default modules
+without resetting observed data. Clearing this site's browser data removes
+saved workspace profiles.
+
+At narrow widths, **Workspace** opens a scrollable drawer and **Return to
+scene** closes it; the desktop dock positions are not rewritten. Executable
+plugins and external integrations remain intentionally deferred.
+
 ## Editing visual settings
 
-Open **Visual settings** in the HUD to preview the `balanced`, `subtle` or
-`intense` preset and edit any in-scope setting. Valid edits apply to the running
-scene, including node count; invalid or incomplete values do not. **Reset preview** returns to the
-last loaded file configuration. Changes remain temporary until **Export
-settings** downloads a replacement `visual-settings.mjs` and you save it over
+Open **Appearance** from the application menu to preview the `balanced`, `subtle` or
+`intense` preset and edit any in-scope setting. The nonmodal drawer keeps the
+scene visible; closing it retains the current preview.
+The header and preset controls scroll with the settings, leaving more room for
+controls. Save as new, Save changes, Export settings and Reset preview remain
+available in the footer.
+Quick controls cover common adjustments, while searchable Advanced sections expose all 172
+configuration paths with friendly labels, help and exact numeric inputs.
+Each setting includes an always-visible description of what it changes in the
+scene. Quick and Advanced use full-width rows with compact exact-value inputs
+and share the same descriptions; no hover or tooltip is needed to understand a
+control. Open **Details** for constraints, the configuration path and a small
+**Reset to file** action. Errors and out-of-slider-range notices remain visible
+without opening Details. Slider guidance is shown once above Advanced settings.
+All 143 scalar numeric settings include a slider; vectors keep named X/Y/Z inputs.
+Suggested slider ranges are guidance only: valid values outside them remain
+unchanged and can be edited exactly. Pulse minimum/maximum and automatic
+rotation direction map back to the existing configuration fields.
+
+Valid edits preview the running scene; invalid drafts never apply. Node-count
+edits preview in the draft and rebuild the network only on Enter, blur or slider
+commit. **Reset to file** restores a setting, **Reset section to file** restores
+that section, and **Reset preview** returns to the whole last-loaded file
+configuration. Changes remain temporary until **Export settings** in the footer
+downloads a replacement `visual-settings.mjs` and you save it over
 the source file. Create personal presets from the current preview, select them
 later, save edits, or delete them. Personal preset definitions are stored only
 in this browser's local storage for this site; they are not written to
 `visual-settings.mjs`, shared with other browsers, or sent to the server.
-Clearing this site's browser data removes them. Preview changes remain temporary
-until exported and saved to the source file.
+Clearing this site's browser data removes them.
 
 Use **Reload from file** to read the current repository-authored
 `visual-settings.mjs` without refreshing the page. Automatic reload is optional,
@@ -142,7 +240,19 @@ This is public, browser-loaded configuration: never put secrets in it. Visual
 changes do not alter activity data, session state, timeline history or
 statistics.
 
-All 3D appearance and animation tuning lives in these sections:
+**Appearance → Advanced → Event effects** includes separate `hook.start`,
+`hook.end` and other `hook.*` colors, shared by feed text and scene pulses.
+Each has a scene-impact control from 0 (off) through 1 (normal) to 4 (maximum).
+Impact changes pulse brightness and spread, not feed animation. Hook text keeps
+the same smooth slide with no flashing. Hook events still count in the existing
+unknown aggregate category; per-hook styling does not add statistics categories
+or expose hook arguments/results. Existing appearance presets receive hook
+defaults when they do not yet contain hook settings. Save a personal preset
+for browser-local persistence, or export settings to save the configuration file.
+
+Advanced tuning is organized into Camera, Network, Motion, Event effects and
+Atmosphere. It retains the underlying configuration groups and exact file
+formats:
 
 | Section | Controls |
 | --- | --- |
@@ -151,6 +261,7 @@ All 3D appearance and animation tuning lives in these sections:
 | `pulses` | Head/trail appearance, speed, arrival energy and ordinary edge light |
 | `running` | Per-session background rate, session cap, hops, spread and seed energy |
 | `activity` | Grouped-burst intensity cap, spread, hops, seed energy and heat |
+| `hooks` | Separate start, end and fallback hook colors and scene-impact strengths |
 | `subagents` | Growth/fade timing, point sizes, branch brightness, anchor colors and retirement flashes |
 | `waiting` | Marker appearance and waiting-glow breathing, color blend and opacity |
 | `dust` | Point appearance, twinkle and rotation/sway |
@@ -159,7 +270,7 @@ All 3D appearance and animation tuning lives in these sections:
 | `scene` | Background, category light multiplier, edge visibility/idle colour, breathing, load response, bloom and glows |
 | `effects` | Independent dust, floor, breathing, waiting glow/markers and subagent-transition switches |
 
-The shipped values preserve the existing appearance. Inline comments describe
+Non-hook defaults preserve the existing appearance. Inline comments describe
 units, constraints and suggested ranges. Ranges are guidance, not automatic
 clamps: use finite numbers, nonnegative except signed positions/rotation,
 integer hop/count values, positive durations/grid spacing/load divisors, and

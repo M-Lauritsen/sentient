@@ -561,6 +561,77 @@ test('discovery recognizes a new running session without replaying its first rec
   assert.deepEqual(activity, []);
 });
 
+test('reused turn IDs in later interactions restore running after baseline and completed work', async (t) => {
+  const root = await fixture(t);
+  await mkdir(path.join(root, 'session'));
+  const file = path.join(root, 'session', 'events.jsonl');
+  await writeFile(file,
+    event('assistant.turn_start', { turnId: '0', interactionId: 'historic' }) +
+    event('assistant.turn_end', { turnId: '0' }));
+  let now = 100_000;
+  const source = new LocalActivitySource({ root, pollIntervalMs: 0, clock: () => now });
+  t.after(() => source.stop());
+  const activity = [];
+  source.on('activity', (value) => activity.push(value));
+  await source.start();
+  assert.equal(source.snapshot().runningSessions, 0);
+  assert.deepEqual(activity, []);
+
+  for (const interactionId of ['first-request', 'second-request']) {
+    await appendFile(file, event('assistant.turn_start', { turnId: '0', interactionId }));
+    await source.poll();
+    assert.equal(source.snapshot().runningSessions, 1);
+    assert.equal(source.snapshot().thinkingSessions, 1);
+    assert.equal(source.snapshot().sessions[0].status, 'running');
+    now += 1_000;
+    await appendFile(file, event('assistant.turn_end', { turnId: '0' }));
+    await source.poll();
+    assert.equal(source.snapshot().runningSessions, 0);
+  }
+  assert.equal(activity.filter(({ kind }) => kind === 'thinking').length, 2);
+  assert.equal(source.snapshot().sessions[0].stats.turns.count, 2);
+  assert.equal(source.snapshot().sessions[0].stats.turns.lastMs, 1_000);
+});
+
+test('root and child turns with the same identifiers keep independent running intervals', async (t) => {
+  const { file, source, observed } = await runningFixture(t);
+  const data = { turnId: '0', interactionId: 'request' };
+  await appendFile(file, event('assistant.turn_start', data));
+  await source.poll();
+  await appendFile(file, event('assistant.turn_start', data, { agentId: 'child' }));
+  await source.poll();
+  assert.equal(observed.filter((kind) => kind === 'thinking').length, 2);
+  await appendFile(file, event('assistant.turn_end', { turnId: '0' }));
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 1, 'the child is still running');
+  await appendFile(file, event('assistant.turn_end', { turnId: '0' }, { agentId: 'child' }));
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 0);
+});
+
+test('duplicate turn starts within an interaction neither reset tools nor reopen ended work', async (t) => {
+  const { file, source, observed } = await runningFixture(t);
+  const data = { turnId: '0', interactionId: 'request' };
+  await appendFile(file,
+    event('assistant.turn_start', data) +
+    event('tool.execution_start', { toolCallId: 'tool', toolName: 'view' }));
+  await source.poll();
+  await appendFile(file,
+    event('assistant.turn_start', data) +
+    event('session.task_complete', { success: true, outcome: 'completed' }));
+  await source.poll();
+  assert.equal(source.snapshot().thinkingSessions, 0, 'the open tool was not reset');
+  assert.equal(observed.includes('completion'), false);
+  await appendFile(file,
+    event('tool.execution_complete', { toolCallId: 'tool' }) +
+    event('assistant.turn_end', { turnId: '0' }));
+  await source.poll();
+  await appendFile(file, event('assistant.turn_start', data));
+  await source.poll();
+  assert.equal(source.snapshot().runningSessions, 0);
+  assert.equal(observed.filter((kind) => kind === 'thinking').length, 1);
+});
+
 test('fresh work restores baseline visibility without granting completion eligibility', async (t) => {
   const root = await fixture(t);
   await mkdir(path.join(root, 'session'));

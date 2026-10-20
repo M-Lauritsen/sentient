@@ -11,7 +11,7 @@ export const WORKSPACE_LIMITS = Object.freeze({
 const PROFILE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const INSTANCE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/;
-const DOCKS = new Set(['left', 'right', 'bottom']);
+const DOCKS = new Set(['left', 'right', 'bottom-left', 'bottom']);
 const SIZES = new Set(['compact', 'standard', 'large']);
 const DENSITIES = new Set(['compact', 'comfortable']);
 const CATEGORY_SET = new Set(CATEGORIES);
@@ -34,7 +34,7 @@ export const WORKSPACE_MODULES = Object.freeze({
   }),
   timeline: Object.freeze({
     label: 'Timeline',
-    defaultDock: 'bottom',
+    defaultDock: 'bottom-left',
     defaultConfig: EMPTY_CONFIG,
   }),
   totals: Object.freeze({
@@ -292,7 +292,7 @@ function defaultInstances() {
       id: 'timeline',
       type: 'timeline',
       displayName: WORKSPACE_MODULES.timeline.label,
-      dock: 'bottom',
+      dock: 'bottom-left',
       order: 0,
       size: 'standard',
       config: {},

@@ -230,12 +230,33 @@ test('frame buffer bounds labels and render intensity while accounting for every
   assert.equal(drained.byCategory, result.byCategory, 'category totals reuse their typed array');
   assert.deepEqual([...drained.byCategory], Array(CATEGORIES.length).fill(0));
   assert.deepEqual([...drained.sceneByCategory], Array(CATEGORIES.length).fill(0));
-  assert.deepEqual({ ...drained, byCategory: undefined, sceneByCategory: undefined }, {
-    blue: 0, orange: 0, entries: [], impacts: [], byCategory: undefined, sceneByCategory: undefined,
+  assert.deepEqual([...drained.hookCounts], [0, 0, 0]);
+  assert.deepEqual({ ...drained, byCategory: undefined, sceneByCategory: undefined, hookCounts: undefined }, {
+    blue: 0, orange: 0, entries: [], impacts: [], byCategory: undefined, sceneByCategory: undefined, hookCounts: undefined,
   });
   buffer.add({ kind: 'step' });
   buffer.clear();
   assert.equal(buffer.drain().orange, 0);
+});
+
+test('hook effects retain bounded per-type counts independently of feed labels and generic unknown motion', () => {
+  const buffer = createImpulseBuffer();
+  buffer.add({ kind: 'activity', eventType: 'hook.start', count: 3, durationMs: 5000 });
+  buffer.add({ kind: 'activity', eventType: 'hook.end', count: 2, durationMs: 6000 });
+  buffer.add({ kind: 'activity', eventType: 'hook.future', count: 4 });
+  for (let i = 0; i < 10; i++) buffer.add({ kind: 'activity', eventType: `future.event${i}` });
+  const result = buffer.drain();
+  assert.deepEqual([...result.hookCounts], [3, 2, 4]);
+  assert.equal(result.entries.length, 8);
+  assert.equal(result.byCategory[CATEGORIES.indexOf('unknown')], 19);
+  assert.equal(result.sceneByCategory[CATEGORIES.indexOf('unknown')], 10);
+  assert.equal(result.impacts.length, 0, 'hooks do not create a second, uncontrolled duration burst');
+  assert.deepEqual([...buffer.drain().hookCounts], [0, 0, 0]);
+  buffer.add({ kind: 'activity', eventType: 'hook.start', count: 2 });
+  buffer.clear();
+  assert.deepEqual([...buffer.drain().hookCounts], [0, 0, 0]);
+  buffer.add({ kind: 'activity', eventType: 'hook.start', count: -1 });
+  assert.deepEqual([...buffer.drain().hookCounts], [0, 0, 0]);
 });
 
 test('impulse feed rejects unknown kinds instead of displaying arbitrary text', () => {
@@ -302,7 +323,8 @@ test('subagent summaries expose bounded counts and statuses without identifiers'
     '(1 running, 1 waiting); 1 additional branch omitted by display limits.');
 });
 
-test('client validates bounded subagent metadata, diffs snapshots, and clears branches across gaps', () => {
+test('client validates bounded subagent metadata and retains branches only for the connection grace period', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   FakeEventSource.instances = [];
   const trees = [];
   const client = createActivityClient({
@@ -343,8 +365,20 @@ test('client validates bounded subagent metadata, diffs snapshots, and clears br
     snapshot: { ...base, treeSessions: [session([], [{ sid: 'AB22', outcome: 'completed' }])] },
   });
   assert.deepEqual(trees.at(-1).completed, [{ sessionSid: 'AAAA', sid: 'AB22' }]);
+  stream.emit('snapshot', {
+    epoch, sequence: 2, snapshot: { ...base, treeSessions: [session([child('EF44')])] },
+  });
+  const beforeError = trees.length;
   stream.onerror();
-  assert.deepEqual(trees.at(-1).cleared, []);
+  assert.equal(trees.length, beforeError, 'connection errors do not remove visible branches immediately');
+  assert.deepEqual(client.getState().treeSessions[0].subagents, [child('EF44')]);
+  stream.emit('activity', { epoch, sequence: 3, kind: 'step', snapshot: base });
+  assert.equal(trees.length, beforeError, 'deltas awaiting a recovery snapshot also retain branches');
+  t.mock.timers.tick(14_999);
+  assert.equal(trees.length, beforeError);
+  t.mock.timers.tick(1);
+  assert.deepEqual(trees.at(-1).cleared, [{ sessionSid: 'AAAA', sid: 'EF44' }]);
+  assert.deepEqual(client.getState().treeSessions, []);
   client.disconnect();
 });
 
@@ -441,7 +475,8 @@ test('snapshots do not replay deltas, live sequences apply once, gaps become unk
   client.disconnect();
 });
 
-test('accepts only bounded metadata and reports reconnecting as unknown rather than idle', () => {
+test('connection errors mark coverage unknown immediately but wait 15 seconds before retrying', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   FakeEventSource.instances = [];
   const states = [];
   const client = createActivityClient({ EventSourceImpl: FakeEventSource, onState: (state) => states.push(state) });
@@ -449,9 +484,82 @@ test('accepts only bounded metadata and reports reconnecting as unknown rather t
   const stream = FakeEventSource.instances[0];
   stream.emit('snapshot', { epoch: 'boot-instance-bb', sequence: 0, snapshot: { source: 'local-activity-files', sourceStatus: 'available', coverage: 'partial', activeSessions: 0, thinkingSessions: 0, unknownSessions: 0, backlogFiles: 0, journalFiles: 0, steps: 0 } });
   stream.onerror();
+  assert.equal(states.at(-1).connection, 'recovering');
+  assert.equal(states.at(-1).coverage, 'unknown');
+  t.mock.timers.tick(10_000);
+  stream.onerror();
+  t.mock.timers.tick(4_999);
+  assert.equal(states.at(-1).connection, 'recovering', 'repeated errors do not restart the grace period');
+  t.mock.timers.tick(1);
   assert.equal(states.at(-1).connection, 'retrying');
   assert.equal(states.at(-1).coverage, 'unknown');
+  stream.onerror();
+  t.mock.timers.tick(15_000);
+  assert.equal(states.at(-1).connection, 'retrying', 'continued failures do not start another grace period');
   client.disconnect();
+});
+
+test('a valid recovery snapshot cancels the warning and the next outage gets a fresh grace period', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  FakeEventSource.instances = [];
+  const states = [];
+  const activities = [];
+  const client = createActivityClient({
+    EventSourceImpl: FakeEventSource,
+    onState: (state) => states.push(state),
+    onActivity: (activity) => activities.push(activity),
+  });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  const snapshot = { source: 'local-activity-files', sourceStatus: 'available', coverage: 'journal-only',
+    activeSessions: 1, thinkingSessions: 1, unknownSessions: 0, backlogFiles: 0, journalFiles: 1, steps: 1 };
+  const epoch = 'connection-recovery-epoch';
+  stream.emit('snapshot', { epoch, sequence: 0, snapshot });
+  stream.onerror();
+  assert.equal(client.getState().activeSessions, 1, 'last-known sessions stay visible during the grace period');
+  assert.equal(client.getState().coverage, 'unknown', 'retained sessions are not verified live coverage');
+  const clock = createThinkingPulseClock();
+  assert.equal(clock.tick(0.05, client.getState(), false), 0);
+  assert.equal(clock.tick(0.05, client.getState(), false), 0);
+  assert.equal(clock.tick(0.05, client.getState(), false), 0);
+  assert.equal(clock.tick(0.05, client.getState(), false), 1, 'running pulses continue during recovery');
+  t.mock.timers.tick(14_999);
+  stream.emit('activity', { epoch, sequence: 1, kind: 'step', snapshot });
+  assert.equal(activities.length, 0, 'activity cannot bypass the required recovery snapshot');
+  assert.equal(client.getState().connection, 'recovering', 'deltas do not trigger the warning early');
+  stream.emit('snapshot', { epoch, sequence: 1, snapshot });
+  assert.equal(client.getState().connection, 'connected');
+  assert.equal(client.getState().activeSessions, 1);
+  const recoveredCount = states.length;
+  t.mock.timers.tick(15_000);
+  assert.equal(states.length, recoveredCount, 'a recovered connection has no delayed warning');
+  stream.onerror();
+  t.mock.timers.tick(14_999);
+  assert.equal(client.getState().connection, 'recovering');
+  t.mock.timers.tick(1);
+  assert.equal(client.getState().connection, 'retrying');
+  assert.equal(client.getState().activeSessions, 0);
+  assert.equal(clock.tick(0.05, client.getState(), false), 0, 'running pulses stop after the grace period');
+  stream.emit('snapshot', { epoch, sequence: 1, snapshot });
+  assert.equal(client.getState().connection, 'connected', 'long outages can also recover');
+  client.disconnect();
+});
+
+test('disconnect cancels a pending reconnect warning', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  FakeEventSource.instances = [];
+  const states = [];
+  const client = createActivityClient({ EventSourceImpl: FakeEventSource, onState: (state) => states.push(state) });
+  client.connect();
+  const stream = FakeEventSource.instances[0];
+  stream.onerror();
+  t.mock.timers.tick(14_999);
+  client.disconnect();
+  const disconnectedCount = states.length;
+  t.mock.timers.tick(15_000);
+  assert.equal(states.length, disconnectedCount);
+  assert.equal(client.getState().connection, 'disconnected');
+  assert.equal(stream.closed, true);
 });
 
 test('server restart epoch resets sequence without replaying old deltas', () => {
@@ -543,7 +651,8 @@ const runningSnapshot = (extra = {}) => ({
   runningSessions: 1, unverifiedRunningSessions: 1, ...extra,
 });
 
-test('client validates optional bounded running counts and clears them on gaps', () => {
+test('client validates optional bounded running counts and clears them after the connection grace period', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   FakeEventSource.instances = [];
   const states = [];
   const client = createActivityClient({ EventSourceImpl: FakeEventSource, onState: (state) => states.push(state) });
@@ -568,6 +677,9 @@ test('client validates optional bounded running counts and clears them on gaps',
   assert.equal(states.at(-1).runningSessions, 2, 'legacy servers keep thinking-based pulses');
   assert.equal(states.at(-1).unverifiedRunningSessions, 0);
   stream.onerror();
+  assert.equal(states.at(-1).runningSessions, 2);
+  assert.equal(states.at(-1).coverage, 'unknown');
+  t.mock.timers.tick(15_000);
   assert.equal(states.at(-1).runningSessions, 0);
   assert.equal(states.at(-1).unverifiedRunningSessions, 0);
   client.disconnect();

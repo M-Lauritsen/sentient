@@ -1,4 +1,4 @@
-import { activityCategory, CATEGORIES, CATEGORY_GLYPH, CATEGORY_INDEX } from './activity-colors.mjs';
+import { activityCategory, CATEGORIES, CATEGORY_GLYPH, CATEGORY_INDEX, HOOK_TYPES, hookType } from './activity-colors.mjs';
 
 const EMPTY = Object.freeze({
   connection: 'connecting',
@@ -41,7 +41,7 @@ export function createThinkingPulseClock(settings = DEFAULT_RUNNING_SETTINGS) {
       const count = Number.isSafeInteger(state.runningSessions)
         ? state.runningSessions : state.thinkingSessions;
       const sessions = Number.isSafeInteger(count) ? Math.min(settings.maxSessions, Math.max(0, count)) : 0;
-      if (hidden || state.connection !== 'connected' ||
+      if (hidden || (state.connection !== 'connected' && state.connection !== 'recovering') ||
           state.sourceStatus === 'unavailable' || sessions === 0) {
         accumulated = 0;
         return 0;
@@ -119,12 +119,15 @@ export function createImpulseBuffer() {
   const categoryCounts = Array(CATEGORIES.length).fill(0);
   const byCategory = new Uint32Array(CATEGORIES.length);
   const sceneByCategory = new Uint32Array(CATEGORIES.length);
+  const hookCounts = new Uint32Array(HOOK_TYPES.length);
+  let nonHookUnknownCount = 0;
   let idleCount = 0;
   const entries = new Map();
   // The drain result and label array belong to the buffer; consume before the
   // next drain. In particular, empty animation frames allocate nothing here.
   const impacts = [];
-  const result = { blue: 0, orange: 0, byCategory, sceneByCategory, entries: [], impacts: [] };
+  const drainedHooks = new Uint32Array(HOOK_TYPES.length);
+  const result = { blue: 0, orange: 0, byCategory, sceneByCategory, hookCounts: drainedHooks, entries: [], impacts: [] };
   const appendEntry = (entry) => result.entries.push(entry);
   return {
     add(value) {
@@ -132,6 +135,13 @@ export function createImpulseBuffer() {
       if (!activity) return;
       const count = activity.count ?? 1;
       const category = activityCategory(activity);
+      const hook = category === 'unknown' ? hookType(activity.eventType) : null;
+      if (hook) {
+        const index = HOOK_TYPES.indexOf(hook);
+        hookCounts[index] = Math.min(0xffffffff, hookCounts[index] + count);
+      } else if (category === 'unknown') {
+        nonHookUnknownCount = Math.min(0xffffffff, nonHookUnknownCount + count);
+      }
       categoryCounts[CATEGORY_INDEX[category]] = Math.min(0xffffffff,
         categoryCounts[CATEGORY_INDEX[category]] + count);
       if (activity.eventType === 'session.idle') idleCount = Math.min(0xffffffff, idleCount + count);
@@ -141,7 +151,7 @@ export function createImpulseBuffer() {
       entries.delete(key);
       entries.set(key, { ...activity, category, count: (previous?.count ?? 0) + count });
       if (entries.size > 8) entries.delete(entries.keys().next().value);
-      if (activity.durationMs > 0) {
+      if (!hook && activity.durationMs > 0) {
         const impact = { category: CATEGORY_INDEX[category], durationMs: activity.durationMs };
         if (impacts.length < 4) impacts.push(impact);
         else {
@@ -158,6 +168,9 @@ export function createImpulseBuffer() {
       categoryCounts.fill(0);
       byCategory.fill(0);
       sceneByCategory.fill(0);
+      hookCounts.fill(0);
+      drainedHooks.fill(0);
+      nonHookUnknownCount = 0;
       idleCount = 0;
       entries.clear();
       impacts.length = 0;
@@ -169,6 +182,10 @@ export function createImpulseBuffer() {
       }
       // Idle shares cascade motion, not completion's success label or statistics.
       sceneByCategory.set(byCategory);
+      drainedHooks.set(hookCounts);
+      sceneByCategory[CATEGORY_INDEX.unknown] = nonHookUnknownCount;
+      nonHookUnknownCount = 0;
+      hookCounts.fill(0);
       sceneByCategory[CATEGORY_INDEX.lifecycle] -= Math.min(
         sceneByCategory[CATEGORY_INDEX.lifecycle], idleCount);
       sceneByCategory[CATEGORY_INDEX.completion] = Math.min(0xffffffff,
@@ -303,6 +320,19 @@ export function createActivityTimeline(now = 0) {
 }
 
 export function createImpulseFeed(element) {
+  const entries = [];
+  const listeners = new Set();
+  let nextEntryId = 0;
+  const renderRow = (target, entry) => {
+    const row = target.ownerDocument.createElement('li');
+    row.className = `impulse-entry impulse-${entry.kind} impulse-cat-${entry.category}`;
+    row.dataset.category = entry.category;
+    row.dataset.glyph = entry.glyph;
+    if (entry.hook) row.dataset.hook = entry.hook;
+    row.textContent = entry.label;
+    target.prepend(row);
+    while (target.children.length > 8) target.lastElementChild.remove();
+  };
   return {
     add(kind, toolName, eventType, count = 1) {
       const activity = projectActivity({ kind, toolName, eventType, count });
@@ -311,14 +341,28 @@ export function createImpulseFeed(element) {
       if (!label) return;
       const category = activityCategory(activity);
       if (category === 'waiting') return;
-      const row = element.ownerDocument.createElement('li');
-      row.className = `impulse-entry impulse-${kind} impulse-cat-${category}`;
-      row.dataset.category = category;
-      row.dataset.glyph = CATEGORY_GLYPH[category];
-      row.textContent = label + (activity.toolName ? ` · ${activity.toolName}` : '') +
-        (count > 1 ? ` ×${count}` : '');
-      element.prepend(row);
-      while (element.children.length > 8) element.lastElementChild.remove();
+      const entry = {
+        id: ++nextEntryId,
+        kind,
+        category,
+        glyph: CATEGORY_GLYPH[category],
+        ...(category === 'unknown' && hookType(activity.eventType)
+          ? { hook: hookType(activity.eventType) } : {}),
+        label: label + (activity.toolName ? ` · ${activity.toolName}` : '') +
+          (activity.count > 1 ? ` ×${activity.count}` : ''),
+      };
+      entries.unshift(entry);
+      if (entries.length > 8) entries.length = 8;
+      if (element) renderRow(element, entry);
+      for (const listener of listeners) listener();
+    },
+    getEntries() {
+      return entries.map((entry) => ({ ...entry }));
+    },
+    subscribe(listener) {
+      if (typeof listener !== 'function') throw new TypeError('Feed listener must be a function.');
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   };
 }
@@ -623,8 +667,13 @@ export function createActivityClient({
   let needsSnapshot = true;
   let source = null;
   let closed = false;
+  let reconnectTimer = null;
 
   const publishState = () => onState({ ...state });
+  const clearReconnectTimer = () => {
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  };
   const publishTree = (sessions, changes, reset) => onTree({ sessions, ...changes, reset });
   const loseTree = () => {
     publishTree([], diffSubagents(state.treeSessions, []), false);
@@ -632,7 +681,11 @@ export function createActivityClient({
   };
   const markUnknown = () => {
     needsSnapshot = true;
-    state = unknownConnection(state, 'unknown');
+    const connection = reconnectTimer !== null ? 'recovering'
+      : state.connection === 'retrying' ? 'retrying' : 'unknown';
+    state = connection === 'recovering'
+      ? { ...state, connection, coverage: 'unknown' }
+      : unknownConnection(state, connection);
     publishState();
   };
   const handleSnapshot = (message) => {
@@ -653,6 +706,7 @@ export function createActivityClient({
     streamEpoch = message.epoch;
     streamSequence = message.sequence;
     needsSnapshot = false;
+    clearReconnectTimer();
     state = { ...snapshot, connection: 'connected' };
     publishState();
     publishTree(snapshot.treeSessions, changes, reset);
@@ -669,10 +723,8 @@ export function createActivityClient({
       return;
     }
     if (needsSnapshot || message.epoch !== streamEpoch) {
-      needsSnapshot = true;
-      loseTree();
-      state = unknownConnection(state, 'unknown');
-      publishState();
+      if (reconnectTimer === null) loseTree();
+      markUnknown();
       return;
     }
     if (message.sequence <= streamSequence) return;
@@ -706,16 +758,22 @@ export function createActivityClient({
         try { handleActivity(JSON.parse(event.data)); } catch { markUnknown(); }
       });
       source.onerror = () => {
-        if (closed) return;
+        if (closed || reconnectTimer !== null || state.connection === 'retrying') return;
         needsSnapshot = true;
-        loseTree();
-        state = unknownConnection(state, 'retrying');
+        state = { ...state, connection: 'recovering', coverage: 'unknown' };
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          loseTree();
+          state = unknownConnection(state, 'retrying');
+          publishState();
+        }, 15_000);
         publishState();
       };
       publishState();
     },
     disconnect() {
       closed = true;
+      clearReconnectTimer();
       source?.close();
       source = null;
       needsSnapshot = true;

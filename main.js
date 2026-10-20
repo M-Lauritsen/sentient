@@ -5,15 +5,18 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity, impactBurst,
-  createThinkingPulseClock, summarizeSubagents, createCategoryBurstPlan, createActivityTimeline,
-  projectActiveHudSessions } from './activity-client.mjs';
-import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from './session-stats-ui.mjs';
-import { CATEGORIES, CATEGORY_HEX, CATEGORY_INDEX, CATEGORY_RGB } from './activity-colors.mjs';
+  createThinkingPulseClock, summarizeSubagents, createCategoryBurstPlan, createActivityTimeline } from './activity-client.mjs';
+import { createPageActivityTotals, createSessionStatsDialog, createTimelineDialog } from './session-stats-ui.mjs';
+import { createWorkspaceStore } from './workspace-model.mjs';
+import { createWorkspaceUI } from './workspace-ui.mjs';
+import { CATEGORIES, CATEGORY_HEX, CATEGORY_INDEX, HOOK_TYPES,
+  createScenePalette, applyHookColors } from './activity-colors.mjs';
 import { VISUAL as VISUAL_DEFAULTS, VISUAL_PRESET, VISUAL_OVERRIDES,
   EFFECTIVE_VISUAL as VISUAL } from './visual-settings.mjs';
 import { validateVisualSettings } from './visual-config.mjs';
 import { createVisualSettingsPanel } from './visual-settings-ui.mjs';
 import { createLibraryDialog } from './copilot-library-ui.mjs';
+import { createNavigationUI } from './navigation-ui.mjs';
 
 // Structural geometry and fixed buffer capacities; node count can rebuild the network.
 const CFG = {
@@ -29,8 +32,8 @@ const CFG = {
 // 3 = duration-scaled impact burst.
 // Motion and category are independent; RGB storage is shared and never rebuilt.
 // Shader attributes are linear; apply scene brightness before trail brightness.
-const SCENE_RGB = Float32Array.from(CATEGORY_RGB, (channel) =>
-  VISUAL.scene.categoryBrightness * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+const SCENE_RGB = createScenePalette(VISUAL);
+applyHookColors(document, VISUAL.hooks);
 
 // ---------- renderer / scene ----------
 const container = document.getElementById('app');
@@ -970,11 +973,7 @@ const $impulses = document.getElementById('impulses');
 const $load = document.getElementById('load');
 const $subtitle = document.getElementById('subtitle');
 const $coverage = document.getElementById('coverage');
-const $sessionHud = document.getElementById('session-hud');
-const $sessionState = document.getElementById('session-state');
-const $sessionList = document.getElementById('session-list');
-const $sessionMore = document.getElementById('session-more');
-const impulseFeed = createImpulseFeed(document.getElementById('impulse-feed'));
+const impulseFeed = createImpulseFeed();
 const impulseBuffer = createImpulseBuffer();
 const categoryBurstPlan = createCategoryBurstPlan();
 const timeline = createActivityTimeline(performance.now());
@@ -988,7 +987,7 @@ const timelineLabels = {
   gap: 'Coverage gap · missing activity is unknown, not zero',
 };
 let lastTimelineState = '';
-createTimelineDialog({
+const timelineDialog = createTimelineDialog({
   preview: document.querySelector('.hud-timeline'),
   content: document.getElementById('timeline-content'),
   canvas: timelineCanvas,
@@ -998,29 +997,9 @@ createTimelineDialog({
   closeButton: document.getElementById('timeline-close'),
   redraw: () => renderTimeline(performance.now()),
 });
-const sessionStatusLabels = {
-  running: 'RUNNING',
-  'running-unverified': 'RUNNING · UNVERIFIED',
-};
-let sessionRows = [];
 const expandedSessionStats = new Set();
 const pageActivityTotals = createPageActivityTotals();
-
-function formatSessionElapsed(elapsedMs) {
-  const seconds = Math.floor(Math.min(1_000_000_000, Math.max(0, elapsedMs)) / 1000);
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const remainder = seconds % 60;
-  if (hours >= 1000) return '>999h';
-  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
-  return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
-}
-
-function tickSessionTimes(now = performance.now()) {
-  for (const row of sessionRows) {
-    row.time.textContent = formatSessionElapsed(row.elapsedMs + now - row.receivedAt);
-  }
-}
+let activityState = { connection: 'connecting', sourceStatus: 'unknown', coverage: 'unknown', activeSessions: 0, thinkingSessions: 0, runningSessions: 0, unverifiedRunningSessions: 0, journalFiles: 0, sessions: [] };
 
 const sessionStatsDialog = createSessionStatsDialog({
   document,
@@ -1028,11 +1007,40 @@ const sessionStatsDialog = createSessionStatsDialog({
   title: document.getElementById('session-stats-title'),
   content: document.getElementById('session-stats-content'),
   closeButton: document.getElementById('session-stats-close'),
-  list: $sessionList,
   fallbackFocus: $status,
-  formatElapsed: formatSessionElapsed,
+  formatElapsed: (elapsedMs) => {
+    const seconds = Math.floor(Math.min(1_000_000_000, Math.max(0, elapsedMs)) / 1000);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainder = seconds % 60;
+    if (hours >= 1000) return '>999h';
+    if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+    return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+  },
   expandedSessionStats,
   pageActivityTotals,
+});
+let workspaceStorage = null;
+try {
+  workspaceStorage = window.localStorage ?? null;
+} catch {
+  workspaceStorage = {
+    getItem() { throw new Error('Workspace browser storage is unavailable.'); },
+    setItem() { throw new Error('Workspace browser storage is unavailable.'); },
+  };
+}
+const workspaceStore = createWorkspaceStore({ storage: workspaceStorage });
+const workspaceUI = createWorkspaceUI({
+  document,
+  root: document.getElementById('workspace'),
+  opener: document.getElementById('workspace-open'),
+  store: workspaceStore,
+  feed: impulseFeed,
+  timelinePreview: document.querySelector('.hud-timeline'),
+  closeTimeline: () => timelineDialog.close(),
+  sessionStatsDialog,
+  pageActivityTotals,
+  expandedSessionStats,
 });
 
 function renderWaitingMarkers(sessionIds) {
@@ -1049,60 +1057,15 @@ function renderWaitingMarkers(sessionIds) {
   }
 }
 
-$sessionList.addEventListener('click', (event) => {
-  sessionStatsDialog.open(event);
+document.getElementById('workspace').addEventListener('click', (event) => {
+  if (event.target.closest('.workspace-session-list')) sessionStatsDialog.open(event);
 });
 
-function renderSessions(state) {
-  renderWaitingMarkers(state.connection === 'connected' && state.sourceStatus !== 'unavailable'
-    ? state.waitingSessionIds : []);
-  const hasHudProjection = Array.isArray(state.hudSessions);
-  const sessionRecords = projectActiveHudSessions(state);
-  const unknown = state.connection !== 'connected' || state.sourceStatus !== 'available' ||
-    state.coverage === 'unknown';
-  sessionStatsDialog.update(
-    state.sessions ?? [], !unknown, sessionRecords ?? []);
-  if (!sessionRecords) {
-    $sessionHud.hidden = true;
-    clearSessionStats($sessionList, expandedSessionStats);
-    $sessionState.textContent = '';
-    $sessionMore.textContent = '';
-    sessionRows = [];
-    return;
-  }
-  $sessionHud.hidden = false;
-  $sessionHud.classList.toggle('is-unknown', unknown);
-  $sessionMore.textContent = '';
-  sessionRows = [];
-  if (unknown) {
-    clearSessionStats($sessionList, expandedSessionStats);
-    $sessionList.hidden = true;
-    $sessionState.textContent = 'COVERAGE UNKNOWN';
-    return;
-  }
-
-  const sessions = sessionRecords;
-  $sessionList.hidden = sessions.length === 0;
-  $sessionState.textContent = sessions.length ? '' : 'No active sessions';
-  const receivedAt = performance.now();
-  sessionRows = renderSessionRows({
-    document,
-    list: $sessionList,
-    sessions,
-    expandedSessionStats,
-    receivedAt,
-    formatElapsed: formatSessionElapsed,
-    statusLabels: sessionStatusLabels,
-  });
-  const visibleRunning = sessions.length;
-  const omitted = Math.max(0, (state.runningSessions ?? visibleRunning) - visibleRunning);
-  const truncated = hasHudProjection
-    ? state.hudSessionsTruncated === true : state.sessionsTruncated === true;
-  if (truncated && omitted > 0) $sessionMore.textContent = `+${omitted} more not shown`;
+function tickSessionTimes(now = performance.now()) {
+  workspaceUI.tickSessionTimes(now);
 }
 
 // ---------- interaction ----------
-let activityState = { connection: 'connecting', sourceStatus: 'unknown', coverage: 'unknown', activeSessions: 0, thinkingSessions: 0, runningSessions: 0, unverifiedRunningSessions: 0, journalFiles: 0, sessions: [] };
 const thinkingPulseClock = createThinkingPulseClock(VISUAL.running);
 
 // Blue running-state stream: observed running work (thinking, tools and
@@ -1119,6 +1082,13 @@ function renderThinking(dt) {
 }
 
 function renderActivityState(state) {
+  if (state.connection === 'recovering') {
+    activityState = state;
+    timeline.setCoverage(false, performance.now());
+    $coverage.textContent = 'CONNECTION GAP · showing last-known activity';
+    document.body.classList.toggle('source-unknown', true);
+    return;
+  }
   if (state.connection !== 'connected' || state.sourceStatus === 'unavailable' ||
       !(state.runningSessions > 0)) thinkingPulseClock.reset();
   if (state.connection !== 'connected') impulseBuffer.clear();
@@ -1128,7 +1098,9 @@ function renderActivityState(state) {
     state.coverage !== 'unknown', performance.now(), state.connection === 'connecting');
   activityState = state;
   updateSubagentSummary(state.treeSessions ?? []);
-  renderSessions(state);
+  renderWaitingMarkers(state.connection === 'connected' && state.sourceStatus !== 'unavailable'
+    ? state.waitingSessionIds : []);
+  workspaceUI.update(state);
   $journals.textContent = String(state.journalFiles ?? 0);
   $sessions.textContent = String(state.activeSessions ?? 0);
   $waiting.textContent = String(state.connection === 'connected' && state.sourceStatus !== 'unavailable'
@@ -1189,6 +1161,7 @@ const activityClient = createActivityClient({
         activityState.coverage !== 'unknown') {
       pageActivityTotals.add(activity);
       sessionStatsDialog.refreshActivity();
+      workspaceUI.refresh();
     }
   },
 });
@@ -1235,7 +1208,7 @@ function renderImpactBurst(node, category, durationMs) {
 }
 
 function renderObservedImpulses() {
-  const { byCategory, sceneByCategory, entries, impacts } = impulseBuffer.drain();
+  const { byCategory, sceneByCategory, hookCounts, entries, impacts } = impulseBuffer.drain();
   if (document.hidden) return;
   timeline.add(byCategory, performance.now());
   for (let i = 0; i < impacts.length; i++) {
@@ -1245,6 +1218,7 @@ function renderObservedImpulses() {
     const { kind, toolName, eventType, count } = entries[i];
     impulseFeed.add(kind, toolName, eventType, count);
   }
+  renderHookPulses(hookCounts);
   // Counts strengthen a bounded impulse, rather than rendering one per token.
   const plan = categoryBurstPlan.plan(sceneByCategory);
   for (let i = 0; i < plan.length; i++) {
@@ -1262,6 +1236,20 @@ function renderObservedImpulses() {
     if (kind === 0) nodeEnergy[node] = Math.min(VISUAL.nodes.energyCap,
       nodeEnergy[node] + VISUAL.activity.reasoningEnergy * intensity);
     else nodeHot[node] = Math.min(VISUAL.activity.stepHeatCap, nodeHot[node] + VISUAL.activity.stepHeat * intensity);
+  }
+}
+
+function renderHookPulses(counts) {
+  for (let index = 0; index < HOOK_TYPES.length; index++) {
+    const strength = VISUAL.hooks[`${HOOK_TYPES[index]}Impact`];
+    if (!counts[index] || strength === 0) continue;
+    const intensity = Math.min(VISUAL.activity.maxIntensity,
+      Math.max(1, Math.round(impulseIntensity(counts[index], VISUAL.activity) * strength)));
+    const node = (Math.random() * N) | 0;
+    fireFrom(node, intensity, 1, -1, Math.min(VISUAL.activity.maxSpread, intensity),
+      CATEGORIES.length + index);
+    nodeHot[node] = Math.min(VISUAL.activity.stepHeatCap,
+      nodeHot[node] + VISUAL.activity.stepHeat * intensity);
   }
 }
 
@@ -1352,7 +1340,7 @@ function frame() {
   const breathe = VISUAL.effects.latticeBreathing
     ? 1 + Math.sin(now * VISUAL.scene.breathSpeed) * VISUAL.scene.breathAmplitude : 1;
   brain.scale.setScalar(breathe);
-  const waitingGlow = activityState.connection === 'connected' &&
+  const waitingGlow = (activityState.connection === 'connected' || activityState.connection === 'recovering') &&
     activityState.sourceStatus !== 'unavailable' && activityState.waitingSessions > 0;
   const waitBreath = VISUAL.waiting.colorMixMin +
     VISUAL.waiting.colorMixRange * (0.5 + 0.5 * Math.sin(now * VISUAL.waiting.breathSpeed));
@@ -1405,9 +1393,7 @@ function applyVisualSettings(candidate) {
   const changed = (path) =>
     JSON.stringify(path.split('.').reduce((value, key) => value[key], previous)) !==
     JSON.stringify(path.split('.').reduce((value, key) => value[key], candidate));
-  const nextSceneRgb = Float32Array.from(CATEGORY_RGB, (channel) =>
-    candidate.scene.categoryBrightness *
-      (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+  const nextSceneRgb = createScenePalette(candidate);
   const nextNodeSize = !topologyChanged && (changed('nodes.largeChance') || changed('nodes.largeSizeMin') ||
     changed('nodes.largeSizeRange') || changed('nodes.baseSizeMin') || changed('nodes.baseSizeRange'))
     ? Float32Array.from({ length: N }, () => Math.random() < candidate.nodes.largeChance
@@ -1454,6 +1440,7 @@ function applyVisualSettings(candidate) {
   if (nextEdgeBase) edgeBase.set(nextEdgeBase);
   edgeLines.visible = VISUAL.scene.edgeVisibility !== 'hidden';
   SCENE_RGB.set(nextSceneRgb);
+  applyHookColors(document, VISUAL.hooks);
 
   const nodeUniforms = nodeMat.uniforms;
   nodeUniforms.uScale.value = VISUAL.nodes.scale * pixelRatio;
@@ -1539,7 +1526,8 @@ function applyVisualSettings(candidate) {
   bloom.strength = VISUAL.scene.bloomStrength;
   bloom.radius = VISUAL.scene.bloomRadius;
   bloom.threshold = VISUAL.scene.bloomThreshold;
-  renderWaitingMarkers(activityState.connection === 'connected' && activityState.sourceStatus !== 'unavailable'
+  renderWaitingMarkers((activityState.connection === 'connected' || activityState.connection === 'recovering') &&
+    activityState.sourceStatus !== 'unavailable'
     ? activityState.waitingSessionIds : []);
   if (!libraryModalOpen) controls.update();
   return true;
@@ -1552,6 +1540,11 @@ createVisualSettingsPanel({
   form: document.getElementById('visual-settings-form'),
   presetSelect: document.getElementById('visual-settings-preset'),
   fields: document.getElementById('visual-settings-fields'),
+  quickFields: document.getElementById('visual-settings-quick'),
+  searchInput: document.getElementById('visual-settings-search'),
+  searchStatus: document.getElementById('visual-settings-search-status'),
+  clearSearchButton: document.getElementById('visual-settings-search-clear'),
+  title: document.getElementById('visual-settings-title'),
   status: document.getElementById('visual-settings-status'),
   errorSummary: document.getElementById('visual-settings-errors'),
   conflict: document.getElementById('visual-settings-conflict'),
@@ -1573,7 +1566,12 @@ createVisualSettingsPanel({
     settings: VISUAL,
   },
   applySettings: applyVisualSettings,
+  onOpenChange(open) {
+    workspaceUI.setAppearanceOpen(open);
+  },
 });
+
+createNavigationUI({ document });
 
 createLibraryDialog({
   document,

@@ -18,7 +18,7 @@ export function createPageActivityTotals() {
   };
 }
 
-function renderPageActivityTotals(document, totals) {
+export function renderPageActivityTotals(document, totals) {
   const section = document.createElement('section');
   section.className = 'page-activity-stats';
   const label = 'Activity by category · since page load';
@@ -78,21 +78,27 @@ export function renderSessionRows({
   receivedAt,
   formatElapsed,
   statusLabels,
+  pruneExpanded = true,
+  sessionKeyFor,
 }) {
   const activeElement = document.activeElement;
-  const focusedSessionKey = activeElement?.matches?.('button[data-session-stats-toggle]')
+  const focusedSessionKey = list.contains(activeElement) &&
+    activeElement?.matches?.('button[data-session-stats-toggle]')
     ? activeElement.dataset.sessionKey : null;
   list.replaceChildren();
   const sessionKeyCounts = new Map();
-  const sessionKeys = sessions.map((session) => {
+  const sessionKeys = sessions.map((session, index) => {
+    if (sessionKeyFor) return sessionKeyFor(session, index);
     const duplicateIndex = sessionKeyCounts.get(session.id) ?? 0;
     sessionKeyCounts.set(session.id, duplicateIndex + 1);
     return `${session.id}-${duplicateIndex}`;
   });
   const availableStats = new Set(sessions.flatMap((session, index) =>
     session.stats ? [sessionKeys[index]] : []));
-  for (const key of expandedSessionStats) {
-    if (!availableStats.has(key)) expandedSessionStats.delete(key);
+  if (pruneExpanded) {
+    for (const key of expandedSessionStats) {
+      if (!availableStats.has(key)) expandedSessionStats.delete(key);
+    }
   }
 
   const rows = [];
@@ -145,9 +151,11 @@ export function createSessionStatsDialog({
   document, dialog, title, content, closeButton, list, fallbackFocus, formatElapsed, expandedSessionStats,
   pageActivityTotals = createPageActivityTotals(),
 }) {
+  const lists = new Set(list ? [list] : []);
   let selectedId = null;
   let selectedKey = null;
   let selectedMatchCount = 0;
+  let selectedList = null;
   let sessions = [];
   let activeSessions = [];
   let coverageKnown = false;
@@ -158,9 +166,11 @@ export function createSessionStatsDialog({
     const activeMatches = activeSessions.filter(({ id }) => id === selectedId);
     const matches = sessions.filter(({ id }) => id === selectedId);
     const occurrence = Number(selectedKey?.split('-').at(-1));
-    const session = activeMatches.length === selectedMatchCount
+    const session = activeMatches.length > 0 && activeMatches.length === selectedMatchCount
       ? activeMatches[occurrence]
-      : selectedMatchCount === 1 && matches.length === 1 ? matches[0] : undefined;
+      : selectedMatchCount === 0
+        ? matches[occurrence]
+        : selectedMatchCount === 1 && matches.length === 1 ? matches[0] : undefined;
     if (coverageKnown && session?.stats) {
       content.replaceChildren(renderSessionStats(document, session.stats, formatElapsed));
     } else {
@@ -188,27 +198,42 @@ export function createSessionStatsDialog({
     // A queued close event must not clear a newly opened session.
     if (dialog.open) return;
     expandedSessionStats.clear();
-    const buttons = [...list.querySelectorAll('button[data-session-stats-toggle]')];
+    const buttons = [...lists].flatMap((item) =>
+      [...item.querySelectorAll('button[data-session-stats-toggle]')]);
     for (const button of buttons) button.setAttribute('aria-expanded', 'false');
-    const opener = buttons.find((button) => button.dataset.sessionKey === selectedKey);
-    (opener ?? (list.hidden ? fallbackFocus : list)).focus({ preventScroll: true });
+    const opener = buttons.find((button) =>
+      button.closest('ol') === selectedList && button.dataset.sessionKey === selectedKey) ??
+      buttons.find((button) => button.dataset.sessionKey === selectedKey);
+    (opener ?? (selectedList?.hidden ? fallbackFocus : selectedList) ?? fallbackFocus)
+      .focus({ preventScroll: true });
     selectedId = null;
     selectedKey = null;
+    selectedList = null;
     content.replaceChildren();
   });
 
   return {
     refreshActivity: render,
+    registerList(item) {
+      lists.add(item);
+    },
+    unregisterList(item) {
+      lists.delete(item);
+    },
     open(event) {
       const toggle = event.target.closest?.('button[data-session-stats-toggle]');
-      if (!toggle || !list.contains(toggle) || !coverageKnown) return;
+      const owningList = [...lists].find((item) => item.contains(toggle));
+      if (!toggle || !owningList || !coverageKnown) return;
       const id = toggle.dataset.sessionId;
       const matches = activeSessions.filter((session) => session.id === id);
       const occurrence = Number(toggle.dataset.sessionKey?.split('-').at(-1));
-      if (!matches[occurrence]?.stats) return;
+      const currentMatches = matches.length
+        ? matches : sessions.filter((session) => session.id === id);
+      if (!currentMatches[occurrence]?.stats) return;
       selectedId = id;
       selectedKey = toggle.dataset.sessionKey;
       selectedMatchCount = matches.length;
+      selectedList = owningList;
       expandedSessionStats.clear();
       expandedSessionStats.add(selectedKey);
       toggle.setAttribute('aria-expanded', 'true');
@@ -231,8 +256,19 @@ export function clearSessionStats(list, expandedSessionStats) {
 }
 
 export function createTimelineDialog({ preview, content, canvas, dialog, dialogContent, opener, closeButton, redraw }) {
+  let enlarged = false;
+  const restore = () => {
+    if (!enlarged) return;
+    enlarged = false;
+    preview.append(content);
+    canvas.height = 48;
+    opener.setAttribute('aria-expanded', 'false');
+    redraw();
+    opener.focus({ preventScroll: true });
+  };
   opener.addEventListener('click', () => {
     if (dialog.open) return;
+    enlarged = true;
     dialogContent.append(content);
     canvas.height = 160;
     dialog.showModal();
@@ -246,12 +282,12 @@ export function createTimelineDialog({ preview, content, canvas, dialog, dialogC
     if (event.clientX < bounds.left || event.clientX > bounds.right ||
         event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
   });
-  dialog.addEventListener('close', () => {
-    if (dialog.open) return;
-    preview.append(content);
-    canvas.height = 48;
-    opener.setAttribute('aria-expanded', 'false');
-    redraw();
-    opener.focus({ preventScroll: true });
-  });
+  dialog.addEventListener('close', restore);
+  return {
+    close() {
+      if (dialog.open) dialog.close();
+      restore();
+    },
+    get isOpen() { return enlarged; },
+  };
 }
