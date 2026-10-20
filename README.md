@@ -129,9 +129,16 @@ Modules can use the left, right, lower-left and bottom-centre docks. The
 timeline defaults to lower left for new layouts and **Reset layout**; existing
 saved placements are preserved. Lower left accepts any module, not just the
 timeline, with the same movement, ordering and size controls.
+Modules have transparent backgrounds and fixed content areas: Compact reserves
+128px, Standard 200px and Large 320px. Live arrivals, empty states and coverage
+updates do not resize them. Settings and Collapse can still intentionally
+expand or shrink a panel; overflowing content stays within its selected size.
 Collapsing or removing a module changes only its presentation; activity
 collection, coverage, timeline history and page totals continue independently.
-Removed modules can be added again from the workspace catalogue.
+To add a module, choose its catalogue type, name, type-specific options and dock
+in Workspace settings. New instances start with validated catalogue defaults;
+names are rendered as text. The timeline remains a singleton because its live
+canvas can occupy only one module.
 
 Feed and totals settings offer **All categories** plus individual category
 checkboxes. All categories includes every supported category, not unlimited

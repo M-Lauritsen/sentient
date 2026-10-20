@@ -101,6 +101,8 @@ test('workspace validation rejects duplicate IDs, invalid module configuration, 
     (value) => { value.profiles[0].instances[1].id = value.profiles[0].instances[0].id; },
     (value) => { value.profiles[0].instances[0].type = 'plugin'; },
     (value) => { value.profiles[0].instances[0].config.categories = ['raw-session-id']; },
+    (value) => { value.profiles[0].instances[2].config.sessionFilter = 'session-123'; },
+    (value) => { value.profiles[0].instances[0].config.unsupported = true; },
     (value) => {
       value.profiles[0].instances.push({
         ...clone(value.profiles[0].instances[2]),
@@ -122,6 +124,16 @@ test('workspace validation rejects duplicate IDs, invalid module configuration, 
     mutate(candidate);
     assert.throws(() => validateWorkspaceEnvelope(candidate));
   }
+});
+
+test('workspace validation preserves script-like names as text values and rejects invalid names', () => {
+  const candidate = createDefaultWorkspace();
+  const displayName = '<script>alert(1)</script>';
+  candidate.profiles[0].instances[0].displayName = displayName;
+  assert.equal(validateWorkspaceEnvelope(candidate).profiles[0].instances[0].displayName, displayName);
+
+  candidate.profiles[0].instances[0].displayName = 'invalid\nname';
+  assert.throws(() => validateWorkspaceEnvelope(candidate), /without control characters/);
 });
 
 test('workspace validation enforces complete dock ordering and the saved-profile limit', () => {

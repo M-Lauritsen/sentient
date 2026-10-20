@@ -187,8 +187,78 @@ test('catalogue modules render filtered totals and legend, with one live timelin
   select.value = 'timeline';
   select.dispatchEvent(new document.defaultView.Event('change', { bubbles: true }));
   assert.equal(add.disabled, true);
+  assert.match(document.querySelector('.workspace-catalog-hint').textContent, /one live canvas.*aggregate data only/i);
   assert.equal(document.querySelectorAll('.hud-timeline').length, 1);
   assert.equal(timelinePreview.closest('.workspace-module').dataset.moduleType, 'timeline');
+});
+
+test('Add module validates a custom name, type options and dock before rendering and saving', () => {
+  const storage = new MemoryStorage();
+  const { document, ui, store, feed } = setup({ storage });
+  ui.update(connectedState());
+  feed.add('thinking');
+  document.querySelector('.workspace-settings-open').click();
+
+  const catalog = document.querySelector('.workspace-catalog');
+  const type = catalog.querySelector('select[aria-label="Module type"]');
+  const name = catalog.querySelector('input[aria-label="Module name"]');
+  const dockSelect = catalog.querySelector('select[aria-label="Module dock"]');
+  type.value = 'feed';
+  type.dispatchEvent(new document.defaultView.Event('change', { bubbles: true }));
+  name.value = '  ';
+  catalog.querySelector('button').click();
+  assert.equal(document.querySelectorAll('.workspace-module').length, 3);
+  assert.match(document.querySelector('.workspace-status').textContent, /trimmed characters/i);
+
+  const displayName = '<img src=x onerror=alert(1)>';
+  name.value = displayName;
+  dockSelect.value = 'bottom';
+  const options = catalog.querySelector('.workspace-catalog-options');
+  options.querySelector('[data-all-categories]').click();
+  const readCategory = options.querySelector('[data-category="read"]');
+  readCategory.click();
+  assert.equal(options.querySelector('[data-all-categories]').indeterminate, true);
+  const density = options.querySelector('select[name="density"]');
+  density.value = 'compact';
+  const showLegend = options.querySelector('input[name="showLegend"]');
+  showLegend.click();
+  catalog.querySelector('button').click();
+
+  const panel = document.querySelector('.workspace-module[data-dock="bottom"][data-module-type="feed"]');
+  assert.ok(panel);
+  assert.equal(panel.querySelector('h2').textContent, displayName);
+  assert.equal(panel.querySelector('h2').querySelector('img, script'), null);
+  assert.deepEqual(store.getState().activeProfile.instances.map(({ type }) => type),
+    ['feed', 'sessions', 'timeline']);
+  assert.equal(document.querySelector('.workspace-toolbar button:nth-child(2)').disabled, false);
+  document.querySelector('.workspace-toolbar button:nth-child(2)').click();
+
+  const saved = store.getState().activeProfile.instances.find(({ displayName: value }) =>
+    value === displayName);
+  assert.deepEqual(saved, {
+    id: saved.id,
+    type: 'feed',
+    displayName,
+    dock: 'bottom',
+    order: 0,
+    size: 'standard',
+    config: {
+      categories: ['read'],
+      density: 'compact',
+      showLegend: false,
+    },
+  });
+  assert.equal(JSON.stringify(JSON.parse(storage.values.get('sentient-os.workspaces.v1')))
+    .includes('Thinking'), false);
+
+  const reloaded = setup({ storage });
+  assert.equal(reloaded.feed.getEntries().length, 0);
+  assert.ok(reloaded.document.querySelector(
+    '.workspace-module[data-dock="bottom"] h2',
+  ));
+  assert.equal(reloaded.document.querySelector(
+    '.workspace-module[data-dock="bottom"] h2',
+  ).textContent, displayName);
 });
 
 test('independent feed filters reuse one bounded accepted-arrival model', () => {

@@ -1,6 +1,8 @@
 import {
   createDefaultWorkspace,
   createWorkspaceStore,
+  validateWorkspaceEnvelope,
+  WorkspaceValidationError,
   WORKSPACE_MODULES,
 } from './workspace-model.mjs';
 import { CATEGORIES, CATEGORY_GLYPH, CATEGORY_HEX } from './activity-colors.mjs';
@@ -181,9 +183,33 @@ export function createWorkspaceUI({
     option.value = type;
     catalogSelect.append(option);
   }
-  const addButton = button(document, 'Add module');
   catalogLabel.append(catalogSelect);
-  catalog.append(catalogLabel, addButton);
+  const catalogNameLabel = element(document, 'label', 'workspace-label', 'Name');
+  const catalogName = element(document, 'input');
+  catalogName.type = 'text';
+  catalogName.maxLength = 48;
+  catalogName.required = true;
+  catalogName.setAttribute('aria-label', 'Module name');
+  catalogNameLabel.append(catalogName);
+  const catalogDockLabel = element(document, 'label', 'workspace-label', 'Dock');
+  const catalogDock = element(document, 'select');
+  catalogDock.setAttribute('aria-label', 'Module dock');
+  for (const dock of DOCKS) {
+    const option = element(document, 'option', '',
+      dock === 'bottom-left' ? 'Lower left' : dock === 'bottom' ? 'Bottom' : dock);
+    option.value = dock;
+    catalogDock.append(option);
+  }
+  catalogDockLabel.append(catalogDock);
+  const catalogOptions = element(document, 'div', 'workspace-catalog-options');
+  const catalogHint = element(document, 'p', 'workspace-catalog-hint');
+  catalogHint.setAttribute('role', 'status');
+  catalogHint.setAttribute('aria-live', 'polite');
+  const addButton = button(document, 'Add module');
+  catalog.append(catalogLabel, catalogNameLabel, catalogDockLabel,
+    catalogOptions, catalogHint, addButton);
+  const catalogConfigView = { options: catalogOptions };
+  let catalogConfigType = null;
   const tools = element(document, 'div', 'workspace-toolbar');
   tools.append(profileLabel, saveButton, resetButton, editButton);
   editor.append(tools, profileActions, storageActions, catalog, status);
@@ -324,22 +350,51 @@ export function createWorkspaceUI({
 
   function addModule(type) {
     const definition = WORKSPACE_MODULES[type];
-    if (!definition || draft.instances.length >= 12) return;
-    if (type === 'timeline' && draft.instances.some((instance) => instance.type === 'timeline')) {
-      status.textContent = 'Only one timeline can be in the workspace.';
+    if (!definition) {
+      status.textContent = 'Module type is not supported.';
       return;
     }
-    const config = clone(definition.defaultConfig);
+    renderCatalogConfig(type);
+    if (draft.instances.length >= 12) {
+      status.textContent = 'A workspace can contain at most 12 modules.';
+      return;
+    }
+    if (type === 'timeline' && draft.instances.some((instance) => instance.type === 'timeline')) {
+      catalogHint.textContent = 'Only one timeline can be added because it uses one live canvas.';
+      return;
+    }
+    const config = readConfigFields(catalogOptions, definition.defaultConfig);
+    let id;
+    do {
+      id = `module-${(++idSequence).toString(36)}-${Date.now().toString(36)}`;
+    } while (draft.instances.some((instance) => instance.id === id));
     const instance = {
-      id: `module-${(++idSequence).toString(36)}-${Date.now().toString(36)}`,
+      id,
       type,
-      displayName: definition.label,
-      dock: definition.defaultDock,
-      order: nextOrder(definition.defaultDock),
+      displayName: catalogName.value,
+      dock: catalogDock.value,
+      order: nextOrder(catalogDock.value),
       size: 'standard',
       config,
     };
-    changeInstances([...draft.instances, instance], instance.id);
+    let validatedInstance;
+    try {
+      const validated = validateWorkspaceEnvelope({
+        version: 1,
+        activeProfileId: 'default',
+        profiles: [{
+          id: 'default',
+          name: 'Default',
+          instances: [...draft.instances, instance],
+        }],
+      });
+      validatedInstance = validated.profiles[0].instances.at(-1);
+    } catch (error) {
+      if (!(error instanceof WorkspaceValidationError)) throw error;
+      status.textContent = error.message;
+      return;
+    }
+    changeInstances([...draft.instances, validatedInstance], validatedInstance.id);
     status.textContent = 'Unsaved changes';
   }
 
@@ -518,18 +573,22 @@ export function createWorkspaceUI({
   }
 
   function readConfig(view) {
+    const instance = draft.instances.find((item) => item.id === view.panel.dataset.instanceId);
+    return instance ? readConfigFields(view.options, instance.config) : null;
+  }
+
+  function readConfigFields(options, baseConfig) {
     const config = {};
-    if (view.options.querySelector('[data-all-categories]')) {
-      config.categories = [...view.options.querySelectorAll('[data-category]:checked')]
+    if (options.querySelector('[data-all-categories]')) {
+      config.categories = [...options.querySelectorAll('[data-category]:checked')]
         .map((field) => field.value);
     }
-    for (const field of view.options.querySelectorAll('[data-module-config]')) {
+    for (const field of options.querySelectorAll('[data-module-config]')) {
       if (field.matches('[data-all-categories], [data-category]')) continue;
       if (field.type === 'checkbox') config[field.name] = field.checked;
       else if (field.type === 'select-one') config[field.name] = field.value;
     }
-    const instance = draft.instances.find((item) => item.id === view.panel.dataset.instanceId);
-    return instance ? { ...instance.config, ...config } : null;
+    return { ...baseConfig, ...config };
   }
 
   function addConfigSelect(view, labelText, name, options, value) {
@@ -604,6 +663,18 @@ export function createWorkspaceUI({
       addConfigSelect(view, 'Presentation', 'presentation',
         [['compact', 'Compact'], ['list', 'List']], instance.config.presentation);
     }
+  }
+
+  function renderCatalogConfig(type) {
+    const definition = WORKSPACE_MODULES[type];
+    if (!definition || catalogConfigType === type) return;
+    catalogName.value = definition.label;
+    catalogDock.value = definition.defaultDock;
+    renderConfig(catalogConfigView, {
+      type,
+      config: clone(definition.defaultConfig),
+    });
+    catalogConfigType = type;
   }
 
   function renderLegend(content) {
@@ -887,11 +958,15 @@ export function createWorkspaceUI({
     status.textContent ||= formatStatus(store.getState());
     const hasTimeline = draft.instances.some((instance) => instance.type === 'timeline');
     const selectedType = catalogSelect.value || 'feed';
+    renderCatalogConfig(selectedType);
     const timelineOption = [...catalogSelect.options].find((option) => option.value === 'timeline');
     if (timelineOption) {
       timelineOption.disabled = hasTimeline;
       timelineOption.textContent = hasTimeline ? 'Timeline (already in workspace)' : 'Timeline';
     }
+    catalogHint.textContent = selectedType === 'timeline'
+      ? 'Timeline uses one live canvas and supports aggregate data only.'
+      : '';
     addButton.disabled = draft.instances.length >= 12 ||
       (selectedType === 'timeline' && hasTimeline);
     if (!current) status.textContent = 'The active workspace profile is missing.';
@@ -1014,6 +1089,18 @@ export function createWorkspaceUI({
     opener.focus({ preventScroll: true });
   });
   catalogSelect.addEventListener('change', renderEditor);
+  catalogOptions.addEventListener('change', (event) => {
+    if (event.target.matches('[data-all-categories]')) {
+      for (const field of catalogOptions.querySelectorAll('[data-category]')) {
+        field.checked = event.target.checked;
+      }
+    }
+    if (event.target.matches('[data-all-categories], [data-category]')) {
+      const categories = [...catalogOptions.querySelectorAll('[data-category]:checked')]
+        .map((field) => field.value);
+      syncCategorySelection(catalogConfigView, categories);
+    }
+  });
   addButton.addEventListener('click', () => addModule(catalogSelect.value));
   renameButton.addEventListener('click', () => {
     draft.name = renameInput.value;
