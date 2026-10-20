@@ -5,9 +5,10 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIntensity, impactBurst,
-  createThinkingPulseClock, summarizeSubagents, createCategoryBurstPlan, createActivityTimeline,
-  projectActiveHudSessions } from './activity-client.mjs';
-import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from './session-stats-ui.mjs';
+  createThinkingPulseClock, summarizeSubagents, createCategoryBurstPlan, createActivityTimeline } from './activity-client.mjs';
+import { createPageActivityTotals, createSessionStatsDialog, createTimelineDialog } from './session-stats-ui.mjs';
+import { createWorkspaceStore } from './workspace-model.mjs';
+import { createWorkspaceUI } from './workspace-ui.mjs';
 import { CATEGORIES, CATEGORY_HEX, CATEGORY_INDEX, CATEGORY_RGB } from './activity-colors.mjs';
 import { VISUAL as VISUAL_DEFAULTS, VISUAL_PRESET, VISUAL_OVERRIDES,
   EFFECTIVE_VISUAL as VISUAL } from './visual-settings.mjs';
@@ -970,11 +971,7 @@ const $impulses = document.getElementById('impulses');
 const $load = document.getElementById('load');
 const $subtitle = document.getElementById('subtitle');
 const $coverage = document.getElementById('coverage');
-const $sessionHud = document.getElementById('session-hud');
-const $sessionState = document.getElementById('session-state');
-const $sessionList = document.getElementById('session-list');
-const $sessionMore = document.getElementById('session-more');
-const impulseFeed = createImpulseFeed(document.getElementById('impulse-feed'));
+const impulseFeed = createImpulseFeed();
 const impulseBuffer = createImpulseBuffer();
 const categoryBurstPlan = createCategoryBurstPlan();
 const timeline = createActivityTimeline(performance.now());
@@ -988,7 +985,7 @@ const timelineLabels = {
   gap: 'Coverage gap · missing activity is unknown, not zero',
 };
 let lastTimelineState = '';
-createTimelineDialog({
+const timelineDialog = createTimelineDialog({
   preview: document.querySelector('.hud-timeline'),
   content: document.getElementById('timeline-content'),
   canvas: timelineCanvas,
@@ -998,29 +995,9 @@ createTimelineDialog({
   closeButton: document.getElementById('timeline-close'),
   redraw: () => renderTimeline(performance.now()),
 });
-const sessionStatusLabels = {
-  running: 'RUNNING',
-  'running-unverified': 'RUNNING · UNVERIFIED',
-};
-let sessionRows = [];
 const expandedSessionStats = new Set();
 const pageActivityTotals = createPageActivityTotals();
-
-function formatSessionElapsed(elapsedMs) {
-  const seconds = Math.floor(Math.min(1_000_000_000, Math.max(0, elapsedMs)) / 1000);
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const remainder = seconds % 60;
-  if (hours >= 1000) return '>999h';
-  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
-  return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
-}
-
-function tickSessionTimes(now = performance.now()) {
-  for (const row of sessionRows) {
-    row.time.textContent = formatSessionElapsed(row.elapsedMs + now - row.receivedAt);
-  }
-}
+let activityState = { connection: 'connecting', sourceStatus: 'unknown', coverage: 'unknown', activeSessions: 0, thinkingSessions: 0, runningSessions: 0, unverifiedRunningSessions: 0, journalFiles: 0, sessions: [] };
 
 const sessionStatsDialog = createSessionStatsDialog({
   document,
@@ -1028,11 +1005,40 @@ const sessionStatsDialog = createSessionStatsDialog({
   title: document.getElementById('session-stats-title'),
   content: document.getElementById('session-stats-content'),
   closeButton: document.getElementById('session-stats-close'),
-  list: $sessionList,
   fallbackFocus: $status,
-  formatElapsed: formatSessionElapsed,
+  formatElapsed: (elapsedMs) => {
+    const seconds = Math.floor(Math.min(1_000_000_000, Math.max(0, elapsedMs)) / 1000);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainder = seconds % 60;
+    if (hours >= 1000) return '>999h';
+    if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+    return `${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+  },
   expandedSessionStats,
   pageActivityTotals,
+});
+let workspaceStorage = null;
+try {
+  workspaceStorage = window.localStorage ?? null;
+} catch {
+  workspaceStorage = {
+    getItem() { throw new Error('Workspace browser storage is unavailable.'); },
+    setItem() { throw new Error('Workspace browser storage is unavailable.'); },
+  };
+}
+const workspaceStore = createWorkspaceStore({ storage: workspaceStorage });
+const workspaceUI = createWorkspaceUI({
+  document,
+  root: document.getElementById('workspace'),
+  opener: document.getElementById('workspace-open'),
+  store: workspaceStore,
+  feed: impulseFeed,
+  timelinePreview: document.querySelector('.hud-timeline'),
+  closeTimeline: () => timelineDialog.close(),
+  sessionStatsDialog,
+  pageActivityTotals,
+  expandedSessionStats,
 });
 
 function renderWaitingMarkers(sessionIds) {
@@ -1049,60 +1055,15 @@ function renderWaitingMarkers(sessionIds) {
   }
 }
 
-$sessionList.addEventListener('click', (event) => {
-  sessionStatsDialog.open(event);
+document.getElementById('workspace').addEventListener('click', (event) => {
+  if (event.target.closest('.workspace-session-list')) sessionStatsDialog.open(event);
 });
 
-function renderSessions(state) {
-  renderWaitingMarkers(state.connection === 'connected' && state.sourceStatus !== 'unavailable'
-    ? state.waitingSessionIds : []);
-  const hasHudProjection = Array.isArray(state.hudSessions);
-  const sessionRecords = projectActiveHudSessions(state);
-  const unknown = state.connection !== 'connected' || state.sourceStatus !== 'available' ||
-    state.coverage === 'unknown';
-  sessionStatsDialog.update(
-    state.sessions ?? [], !unknown, sessionRecords ?? []);
-  if (!sessionRecords) {
-    $sessionHud.hidden = true;
-    clearSessionStats($sessionList, expandedSessionStats);
-    $sessionState.textContent = '';
-    $sessionMore.textContent = '';
-    sessionRows = [];
-    return;
-  }
-  $sessionHud.hidden = false;
-  $sessionHud.classList.toggle('is-unknown', unknown);
-  $sessionMore.textContent = '';
-  sessionRows = [];
-  if (unknown) {
-    clearSessionStats($sessionList, expandedSessionStats);
-    $sessionList.hidden = true;
-    $sessionState.textContent = 'COVERAGE UNKNOWN';
-    return;
-  }
-
-  const sessions = sessionRecords;
-  $sessionList.hidden = sessions.length === 0;
-  $sessionState.textContent = sessions.length ? '' : 'No active sessions';
-  const receivedAt = performance.now();
-  sessionRows = renderSessionRows({
-    document,
-    list: $sessionList,
-    sessions,
-    expandedSessionStats,
-    receivedAt,
-    formatElapsed: formatSessionElapsed,
-    statusLabels: sessionStatusLabels,
-  });
-  const visibleRunning = sessions.length;
-  const omitted = Math.max(0, (state.runningSessions ?? visibleRunning) - visibleRunning);
-  const truncated = hasHudProjection
-    ? state.hudSessionsTruncated === true : state.sessionsTruncated === true;
-  if (truncated && omitted > 0) $sessionMore.textContent = `+${omitted} more not shown`;
+function tickSessionTimes(now = performance.now()) {
+  workspaceUI.tickSessionTimes(now);
 }
 
 // ---------- interaction ----------
-let activityState = { connection: 'connecting', sourceStatus: 'unknown', coverage: 'unknown', activeSessions: 0, thinkingSessions: 0, runningSessions: 0, unverifiedRunningSessions: 0, journalFiles: 0, sessions: [] };
 const thinkingPulseClock = createThinkingPulseClock(VISUAL.running);
 
 // Blue running-state stream: observed running work (thinking, tools and
@@ -1128,7 +1089,9 @@ function renderActivityState(state) {
     state.coverage !== 'unknown', performance.now(), state.connection === 'connecting');
   activityState = state;
   updateSubagentSummary(state.treeSessions ?? []);
-  renderSessions(state);
+  renderWaitingMarkers(state.connection === 'connected' && state.sourceStatus !== 'unavailable'
+    ? state.waitingSessionIds : []);
+  workspaceUI.update(state);
   $journals.textContent = String(state.journalFiles ?? 0);
   $sessions.textContent = String(state.activeSessions ?? 0);
   $waiting.textContent = String(state.connection === 'connected' && state.sourceStatus !== 'unavailable'
@@ -1189,6 +1152,7 @@ const activityClient = createActivityClient({
         activityState.coverage !== 'unknown') {
       pageActivityTotals.add(activity);
       sessionStatsDialog.refreshActivity();
+      workspaceUI.refresh();
     }
   },
 });

@@ -297,7 +297,10 @@ test('loopback server serves only explicit app assets and denies traversal', asy
 	const visualConfig = await fetch(`${base}/visual-config.mjs`);
 	assert.equal(visualConfig.status, 200);
 	assert.match(await visualConfig.text(), /validateVisualSettings/);
-	for (const asset of ['visual-settings-ui.mjs', 'visual-settings-worker.mjs']) {
+	for (const asset of [
+		'visual-settings-ui.mjs', 'visual-settings-worker.mjs',
+		'workspace-model.mjs', 'workspace-ui.mjs',
+	]) {
 		const response = await fetch(`${base}/${asset}`);
 		assert.equal(response.status, 200);
 		assert.match(response.headers.get('content-type'), /javascript/);

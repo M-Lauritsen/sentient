@@ -303,6 +303,18 @@ export function createActivityTimeline(now = 0) {
 }
 
 export function createImpulseFeed(element) {
+  const entries = [];
+  const listeners = new Set();
+  let nextEntryId = 0;
+  const renderRow = (target, entry) => {
+    const row = target.ownerDocument.createElement('li');
+    row.className = `impulse-entry impulse-${entry.kind} impulse-cat-${entry.category}`;
+    row.dataset.category = entry.category;
+    row.dataset.glyph = entry.glyph;
+    row.textContent = entry.label;
+    target.prepend(row);
+    while (target.children.length > 8) target.lastElementChild.remove();
+  };
   return {
     add(kind, toolName, eventType, count = 1) {
       const activity = projectActivity({ kind, toolName, eventType, count });
@@ -311,14 +323,26 @@ export function createImpulseFeed(element) {
       if (!label) return;
       const category = activityCategory(activity);
       if (category === 'waiting') return;
-      const row = element.ownerDocument.createElement('li');
-      row.className = `impulse-entry impulse-${kind} impulse-cat-${category}`;
-      row.dataset.category = category;
-      row.dataset.glyph = CATEGORY_GLYPH[category];
-      row.textContent = label + (activity.toolName ? ` · ${activity.toolName}` : '') +
-        (count > 1 ? ` ×${count}` : '');
-      element.prepend(row);
-      while (element.children.length > 8) element.lastElementChild.remove();
+      const entry = {
+        id: ++nextEntryId,
+        kind,
+        category,
+        glyph: CATEGORY_GLYPH[category],
+        label: label + (activity.toolName ? ` · ${activity.toolName}` : '') +
+          (activity.count > 1 ? ` ×${activity.count}` : ''),
+      };
+      entries.unshift(entry);
+      if (entries.length > 8) entries.length = 8;
+      if (element) renderRow(element, entry);
+      for (const listener of listeners) listener();
+    },
+    getEntries() {
+      return entries.map((entry) => ({ ...entry }));
+    },
+    subscribe(listener) {
+      if (typeof listener !== 'function') throw new TypeError('Feed listener must be a function.');
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   };
 }

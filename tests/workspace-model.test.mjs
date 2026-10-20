@@ -34,7 +34,7 @@ test('missing storage resolves deterministic default modules without persisting 
   assert.deepEqual(state.activeProfile.instances.map(({ type, dock, order }) => [type, dock, order]), [
     ['feed', 'left', 0],
     ['sessions', 'right', 0],
-    ['timeline', 'bottom', 0],
+    ['timeline', 'bottom-left', 0],
   ]);
   assert.equal(state.error, null);
   assert.equal(state.dirty, false);
@@ -68,6 +68,31 @@ test('profile CRUD, selection and layout reset round-trip only validated configu
   assert.equal(persisted.version, 1);
   assert.equal(persisted.profiles.some(({ id }) => id === 'profile-custom'), false);
   assert.equal(storage.values.has('sentient-os.visual-presets.v1'), false);
+});
+
+test('lower-left placements round-trip while existing bottom-centre layouts remain unchanged', () => {
+  const storage = new MemoryStorage();
+  const legacy = createDefaultWorkspace();
+  legacy.profiles[0].instances.find(({ type }) => type === 'timeline').dock = 'bottom';
+  const raw = JSON.stringify(legacy);
+  storage.values.set(WORKSPACE_STORAGE_KEY, raw);
+  const store = createWorkspaceStore({ storage });
+  assert.equal(store.getState().error, null);
+  assert.equal(store.getState().activeProfile.instances.find(({ type }) => type === 'timeline').dock, 'bottom');
+  assert.equal(storage.values.get(WORKSPACE_STORAGE_KEY), raw);
+  assert.equal(storage.writes.length, 0);
+
+  const instances = clone(store.getState().activeProfile.instances);
+  instances[0].dock = 'bottom-left';
+  assert.equal(store.setInstances(instances).ok, true);
+  const reloaded = createWorkspaceStore({ storage });
+  assert.equal(reloaded.getState().activeProfile.instances[0].dock, 'bottom-left');
+  assert.equal(reloaded.getState().activeProfile.instances[2].dock, 'bottom');
+  const invalid = clone(reloaded.getState().activeProfile.instances);
+  invalid[0].dock = 'not-a-dock';
+  const before = storage.values.get(WORKSPACE_STORAGE_KEY);
+  assert.equal(reloaded.setInstances(invalid).ok, false);
+  assert.equal(storage.values.get(WORKSPACE_STORAGE_KEY), before);
 });
 
 test('workspace validation rejects duplicate IDs, invalid module configuration, duplicate timelines and overflow', () => {

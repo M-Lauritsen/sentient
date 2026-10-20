@@ -116,6 +116,49 @@ The current journal sample did not include that event or
 `assistant.reasoning`, so those details may not appear. The journal format is
 internal and can change.
 
+## Workspace controls
+
+Open **Workspace** to manage the docked feed, sessions and live timeline. Select
+**Edit layout** to close the manager and reveal pointer drag handles. A visible
+**Done** control returns to normal viewing without silently saving.
+Each module's **Settings** opens its controls inline; **Layout** offers
+keyboard-operable dock, earlier/later, and Compact/Standard/Large controls while
+editing. Settings are closed initially and only one module's settings opens at
+a time. Close settings or press Escape to return focus to its Settings button.
+Modules can use the left, right, lower-left and bottom-centre docks. The
+timeline defaults to lower left for new layouts and **Reset layout**; existing
+saved placements are preserved. Lower left accepts any module, not just the
+timeline, with the same movement, ordering and size controls.
+Collapsing or removing a module changes only its presentation; activity
+collection, coverage, timeline history and page totals continue independently.
+Removed modules can be added again from the workspace catalogue.
+
+Feed and totals settings offer **All categories** plus individual category
+checkboxes. All categories includes every supported category, not unlimited
+history: feeds still share the latest eight accepted entries. A partial
+selection shows a mixed checkbox; clearing every category explicitly says
+**No categories selected**, rather than implying no observed activity.
+Refreshes retain existing feed rows; only new arrivals animate. The feed clips
+and fades older rows without an internal scrollbar.
+Density, legend and session filters are also in Settings, not the normal feed.
+Changes preview immediately. **Save changes** saves the whole workspace;
+closing Settings or choosing Done leaves unsaved changes visible.
+
+Workspace profiles, dock order, sizes and module filters are stored in this
+browser under `sentient-os.workspaces.v1`. They do not contain activity,
+session identifiers, prompts, paths or Library content. Use **Save changes**,
+**Save as**, **Rename**, **Delete profile**, and **Reset layout** in Workspace
+settings. A dirty profile switch offers Save, Discard or Cancel. Storage errors
+leave the current layout available in memory and are reported as not saved;
+corrupt stored data is preserved until **Replace corrupt workspace** is chosen.
+The default profile cannot be deleted, and reset restores the default modules
+without resetting observed data. Clearing this site's browser data removes
+saved workspace profiles.
+
+At narrow widths, **Workspace** opens a scrollable drawer and **Return to
+scene** closes it; the desktop dock positions are not rewritten. Executable
+plugins and external integrations remain intentionally deferred.
+
 ## Editing visual settings
 
 Open **Visual settings** in the HUD to preview the `balanced`, `subtle` or

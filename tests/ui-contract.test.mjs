@@ -11,6 +11,7 @@ const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
 const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
 const statsUi = await readFile(new URL('../session-stats-ui.mjs', import.meta.url), 'utf8');
+const workspaceUi = await readFile(new URL('../workspace-ui.mjs', import.meta.url), 'utf8');
 
 class TestElement {
   constructor(tagName, document) {
@@ -183,6 +184,7 @@ test('page category accumulation runs on accepted arrival, not frame drain, and 
     impulseBuffer: { add() {} },
     pageActivityTotals,
     sessionStatsDialog: { refreshActivity() { refreshes++; } },
+    workspaceUI: { refresh() {} },
   });
   vm.runInContext(`function receive(activity) { ${callback} }`, context);
   vm.runInContext("receive({ kind: 'step', count: 37 })", context);
@@ -260,9 +262,10 @@ test('statistics dialog labels all page-wide categories separately from unchange
 });
 
 test('impulse titles follow observed events with a bottom fade and reduced-motion support', () => {
-  assert.match(html, /id="impulse-feed"/);
-  assert.match(html, /aria-label="Recent impulses"/);
+  assert.match(workspaceUi, /element\(document, 'li', `impulse-entry/);
+  assert.match(html, /data-workspace-dock="left"/);
   assert.match(main, /impulseFeed\.add\(kind, toolName, eventType, count\)/);
+  assert.match(css, /\.workspace-feed,\s*\.workspace-session-list/);
   assert.match(css, /mask-image: linear-gradient\(to bottom,/);
   assert.match(css, /prefers-reduced-motion: reduce/);
 });
@@ -347,42 +350,33 @@ test('subagent trees use bounded preallocated scene buffers and reset safely', (
   assert.doesNotMatch(frame, /new THREE\./);
 });
 
-test('session HUD matches the impulse field, shows only active sessions, and fails closed on gaps', () => {
-  assert.match(html, /<aside[^>]+id="session-hud"[^>]+aria-label="Active sessions"/);
-  assert.match(html, /id="session-list"/);
-  assert.match(html, /id="session-list"[^>]*tabindex="0"/);
-  assert.match(html, /id="session-state"/);
-  assert.match(html, /id="session-more"/);
-  assert.match(main, /function renderSessions\(state\)/);
-  assert.match(main, /const hasHudProjection = Array\.isArray\(state\.hudSessions\)/);
-  assert.match(main, /projectActiveHudSessions\(state\)/);
-  assert.match(main, /projectActiveHudSessions/);
-  assert.match(main, /state\.hudSessionsTruncated/);
-  assert.match(main, /state\.waitingSessionIds/);
-  assert.match(main, /No active sessions/);
-  assert.match(main, /COVERAGE UNKNOWN/);
-  assert.match(main, /RUNNING · UNVERIFIED/);
-  assert.match(main, /textContent/);
-  assert.match(main, /performance\.now\(\)/);
-  assert.match(main, /hudTimer/);
+test('workspace modules keep session visibility separate from bounded source state', () => {
+  assert.match(html, /data-workspace-dock="left"/);
+  assert.match(html, /data-workspace-dock="right"/);
+  assert.match(html, /data-workspace-dock="bottom"/);
+  assert.match(html, /data-workspace-dock="bottom-left"/);
+  assert.match(main, /workspaceUI\.update\(state\)/);
+  assert.match(workspaceUi, /projectActiveHudSessions\(activityState\)/);
+  assert.match(workspaceUi, /'COVERAGE UNKNOWN'/);
+  assert.match(workspaceUi, /'COVERAGE PARTIAL · SESSION COVERAGE UNKNOWN'/);
+  assert.match(workspaceUi, /'No matching sessions'/);
+  assert.match(workspaceUi, /instance\.config\.filter === 'waiting'/);
+  assert.match(workspaceUi, /SESSION_LABELS/);
+  assert.match(workspaceUi, /sessionStatsDialog\?\.registerList/);
+  assert.doesNotMatch(workspaceUi, /localStorage|innerHTML/);
   assert.match(css, /\.session-running/);
   assert.match(css, /\.session-running-unverified/);
-  const sessionRenderer = main.slice(main.indexOf('function renderSessions'), main.indexOf('// ---------- interaction ----------'));
-  assert.match(sessionRenderer, /renderSessionRows\(/);
   assert.ok(statsUi.indexOf('document.activeElement') < statsUi.indexOf('list.replaceChildren()'),
     'focused stats control is captured before the list is replaced');
-  assert.match(sessionRenderer, /hasHudProjection\s*\?\s*state\.hudSessionsTruncated === true : state\.sessionsTruncated === true/);
-  assert.match(css, /\.hud-impulses h2, \.hud-sessions h2/);
-  assert.match(css, /\.hud-sessions\s*\{[^}]*right:\s*24px/);
-  assert.match(css, /#session-list\s*\{[^}]*pointer-events:\s*auto/);
-  assert.match(css, /#session-list:focus-visible/);
+  assert.match(css, /\.workspace-session-list\s*\{/);
+  assert.match(css, /\.workspace-dock-right/);
   assert.match(css, /prefers-reduced-motion: reduce/);
 });
 
 test('session statistics use an accessible centered native dialog and text-only content', () => {
-  assert.match(main, /renderSessionRows\(/);
+  assert.match(workspaceUi, /renderSessionRows\(/);
   assert.match(main, /createSessionStatsDialog\(/);
-  assert.match(main, /clearSessionStats\(/);
+  assert.match(workspaceUi, /clearSessionStats\(/);
   assert.match(html, /<dialog[^>]*id="session-stats-dialog"[^>]*aria-labelledby="session-stats-title"/);
   assert.match(html, /id="session-stats-close"[^>]*aria-label="Close session statistics"/);
   assert.match(statsUi, /dialog\.showModal\(\)/);
@@ -515,6 +509,46 @@ test('session stats open in an overlay, update live, clear on gaps, and restore 
     'legacy rows without stats do not expose a details control');
 });
 
+test('session stats open from waiting and ended rows outside the active-session projection', () => {
+  const document = new TestDocument();
+  const list = document.createElement('ol');
+  const dialog = document.createElement('dialog');
+  const content = document.createElement('div');
+  const expanded = new Set();
+  const sessions = [
+    { id: 'K3F2QA', status: 'waiting', elapsedMs: 42, stats: sessionStats({ errors: 2 }) },
+    { id: 'T4M7QA', status: 'ended', elapsedMs: 84, stats: sessionStats({ errors: 3 }) },
+  ];
+  const controller = createSessionStatsDialog({
+    document, dialog, content,
+    title: document.createElement('h2'),
+    closeButton: document.createElement('button'),
+    fallbackFocus: document.body,
+    list,
+    expandedSessionStats: expanded,
+    formatElapsed: String,
+  });
+  const showRows = () => renderSessionRows({
+    document,
+    list,
+    sessions,
+    expandedSessionStats: expanded,
+    receivedAt: 0,
+    formatElapsed: String,
+    statusLabels: { waiting: 'WAITING', ended: 'ENDED' },
+  });
+  controller.update(sessions, true, []);
+  showRows();
+  for (const [index, errors] of [[0, 2], [1, 3]]) {
+    const toggle = list.querySelectorAll('button[data-session-stats-toggle]')[index];
+    controller.open({ target: toggle });
+    assert.equal(dialog.open, true);
+    assert.match(content.textContent, new RegExp(`Errors: ${errors}`));
+    dialog.close();
+    showRows();
+  }
+});
+
 test('stats modal distinguishes colliding opaque handles and fails closed when identity becomes ambiguous', () => {
   const document = new TestDocument();
   const list = document.createElement('ol');
@@ -553,11 +587,11 @@ test('waiting counter and scene affordances stay bounded and activity-free', () 
   assert.match(main, /sessionIds\.slice\(0, 8\)/);
   assert.match(main, /\$waiting\.textContent = String\(state\.connection === 'connected' && state\.sourceStatus !== 'unavailable'[\s\S]*?state\.waitingSessions \?\? 0 : 0\)/);
   assert.match(main, /activityState\.sourceStatus !== 'unavailable'\s*&&\s*activityState\.waitingSessions > 0/);
-  assert.match(main, /const omitted = Math\.max\(0, \(state\.runningSessions \?\? visibleRunning\) - visibleRunning\)/);
+  assert.match(workspaceUi, /const omitted = Math\.max\(0, \(expected \?\? sessions\.length\) - sessions\.length\)/);
   assert.match(main, /coreGlow\.material\.color\.lerpColors/);
   assert.match(main, /Math\.sin\(now \* VISUAL\.waiting\.breathSpeed\)/);
   assert.match(main, /CATEGORY_HEX\.waiting/);
-  const markerRenderer = main.slice(main.indexOf('function renderWaitingMarkers'), main.indexOf('function renderSessions'));
+  const markerRenderer = main.slice(main.indexOf('function renderWaitingMarkers'), main.indexOf('function tickSessionTimes'));
   assert.doesNotMatch(markerRenderer, /fireFrom|spawnPulse|celebrateCompletion|impulseBuffer\.add/);
 });
 
