@@ -302,7 +302,8 @@ test('subagent summaries expose bounded counts and statuses without identifiers'
     '(1 running, 1 waiting); 1 additional branch omitted by display limits.');
 });
 
-test('client validates bounded subagent metadata, diffs snapshots, and clears branches across gaps', () => {
+test('client validates bounded subagent metadata and retains branches only for the connection grace period', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   FakeEventSource.instances = [];
   const trees = [];
   const client = createActivityClient({
@@ -343,8 +344,20 @@ test('client validates bounded subagent metadata, diffs snapshots, and clears br
     snapshot: { ...base, treeSessions: [session([], [{ sid: 'AB22', outcome: 'completed' }])] },
   });
   assert.deepEqual(trees.at(-1).completed, [{ sessionSid: 'AAAA', sid: 'AB22' }]);
+  stream.emit('snapshot', {
+    epoch, sequence: 2, snapshot: { ...base, treeSessions: [session([child('EF44')])] },
+  });
+  const beforeError = trees.length;
   stream.onerror();
-  assert.deepEqual(trees.at(-1).cleared, []);
+  assert.equal(trees.length, beforeError, 'connection errors do not remove visible branches immediately');
+  assert.deepEqual(client.getState().treeSessions[0].subagents, [child('EF44')]);
+  stream.emit('activity', { epoch, sequence: 3, kind: 'step', snapshot: base });
+  assert.equal(trees.length, beforeError, 'deltas awaiting a recovery snapshot also retain branches');
+  t.mock.timers.tick(14_999);
+  assert.equal(trees.length, beforeError);
+  t.mock.timers.tick(1);
+  assert.deepEqual(trees.at(-1).cleared, [{ sessionSid: 'AAAA', sid: 'EF44' }]);
+  assert.deepEqual(client.getState().treeSessions, []);
   client.disconnect();
 });
 
@@ -482,7 +495,13 @@ test('a valid recovery snapshot cancels the warning and the next outage gets a f
   const epoch = 'connection-recovery-epoch';
   stream.emit('snapshot', { epoch, sequence: 0, snapshot });
   stream.onerror();
-  assert.equal(client.getState().activeSessions, 0, 'stale activity is not kept live during the grace period');
+  assert.equal(client.getState().activeSessions, 1, 'last-known sessions stay visible during the grace period');
+  assert.equal(client.getState().coverage, 'unknown', 'retained sessions are not verified live coverage');
+  const clock = createThinkingPulseClock();
+  assert.equal(clock.tick(0.05, client.getState(), false), 0);
+  assert.equal(clock.tick(0.05, client.getState(), false), 0);
+  assert.equal(clock.tick(0.05, client.getState(), false), 0);
+  assert.equal(clock.tick(0.05, client.getState(), false), 1, 'running pulses continue during recovery');
   t.mock.timers.tick(14_999);
   stream.emit('activity', { epoch, sequence: 1, kind: 'step', snapshot });
   assert.equal(activities.length, 0, 'activity cannot bypass the required recovery snapshot');
@@ -498,6 +517,8 @@ test('a valid recovery snapshot cancels the warning and the next outage gets a f
   assert.equal(client.getState().connection, 'recovering');
   t.mock.timers.tick(1);
   assert.equal(client.getState().connection, 'retrying');
+  assert.equal(client.getState().activeSessions, 0);
+  assert.equal(clock.tick(0.05, client.getState(), false), 0, 'running pulses stop after the grace period');
   stream.emit('snapshot', { epoch, sequence: 1, snapshot });
   assert.equal(client.getState().connection, 'connected', 'long outages can also recover');
   client.disconnect();
@@ -609,7 +630,8 @@ const runningSnapshot = (extra = {}) => ({
   runningSessions: 1, unverifiedRunningSessions: 1, ...extra,
 });
 
-test('client validates optional bounded running counts and clears them on gaps', () => {
+test('client validates optional bounded running counts and clears them after the connection grace period', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   FakeEventSource.instances = [];
   const states = [];
   const client = createActivityClient({ EventSourceImpl: FakeEventSource, onState: (state) => states.push(state) });
@@ -634,6 +656,9 @@ test('client validates optional bounded running counts and clears them on gaps',
   assert.equal(states.at(-1).runningSessions, 2, 'legacy servers keep thinking-based pulses');
   assert.equal(states.at(-1).unverifiedRunningSessions, 0);
   stream.onerror();
+  assert.equal(states.at(-1).runningSessions, 2);
+  assert.equal(states.at(-1).coverage, 'unknown');
+  t.mock.timers.tick(15_000);
   assert.equal(states.at(-1).runningSessions, 0);
   assert.equal(states.at(-1).unverifiedRunningSessions, 0);
   client.disconnect();

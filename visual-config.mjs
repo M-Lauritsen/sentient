@@ -132,6 +132,255 @@ export const VISUAL_SETTING_DEFINITIONS = Object.freeze(
       })))
 );
 
+const GROUP_LABELS = Object.freeze({
+  camera: 'Camera',
+  nodes: 'Nodes',
+  pulses: 'Pulses',
+  running: 'Running stream',
+  activity: 'Activity effects',
+  subagents: 'Subagents',
+  waiting: 'Waiting effects',
+  dust: 'Dust',
+  floor: 'Floor',
+  completion: 'Completion effects',
+  impact: 'Impact effects',
+  scene: 'Scene',
+  effects: 'Effects',
+});
+
+const FRIENDLY_LABELS = Object.freeze({
+  'camera.fov': 'Field of view',
+  'camera.position': 'Camera position',
+  'camera.target': 'Orbit center',
+  'camera.damping': 'Orbit damping',
+  'camera.minDistance': 'Minimum zoom distance',
+  'camera.maxDistance': 'Maximum zoom distance',
+  'camera.autoRotate': 'Automatic rotation',
+  'camera.autoRotateSpeed': 'Automatic rotation speed',
+  'nodes.count': 'Node count',
+  'nodes.scale': 'Node projection scale',
+  'nodes.size': 'Node size',
+  'nodes.activeGrowth': 'Size increase during activity',
+  'nodes.idleBrightness': 'Idle-node brightness',
+  'nodes.activeBrightness': 'Active-node brightness',
+  'nodes.decay': 'Excitation fade rate',
+  'pulses.speedMin': 'Pulse speed minimum',
+  'pulses.speedRange': 'Pulse speed maximum',
+  'scene.edgeVisibility': 'Connecting-line visibility',
+  'scene.bloomStrength': 'Glow strength',
+  'effects.dust': 'Dust visibility',
+  'effects.floor': 'Floor visibility',
+});
+
+const SUGGESTED_RANGES = Object.freeze({
+  'camera.fov': [20, 100],
+  'camera.minDistance': [5, 30],
+  'camera.maxDistance': [30, 100],
+  'camera.autoRotateSpeed': [0, 2],
+  'nodes.scale': [50, 150],
+  'nodes.size': [0.5, 2],
+  'nodes.activeGrowth': [0, 4],
+  'nodes.idleBrightness': [0, 1],
+  'nodes.activeBrightness': [0, 3],
+  'nodes.hotMix': [0, 3],
+  'nodes.whiteThreshold': [0, 2],
+  'nodes.whiteMix': [0, 2],
+  'nodes.baseSizeMin': [0, 3],
+  'nodes.baseSizeRange': [0, 3],
+  'nodes.largeSizeMin': [0, 6],
+  'nodes.largeSizeRange': [0, 4],
+  'nodes.energyCap': [0, 5],
+  'nodes.decay': [0, 8],
+  'nodes.twinkleAmplitude': [0, 1],
+  'nodes.twinkleSpeed': [0, 5],
+  'nodes.coreFalloff': [0.1, 6],
+  'pulses.scale': [0, 250],
+  'pulses.head': [0, 8],
+  'pulses.completionHead': [0, 10],
+  'pulses.speedMin': [1, 10],
+  'pulses.speedRange': [1, 18],
+  'pulses.headBrightness': [0, 5],
+  'pulses.trailFalloff': [0.1, 5],
+  'pulses.coreFalloff': [0.1, 5],
+  'pulses.nodeEnergy': [0, 2],
+  'pulses.thinkingEdgeIntensity': [0, 2],
+  'pulses.stepEdgeIntensity': [0, 2],
+  'running.pulsesPerSecondPerSession': [0, 20],
+  'running.maxSessions': [0, 128],
+  'running.baseHops': [0, 12],
+  'running.maxExtraHops': [0, 12],
+  'running.spread': [0, 8],
+  'running.nodeEnergy': [0, 2],
+  'activity.maxIntensity': [1, 16],
+  'activity.maxSpread': [0, 12],
+  'activity.reasoningBaseHops': [0, 12],
+  'activity.errorHops': [0, 12],
+  'activity.reasoningEnergy': [0, 2],
+  'activity.stepHeat': [0, 3],
+  'activity.stepHeatCap': [0, 5],
+  'subagents.growSeconds': [0.01, 2],
+  'subagents.fadeSeconds': [0.1, 10],
+  'subagents.tipSize': [0, 16],
+  'subagents.fadingTipSize': [0, 16],
+  'subagents.anchorSize': [0, 24],
+  'subagents.initialIntensity': [0, 3],
+  'subagents.intensityPerSecond': [0, 0.5],
+  'subagents.maxIntensity': [0, 5],
+  'subagents.runningAnchorIntensity': [0, 3],
+  'subagents.waitingAnchorIntensity': [0, 3],
+  'subagents.stuckAnchorIntensity': [0, 3],
+  'subagents.quietAnchorIntensity': [0, 3],
+  'subagents.failureFlashIntensity': [0, 6],
+  'subagents.completionFlashBase': [0, 3],
+  'subagents.completionFlashGrowth': [0, 12],
+  'waiting.markerSize': [0, 2],
+  'waiting.breathSpeed': [0, 3],
+  'dust.scale': [0, 120],
+  'dust.twinkleSpeed': [0, 5],
+  'dust.twinklePhase': [0, 20],
+  'dust.twinklePower': [0.1, 10],
+  'dust.rotationSpeed': [-0.1, 0.1],
+  'dust.tiltSpeed': [0, 0.5],
+  'dust.tiltAmplitude': [0, 1],
+  'floor.fineSpacing': [0.1, 10],
+  'floor.fineIntensity': [0, 2],
+  'floor.coarseSpacing': [0.1, 50],
+  'floor.coarseIntensity': [0, 2],
+  'floor.poolFade': [0, 0.5],
+  'floor.poolBase': [0, 0.5],
+  'floor.poolGrid': [0, 2],
+  'completion.hops': [0, 20],
+  'completion.neighbourHops': [0, 12],
+  'completion.spread': [0, 16],
+  'completion.neighbourSeeds': [0, 12],
+  'completion.neighbourSpread': [0, 8],
+  'completion.seedHeat': [0, 6],
+  'completion.nodeEnergy': [0, 3],
+  'completion.edgeIntensity': [0, 3],
+  'impact.minMs': [1, 10000],
+  'impact.maxMs': [1, 300000],
+  'impact.minHops': [0, 20],
+  'impact.maxHops': [0, 20],
+  'impact.minSpread': [0, 16],
+  'impact.maxSpread': [0, 16],
+  'impact.neighbourSeeds': [0, 12],
+  'impact.neighbourHops': [0, 12],
+  'impact.neighbourSpread': [0, 8],
+  'impact.seedHeat': [0, 6],
+  'impact.nodeEnergy': [0, 3],
+  'impact.edgeIntensity': [0, 3],
+  'impact.head': [0, 8],
+  'scene.categoryBrightness': [0, 3],
+  'scene.edgeVariationMin': [0, 2],
+  'scene.edgeVariationRange': [0, 2],
+  'scene.breathSpeed': [0, 3],
+  'scene.loadPulseScale': [1, 2000],
+  'scene.loadSessionScale': [1, 256],
+  'scene.loadSmoothing': [0, 10],
+  'scene.coreSize': [0, 50],
+  'scene.haloSize': [0, 100],
+  'scene.bloomStrength': [0, 1.5],
+  'scene.bloomLoad': [0, 2],
+  'scene.edgeFade': [0, 8],
+  'scene.dustBrightness': [0, 1],
+  'scene.floorBrightness': [0, 1],
+  'scene.floorFade': [0, 0.1],
+  'scene.floorGlow': [0, 2],
+});
+
+function friendlySettingLabel(path) {
+  if (FRIENDLY_LABELS[path]) return FRIENDLY_LABELS[path];
+  const [group, name] = path.split('.');
+  const field = name.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`);
+  return `${GROUP_LABELS[group]} ${field}`;
+}
+
+function settingHelpText(definition, label) {
+  const { path, type, constraints, unit } = definition;
+  const details = [];
+  if (type === 'number') {
+    details.push('Enter a finite number.');
+    if (constraints.integer) details.push('Use a whole number.');
+    if (constraints.minimum !== undefined) details.push(`Minimum ${constraints.minimum}.`);
+    if (constraints.maximum !== undefined) details.push(`Maximum ${constraints.maximum}.`);
+    if (constraints.exclusiveMinimum !== undefined) {
+      details.push(`Must be greater than ${constraints.exclusiveMinimum}.`);
+    }
+    if (constraints.exclusiveMaximum !== undefined) {
+      details.push(`Must be less than ${constraints.exclusiveMaximum}.`);
+    }
+  } else if (type === 'vector3') {
+    details.push('Enter finite X, Y and Z values.');
+  } else if (type === 'rgb') {
+    details.push('Displayed as sRGB; saved as a linear RGB array.');
+  } else if (type === 'hex') {
+    details.push('Displayed and saved as an sRGB colour.');
+  } else if (type === 'enum') {
+    details.push(`Choose ${definition.options.join(', ')}.`);
+  } else {
+    details.push('Toggle this effect on or off.');
+  }
+  if (unit !== 'unitless') details.push(`Unit: ${unit}.`);
+  return `${label}. ${details.join(' ')} Suggested slider ranges are guidance, not validation limits. Configuration path: ${path}.`;
+}
+
+function sectionForSetting(path) {
+  const [group, name] = path.split('.');
+  if (group === 'camera') return 'camera';
+  if (group === 'nodes' || path === 'scene.edgeVisibility' || path === 'scene.edgeBaseColor' ||
+      path === 'scene.edgeVariationMin' || path === 'scene.edgeVariationRange' || path === 'scene.edgeFade') {
+    return 'network';
+  }
+  if (group === 'pulses' || group === 'running') return 'motion';
+  if (['activity', 'subagents', 'waiting', 'completion', 'impact'].includes(group) ||
+      group === 'effects' && !['dust', 'floor', 'latticeBreathing'].includes(name)) {
+    return 'event-effects';
+  }
+  return 'atmosphere';
+}
+
+function suggestedRangeFor(definition) {
+  const { path, constraints } = definition;
+  if (SUGGESTED_RANGES[path]) return SUGGESTED_RANGES[path];
+  const minimum = constraints.minimum ?? constraints.exclusiveMinimum;
+  const maximum = constraints.maximum ?? constraints.exclusiveMaximum;
+  if (minimum === undefined || maximum === undefined) return null;
+  const span = maximum - minimum;
+  return [
+    constraints.exclusiveMinimum === undefined ? minimum : minimum + span / 100,
+    constraints.exclusiveMaximum === undefined ? maximum : maximum - span / 100,
+  ];
+}
+
+const QUICK_SETTINGS = new Set([
+  'nodes.count',
+  'nodes.size',
+  'nodes.activeBrightness',
+  'pulses.speedMin',
+  'pulses.speedRange',
+  'camera.autoRotate',
+  'camera.autoRotateSpeed',
+  'scene.bloomStrength',
+  'scene.edgeVisibility',
+  'effects.dust',
+  'effects.floor',
+]);
+
+export const VISUAL_SETTING_PRESENTATION = Object.freeze(Object.fromEntries(
+  VISUAL_SETTING_DEFINITIONS.map((definition) => {
+    const { path } = definition;
+    const suggestedRange = suggestedRangeFor(definition);
+    const label = friendlySettingLabel(path);
+    return [path, Object.freeze({
+      label,
+      helpText: settingHelpText(definition, label),
+      section: sectionForSetting(path),
+      quick: QUICK_SETTINGS.has(path),
+      suggestedRange: suggestedRange ? Object.freeze([...suggestedRange]) : null,
+    })];
+  })
+));
+
 const definitionsByGroup = new Map();
 for (const definition of VISUAL_SETTING_DEFINITIONS) {
   const [group, name] = definition.path.split('.');

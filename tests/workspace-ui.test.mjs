@@ -508,6 +508,33 @@ test('workspace opener expanded state tracks both menu and module-settings entry
   assert.equal(document.activeElement, opener);
 });
 
+test('Appearance temporarily makes Workspace inert without saving or changing its layout', () => {
+  const desktop = setup();
+  desktop.ui.update(connectedState());
+  desktop.document.getElementById('workspace-open').click();
+  const dialog = desktop.document.querySelector('.workspace-dialog');
+  assert.equal(dialog.open, true);
+
+  desktop.ui.setAppearanceOpen(true);
+  assert.equal(desktop.document.getElementById('workspace').hasAttribute('inert'), true);
+  assert.equal(desktop.document.getElementById('workspace-open').disabled, true);
+  assert.equal(dialog.open, false);
+  assert.equal(desktop.store.getState().dirty, false);
+
+  desktop.ui.setAppearanceOpen(false);
+  assert.equal(desktop.document.getElementById('workspace').hasAttribute('inert'), false);
+  assert.equal(desktop.document.getElementById('workspace-open').disabled, false);
+  assert.equal(desktop.store.getState().dirty, false);
+
+  const mobile = setup({ width: 390 });
+  mobile.ui.update(connectedState());
+  mobile.document.getElementById('workspace-open').click();
+  assert.equal(mobile.document.body.classList.contains('workspace-mobile-open'), true);
+  mobile.ui.setAppearanceOpen(true);
+  assert.equal(mobile.document.body.classList.contains('workspace-mobile-open'), false);
+  assert.equal(mobile.store.getState().dirty, false);
+});
+
 test('normal viewing keeps configuration hidden for every module and settings have one active disclosure', () => {
   const { document, ui } = setup();
   ui.update(connectedState());

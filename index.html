@@ -278,40 +278,29 @@
 			class="visual-settings-dialog"
 			aria-labelledby="visual-settings-title">
 			<header class="stats-dialog-header">
-				<h2 id="visual-settings-title">Visual settings</h2>
+				<h2 id="visual-settings-title" tabindex="-1">Appearance</h2>
 				<button
 					id="visual-settings-close"
 					class="stats-close"
 					type="button"
-					aria-label="Close visual settings"
+					aria-label="Return to scene"
 					autofocus>
-					&times;
+					Return to scene
 				</button>
 			</header>
 			<form id="visual-settings-form">
-				<div class="visual-settings-toolbar">
+				<div class="visual-settings-toolbar" aria-label="Appearance presets">
 					<label>
 						Preset
 						<select
 							id="visual-settings-preset"
-							aria-label="Visual preset"></select>
-					</label>
-					<button
-						id="visual-settings-reload"
-						type="button">
-						Reload from file
-					</button>
-					<label class="visual-auto-reload">
-						<input
-							id="visual-settings-auto-reload"
-							type="checkbox" />
-						Auto reload every 5 seconds
+							aria-label="Appearance preset"></select>
 					</label>
 				</div>
 				<div
 					class="visual-settings-personal-presets"
 					role="group"
-					aria-label="Personal visual presets">
+					aria-label="Personal appearance presets">
 					<label for="visual-settings-preset-name">Preset name</label>
 					<input
 						id="visual-settings-preset-name"
@@ -339,12 +328,12 @@
 				<p
 					id="visual-settings-help"
 					class="visual-settings-help">
-					Valid edits preview immediately. Personal presets are stored in this browser; export downloads a file for repository settings.
+					Quick controls are shown first. Advanced settings keep their original paths and exact numeric values. Valid changes preview live; personal presets are stored in this browser only.
 				</p>
 				<p
 					id="visual-settings-status"
 					role="status"
-					aria-live="polite"></p>
+					aria-live="polite">Preview matches the loaded file.</p>
 				<p
 					id="visual-settings-errors"
 					class="visual-settings-errors"
@@ -368,72 +357,53 @@
 						Keep preview
 					</button>
 				</div>
+				<div class="visual-settings-scroll">
+				<section
+					id="visual-settings-quick"
+					class="visual-settings-quick"
+					aria-label="Quick appearance controls">
+					<h3>Quick controls</h3>
+				</section>
+				<div class="visual-settings-search">
+					<label for="visual-settings-search">Search advanced settings</label>
+					<input
+						id="visual-settings-search"
+						type="search"
+						autocomplete="off"
+						aria-describedby="visual-settings-search-status" />
+					<button
+						id="visual-settings-search-clear"
+						type="button"
+						hidden>
+						Clear search
+					</button>
+					<p
+						id="visual-settings-search-status"
+						role="status"
+						aria-live="polite"></p>
+				</div>
 				<div
 					id="visual-settings-fields"
-					class="visual-settings-fields">
-					<details open>
-						<summary>Camera</summary>
-						<div data-visual-group="camera"></div>
-					</details>
-					<details>
-						<summary>Nodes</summary>
-						<div data-visual-group="nodes"></div>
-					</details>
-					<details>
-						<summary>Pulses</summary>
-						<div data-visual-group="pulses"></div>
-					</details>
-					<details>
-						<summary>Running</summary>
-						<div data-visual-group="running"></div>
-					</details>
-					<details>
-						<summary>Activity</summary>
-						<div data-visual-group="activity"></div>
-					</details>
-					<details>
-						<summary>Subagents</summary>
-						<div data-visual-group="subagents"></div>
-					</details>
-					<details>
-						<summary>Waiting</summary>
-						<div data-visual-group="waiting"></div>
-					</details>
-					<details open>
-						<summary>Effects</summary>
-						<div data-visual-group="effects"></div>
-					</details>
-					<details>
-						<summary>Dust</summary>
-						<div data-visual-group="dust"></div>
-					</details>
-					<details>
-						<summary>Floor</summary>
-						<div data-visual-group="floor"></div>
-					</details>
-					<details>
-						<summary>Completion</summary>
-						<div data-visual-group="completion"></div>
-					</details>
-					<details>
-						<summary>Impact</summary>
-						<div data-visual-group="impact"></div>
-					</details>
-					<details>
-						<summary>Scene</summary>
-						<div data-visual-group="scene"></div>
-					</details>
+					class="visual-settings-fields"
+					aria-label="Advanced appearance settings"></div>
+				<details class="visual-file-actions">
+					<summary>File actions</summary>
+					<p>File actions affect the page configuration only when you export and save the downloaded file yourself.</p>
+					<div class="visual-file-actions-controls">
+						<button id="visual-settings-reload" type="button">Reload from file</button>
+						<label class="visual-auto-reload">
+							<input id="visual-settings-auto-reload" type="checkbox" />
+							Auto reload every 5 seconds
+						</label>
+						<button id="visual-settings-export" type="button">Export settings</button>
+					</div>
+				</details>
 				</div>
 				<footer class="visual-settings-actions">
 					<button
 						id="visual-settings-reset"
 						type="button">
 						Reset preview
-					</button>
-					<button
-						id="visual-settings-export"
-						type="button">
-						Export settings
 					</button>
 				</footer>
 			</form>

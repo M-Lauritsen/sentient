@@ -12,6 +12,7 @@ import { createThinkingPulseClock, createImpulseBuffer, createCategoryBurstPlan,
 import { createPageActivityTotals } from '../session-stats-ui.mjs';
 import { loadVisualConfiguration, startVisualApplication, validateVisualSettings,
   resolveVisualSettings, VISUAL_PRESETS, VISUAL_SETTING_DEFINITIONS,
+  VISUAL_SETTING_PRESENTATION,
   mergeVisualOverrides, visualConfigurationSignature, createVisualSettingsModuleSource } from '../visual-config.mjs';
 import { createVisualSettingsPanel } from '../visual-settings-ui.mjs';
 
@@ -35,12 +36,20 @@ class TestElement {
     callbacks.push(callback);
     this.listeners.set(type, callbacks);
   }
-  dispatch(type) {
-    for (const callback of this.listeners.get(type) ?? []) callback({ preventDefault() {} });
+  dispatch(type, values = {}) {
+    const event = {
+      type,
+      target: this,
+      defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; },
+      ...values,
+    };
+    for (const callback of this.listeners.get(type) ?? []) callback(event);
   }
   click() { this.dispatch('click'); }
   setAttribute(name, value) { this.attributes.set(name, value); }
   removeAttribute(name) { this.attributes.delete(name); }
+  show() { this.open = true; }
   showModal() { this.open = true; }
   close() { this.open = false; this.dispatch('close'); }
   focus() {}
@@ -53,19 +62,13 @@ function makePanelHarness({
   const resolved = resolveVisualSettings(defaults, preset, overrides);
   const document = new TestElement();
   document.hidden = false;
-  document.createElement = (tagName) => Object.assign(new TestElement(), { tagName });
-  const groups = new Map();
+  document.createElement = (tagName) =>
+    Object.assign(new TestElement(), { tagName: tagName.toUpperCase() });
   const fields = new TestElement();
-  fields.querySelector = (selector) => {
-    const group = selector.match(/data-visual-group="([^"]+)"/)?.[1];
-    return groups.get(group);
-  };
-  for (const definition of VISUAL_SETTING_DEFINITIONS) {
-    const groupName = definition.path.split('.')[0];
-    if (!groups.has(groupName)) groups.set(groupName, new TestElement());
-  }
+  const quickFields = new TestElement();
   const elements = Object.fromEntries([
-    'opener', 'dialog', 'form', 'presetSelect', 'status', 'errorSummary', 'conflict',
+    'opener', 'dialog', 'form', 'presetSelect', 'searchInput', 'searchStatus',
+    'clearSearchButton', 'title', 'status', 'errorSummary', 'conflict',
     'useFileButton', 'keepPreviewButton', 'closeButton', 'resetButton', 'exportButton',
     'reloadButton', 'autoReloadInput', 'presetNameInput', 'saveAsPresetButton',
     'savePresetButton', 'deletePresetButton',
@@ -75,6 +78,7 @@ function makePanelHarness({
     document,
     ...elements,
     fields,
+    quickFields,
     getStorage: () => storage,
     confirmAction: () => true,
     initialConfiguration: { defaults, preset, overrides, settings: resolved.settings },
@@ -90,14 +94,24 @@ function makePanelHarness({
     cancelFrame() {},
   };
   const panel = createVisualSettingsPanel(options);
-  const control = (path) => {
-    const wrapper = groups.get(path.split('.')[0]).children
-      .find((child) => child.attributes.get('data-setting-path') === path);
+  const control = (path, { quick = false } = {}) => {
+    const root = quick ? quickFields : fields;
     const descendants = (element) => [element, ...element.children.flatMap(descendants)];
+    const wrapper = descendants(root).find((child) =>
+      child.attributes.get('data-setting-path') === path &&
+      child.attributes.get('data-quick-projection') === String(quick));
     return descendants(wrapper).filter((element) => element.type === 'number' ||
-      element.type === 'checkbox' || element.type === 'color' || element.tagName === 'select');
+      element.type === 'range' || element.type === 'checkbox' ||
+      element.type === 'color' || element.tagName === 'SELECT');
   };
-  return { panel, document, elements, groups, applied, control };
+  const field = (path, { quick = false } = {}) => {
+    const root = quick ? quickFields : fields;
+    const descendants = (element) => [element, ...element.children.flatMap(descendants)];
+    return descendants(root).find((child) =>
+      child.attributes.get('data-setting-path') === path &&
+      child.attributes.get('data-quick-projection') === String(quick));
+  };
+  return { panel, document, elements, fields, quickFields, applied, control, field };
 }
 
 function makeMemoryStorage(initial = {}) {
@@ -162,7 +176,7 @@ test('visual settings characterize the latest tuned defaults, not structural cap
       minDistance: 14, maxDistance: 60, autoRotate: true, autoRotateSpeed: 0.35,
     },
     nodes: {
-      count: visual.nodes.count, scale: 95, size: 1, activeGrowth: 2, idleBrightness: 0.4,
+      count: visual.nodes.count, scale: 120, size: 1, activeGrowth: 2, idleBrightness: 0.4,
       activeBrightness: 1.8, hotMix: 1.4, whiteThreshold: 0.7, whiteMix: 1,
       baseSizeMin: 0.6, baseSizeRange: 1, largeChance: 0.04,
       largeSizeMin: 2.6, largeSizeRange: 1, energyCap: 1.8, decay: 2,
@@ -242,7 +256,8 @@ test('visual settings characterize the latest tuned defaults, not structural cap
   assert.match(main, /CATEGORY_RGB, \(channel\)/);
   assert.equal(configModule.VISUAL_PRESET, 'balanced');
   assert.deepEqual(configModule.VISUAL_ERRORS, []);
-  assert.deepEqual(configModule.EFFECTIVE_VISUAL, visual);
+  assert.deepEqual(configModule.EFFECTIVE_VISUAL, resolveVisualSettings(
+    configModule.VISUAL, configModule.VISUAL_PRESET, configModule.VISUAL_OVERRIDES).settings);
 });
 
 test('visual settings validate all known paths and reject malformed values without mutating input', async () => {
@@ -276,7 +291,7 @@ test('visual settings validate all known paths and reject malformed values witho
     const errors = validateVisualSettings(candidate);
     assert.ok(errors.some((error) => error.path === path), `${path} reports its exact setting path`);
   }
-  assert.equal(defaults.nodes.scale, 95, 'validation does not mutate the active defaults');
+  assert.equal(defaults.nodes.scale, 120, 'validation does not mutate the active defaults');
 });
 
 test('network count and line modes validate exact boundaries without mutating defaults', async () => {
@@ -476,6 +491,8 @@ test('count preview, reload, reset and export apply count live without a page re
   const [count] = harness.control('nodes.count');
   count.value = '600';
   count.dispatch('input');
+  assert.equal(harness.applied.length, 0, 'numeric count drafts wait for Enter or blur');
+  count.dispatch('keydown', { key: 'Enter' });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(harness.applied.at(-1).nodes.count, 600);
   assert.equal(harness.panel.state.overrides.nodes.count, 600);
@@ -505,6 +522,77 @@ test('count preview, reload, reset and export apply count live without a page re
   assert.doesNotMatch(harness.elements.status.textContent, /refresh/i);
 });
 
+test('repeated node-count drafts defer topology rebuild until one final commit', async () => {
+  const defaults = await settings();
+  defaults.nodes.count = 37;
+  const context = makeNetworkHarness(structuredClone(defaults));
+  let rebuilds = 0;
+  const harness = makePanelHarness({
+    defaults,
+    applySettings(candidate) {
+      const oldGeometry = context.network().nodeGeo;
+      context.candidate = candidate;
+      const accepted = vm.runInContext('applyVisualSettings(candidate)', context);
+      if (accepted && context.network().nodeGeo !== oldGeometry) rebuilds++;
+      return accepted;
+    },
+  });
+  const originalGeometry = context.network().nodeGeo;
+  const [count] = harness.control('nodes.count');
+  for (const value of ['60', '61', '62']) {
+    count.value = value;
+    count.dispatch('input');
+  }
+  const [floorGlow] = harness.control('scene.floorGlow');
+  floorGlow.value = '0.72';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rebuilds, 0);
+  assert.equal(harness.applied.length, 1);
+  assert.equal(harness.applied.at(-1).nodes.count, 37);
+  assert.equal(harness.applied.at(-1).scene.floorGlow, 0.72);
+  assert.equal(count.value, '62');
+  assert.equal(context.network().nodeGeo, originalGeometry);
+
+  const descendants = (element) => [element, ...element.children.flatMap(descendants)];
+  descendants(harness.field('scene.floorGlow')).find((element) =>
+    element.className === 'visual-field-reset').click();
+  assert.equal(rebuilds, 0);
+  assert.equal(harness.applied.length, 2);
+  assert.equal(harness.applied.at(-1).nodes.count, 37);
+  assert.equal(harness.applied.at(-1).scene.floorGlow, defaults.scene.floorGlow);
+  assert.equal(count.value, '62');
+
+  count.dispatch('keydown', { key: 'Enter' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(rebuilds, 1);
+  assert.equal(context.network().N, 62);
+  assert.equal(harness.applied.length, 3);
+  assert.equal(harness.applied.at(-1).nodes.count, 62);
+});
+
+test('invalid finite-draft input blocks otherwise valid live edits from partially applying', async () => {
+  const harness = makePanelHarness({ defaults: await settings() });
+  const [floorGlow] = harness.control('scene.floorGlow');
+  const [nodeSize] = harness.control('nodes.size');
+  floorGlow.value = '';
+  floorGlow.dispatch('input');
+  nodeSize.value = '1.2';
+  nodeSize.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.applied.length, 0);
+  assert.equal(harness.elements.errorSummary.hidden, false);
+  assert.equal(nodeSize.value, '1.2');
+
+  floorGlow.value = '0.72';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.length, 1);
+  assert.equal(harness.applied[0].scene.floorGlow, 0.72);
+  assert.equal(harness.applied[0].nodes.size, 1.2);
+});
+
 test('selecting personal presets applies saved node counts live', async () => {
   const defaults = await settings();
   defaults.nodes.count = 37;
@@ -519,6 +607,7 @@ test('selecting personal presets applies saved node counts live', async () => {
   const [count] = harness.control('nodes.count');
   count.value = '60';
   count.dispatch('input');
+  count.dispatch('keydown', { key: 'Enter' });
   await new Promise((resolve) => setImmediate(resolve));
   harness.elements.presetNameInput.value = 'Sixty nodes';
   harness.elements.saveAsPresetButton.click();
@@ -552,6 +641,7 @@ test('panel reports a failed live rebuild and can recover without discarding the
   const [count] = harness.control('nodes.count');
   count.value = '60';
   count.dispatch('input');
+  count.dispatch('keydown', { key: 'Enter' });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.network().nodeGeo, before.nodeGeo);
   assert.equal(context.network().N, 37);
@@ -559,6 +649,7 @@ test('panel reports a failed live rebuild and can recover without discarding the
   assert.equal(harness.applied.length, 0);
   context.THREE = THREE;
   count.dispatch('input');
+  count.dispatch('keydown', { key: 'Enter' });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(context.network().N, 60);
   assert.match(harness.elements.status.textContent, /Live preview applied/);
@@ -570,6 +661,7 @@ test('invalid count and line-mode drafts preserve the last applied preview', asy
     const [input] = harness.control(path);
     input.value = value;
     input.dispatch('input');
+    if (path === 'nodes.count') input.dispatch('blur');
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(harness.applied.length, 0);
     assert.equal(harness.elements.errorSummary.hidden, false);
@@ -577,6 +669,269 @@ test('invalid count and line-mode drafts preserve the last applied preview', asy
     harness.elements.resetButton.click();
     harness.applied.length = 0;
   }
+});
+
+test('all advanced paths appear once and quick controls share the same canonical draft', async () => {
+  const harness = makePanelHarness({ defaults: await settings() });
+  const descendants = (element) => [element, ...element.children.flatMap(descendants)];
+  const advanced = descendants(harness.fields).filter((element) =>
+    element.attributes.get('data-setting-path') &&
+    element.attributes.get('data-quick-projection') === 'false');
+  const paths = advanced.map((element) => element.attributes.get('data-setting-path'));
+  assert.equal(paths.length, 166);
+  assert.equal(new Set(paths).size, 166);
+  assert.deepEqual([...paths].sort(),
+    VISUAL_SETTING_DEFINITIONS.map(({ path }) => path).sort());
+
+  const quickPaths = VISUAL_SETTING_DEFINITIONS
+    .filter(({ path }) => VISUAL_SETTING_PRESENTATION[path].quick)
+    .map(({ path }) => path);
+  for (const path of quickPaths) {
+    assert.ok(harness.field(path, { quick: true }), `${path} has a Quick projection`);
+  }
+
+  const [quickSize] = harness.control('nodes.size', { quick: true });
+  const [advancedSize] = harness.control('nodes.size');
+  quickSize.value = '1.25';
+  quickSize.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(advancedSize.value, '1.25');
+  assert.equal(harness.applied.at(-1).nodes.size, 1.25);
+
+  harness.elements.searchInput.value = 'node projection scale';
+  harness.elements.searchInput.dispatch('input');
+  assert.equal(harness.field('nodes.scale').hidden, false);
+  assert.equal(harness.field('nodes.count').hidden, true);
+  assert.match(harness.elements.searchStatus.textContent, /1 setting found/i);
+  harness.elements.clearSearchButton.click();
+  assert.equal(harness.field('nodes.count').hidden, false);
+});
+
+test('every scalar numeric setting renders a slider with finite valid guidance and steps', async () => {
+  const harness = makePanelHarness({ defaults: await settings() });
+  const numeric = VISUAL_SETTING_DEFINITIONS.filter(({ type }) => type === 'number');
+  assert.equal(numeric.length, 140);
+  for (const { path, constraints } of numeric) {
+    const controls = harness.control(path);
+    const sliders = controls.filter(({ type }) => type === 'range');
+    assert.equal(sliders.length, 1, `${path} has one Advanced slider`);
+    const [slider] = sliders;
+    const minimum = Number(slider.min);
+    const maximum = Number(slider.max);
+    const step = Number(slider.step);
+    assert.ok(Number.isFinite(minimum) && Number.isFinite(maximum) &&
+      minimum < maximum, `${path} has a finite increasing range`);
+    assert.ok(Number.isFinite(step) && step > 0 && step <= maximum - minimum,
+      `${path} has a usable step`);
+    if (constraints.minimum !== undefined) assert.ok(minimum >= constraints.minimum, path);
+    if (constraints.maximum !== undefined) assert.ok(maximum <= constraints.maximum, path);
+    if (constraints.exclusiveMinimum !== undefined) assert.ok(minimum > constraints.exclusiveMinimum, path);
+    if (constraints.exclusiveMaximum !== undefined) assert.ok(maximum < constraints.exclusiveMaximum, path);
+    if (constraints.integer) {
+      assert.ok(Number.isInteger(minimum) && Number.isInteger(maximum), path);
+      assert.equal(step, 1, path);
+    }
+  }
+});
+
+test('new sliders preview scale, signed motion, spacing, duration and integer values', async () => {
+  const harness = makePanelHarness({ defaults: await settings() });
+  for (const [path, value] of [
+    ['dust.scale', 72],
+    ['dust.rotationSpeed', -0.06],
+    ['floor.coarseSpacing', 25],
+    ['subagents.growSeconds', 0.5],
+    ['impact.maxMs', 150000],
+    ['running.maxSessions', 64],
+  ]) {
+    const [input, slider] = harness.control(path);
+    slider.value = String(value);
+    slider.dispatch('input');
+    await new Promise((resolve) => setImmediate(resolve));
+    const [group, name] = path.split('.');
+    assert.equal(input.value, String(value), path);
+    assert.equal(harness.applied.at(-1)[group][name], value, path);
+    assert.equal(harness.elements.errorSummary.hidden, true, path);
+  }
+
+  const lastValid = harness.applied.at(-1);
+  const [power] = harness.control('dust.twinklePower');
+  power.value = '0';
+  power.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1), lastValid);
+  assert.equal(power.attributes.get('aria-invalid'), 'true');
+});
+
+test('suggested sliders update exact values and invalid drafts do not partially apply', async () => {
+  const harness = makePanelHarness({ defaults: await settings() });
+  const [scaleInput, scaleSlider] = harness.control('nodes.scale');
+  scaleSlider.value = '130';
+  scaleSlider.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(scaleInput.value, '130');
+  assert.equal(harness.applied.at(-1).nodes.scale, 130);
+
+  const lastValid = harness.applied.at(-1);
+  scaleInput.value = '-1';
+  scaleInput.dispatch('input');
+  const [floorGlow] = harness.control('scene.floorGlow');
+  floorGlow.value = '0.8';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1), lastValid);
+  assert.equal(harness.elements.errorSummary.hidden, false);
+  assert.equal(scaleInput.attributes.get('aria-invalid'), 'true');
+});
+
+test('field and section resets restore the loaded file values', async () => {
+  const defaults = await settings();
+  const overrides = {
+    nodes: { scale: 105, size: 1.1 },
+    scene: { floorGlow: 0.7 },
+  };
+  const fileSettings = resolveVisualSettings(defaults, 'balanced', overrides).settings;
+  const harness = makePanelHarness({ defaults, overrides });
+  const descendants = (element) => [element, ...element.children.flatMap(descendants)];
+  const [floorGlow] = harness.control('scene.floorGlow');
+  floorGlow.value = '0.9';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).scene.floorGlow, 0.9);
+
+  descendants(harness.field('scene.floorGlow')).find((element) =>
+    element.className === 'visual-field-reset').click();
+  assert.equal(harness.applied.at(-1).scene.floorGlow, fileSettings.scene.floorGlow);
+
+  const [scale] = harness.control('nodes.scale');
+  const [size] = harness.control('nodes.size');
+  scale.value = '125';
+  scale.dispatch('input');
+  size.value = '1.4';
+  size.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).nodes.scale, 125);
+  assert.equal(harness.applied.at(-1).nodes.size, 1.4);
+
+  const networkRow = descendants(harness.fields).find((element) =>
+    element.className === 'visual-settings-section-row' &&
+    descendants(element).some((child) =>
+      child.tagName === 'SUMMARY' && child.textContent === 'Network · nodes and connections'));
+  networkRow.children.find((child) => child.className === 'visual-group-reset').click();
+  assert.deepEqual(harness.applied.at(-1), fileSettings);
+});
+
+test('out-of-slider values survive navigation, preview, personal preset save, and exact export', async (t) => {
+  const defaults = await settings();
+  defaults.nodes.scale = 175;
+  defaults.dust.scale = 240.123456;
+  defaults.dust.rotationSpeed = -0.25;
+  const storage = makeMemoryStorage();
+  const harness = makePanelHarness({ defaults, storage });
+  const [scaleInput, scaleSlider] = harness.control('nodes.scale');
+  assert.equal(scaleInput.value, '175');
+  assert.equal(scaleSlider.value, '150');
+  assert.equal(harness.field('nodes.scale').children
+    .find((element) => element.className === 'visual-range-hint').hidden, false);
+  const [dustScale, dustSlider] = harness.control('dust.scale');
+  assert.equal(dustScale.value, '240.123456');
+  assert.equal(dustSlider.value, '120');
+  const [dustRotation, rotationSlider] = harness.control('dust.rotationSpeed');
+  assert.equal(dustRotation.value, '-0.25');
+  assert.equal(rotationSlider.value, '-0.1');
+
+  harness.elements.searchInput.value = 'glow strength';
+  harness.elements.searchInput.dispatch('input');
+  harness.elements.searchInput.value = '';
+  harness.elements.searchInput.dispatch('input');
+  assert.equal(scaleInput.value, '175');
+  harness.elements.opener.click();
+  harness.elements.closeButton.click();
+  assert.equal(scaleInput.value, '175');
+
+  const [floorGlow] = harness.control('scene.floorGlow');
+  floorGlow.value = '0.8';
+  floorGlow.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).nodes.scale, 175);
+  harness.elements.presetNameInput.value = 'Exact scale';
+  harness.elements.saveAsPresetButton.click();
+  const saved = JSON.parse(storage.values.values().next().value).presets[0].settings;
+  assert.equal(saved.nodes.scale, 175);
+  assert.equal(saved.dust.scale, 240.123456);
+  assert.equal(saved.dust.rotationSpeed, -0.25);
+  assert.equal(harness.panel.state.preset, 'user:Exact scale');
+
+  let exportedBlob;
+  t.mock.method(URL, 'createObjectURL', (blob) => {
+    exportedBlob = blob;
+    return 'blob:exact-visual-settings';
+  });
+  harness.elements.exportButton.click();
+  const source = await exportedBlob.text();
+  const readExport = (name) => {
+    const match = new RegExp(`export const ${name} = ([\\s\\S]*?);`).exec(source);
+    assert.ok(match, `export includes ${name}`);
+    return JSON.parse(match[1]);
+  };
+  const exportedDefaults = readExport('VISUAL');
+  const exportedPreset = readExport('VISUAL_PRESET');
+  const exportedOverrides = readExport('VISUAL_OVERRIDES');
+  const exportedSettings = resolveVisualSettings(
+    exportedDefaults, exportedPreset, exportedOverrides);
+  assert.equal(exportedDefaults.nodes.scale, 175);
+  assert.equal(exportedOverrides.nodes.scale, 175);
+  assert.equal(exportedSettings.settings.nodes.scale, 175);
+  assert.equal(exportedSettings.settings.dust.scale, 240.123456);
+  assert.equal(exportedSettings.settings.dust.rotationSpeed, -0.25);
+  assert.equal(exportedSettings.settings.scene.floorGlow, 0.8);
+});
+
+test('paired pulse speed edits preserve maximum and reject invalid ranges atomically', async () => {
+  const harness = makePanelHarness({ defaults: await settings() });
+  const [minimum] = harness.control('pulses.speedMin');
+  const [maximum] = harness.control('pulses.speedRange');
+
+  maximum.value = '10';
+  maximum.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).pulses.speedMin, 4);
+  assert.equal(harness.applied.at(-1).pulses.speedRange, 6);
+  assert.equal(minimum.value, '4');
+  assert.equal(maximum.value, '10');
+
+  minimum.value = '6';
+  minimum.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).pulses.speedMin, 6);
+  assert.equal(harness.applied.at(-1).pulses.speedRange, 4);
+
+  const lastValid = harness.applied.at(-1);
+  maximum.value = '5';
+  maximum.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1), lastValid);
+  assert.equal(harness.elements.errorSummary.hidden, false);
+  assert.equal(maximum.attributes.get('aria-invalid'), 'true');
+});
+
+test('rotation direction preserves the signed value and zero remains stopped', async () => {
+  const harness = makePanelHarness({ defaults: await settings() });
+  const [speed] = harness.control('camera.autoRotateSpeed');
+  const direction = harness.control('camera.autoRotateSpeed')
+    .find((element) => element.tagName === 'SELECT');
+  direction.value = '-1';
+  direction.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).camera.autoRotateSpeed, -0.35);
+
+  speed.value = '0';
+  speed.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  direction.value = '1';
+  direction.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).camera.autoRotateSpeed, 0);
 });
 
 test('all colour settings use sRGB pickers while preserving stored formats and untouched precision', async () => {

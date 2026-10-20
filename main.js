@@ -1081,6 +1081,13 @@ function renderThinking(dt) {
 }
 
 function renderActivityState(state) {
+  if (state.connection === 'recovering') {
+    activityState = state;
+    timeline.setCoverage(false, performance.now());
+    $coverage.textContent = 'CONNECTION GAP · showing last-known activity';
+    document.body.classList.toggle('source-unknown', true);
+    return;
+  }
   if (state.connection !== 'connected' || state.sourceStatus === 'unavailable' ||
       !(state.runningSessions > 0)) thinkingPulseClock.reset();
   if (state.connection !== 'connected') impulseBuffer.clear();
@@ -1112,9 +1119,6 @@ function renderActivityState(state) {
   if (state.connection === 'connecting') {
     $status.textContent = 'CONNECTING';
     $subtitle.textContent = 'connecting to local activity files';
-  } else if (state.connection === 'recovering') {
-    $status.textContent = 'CHECKING SOURCE';
-    $subtitle.textContent = 'activity not verified during connection gap';
   } else if (state.connection === 'retrying' || state.connection === 'unknown') {
     $status.textContent = 'RECONNECTING · UNKNOWN';
     $subtitle.textContent = 'activity not verified during connection gap';
@@ -1320,7 +1324,7 @@ function frame() {
   const breathe = VISUAL.effects.latticeBreathing
     ? 1 + Math.sin(now * VISUAL.scene.breathSpeed) * VISUAL.scene.breathAmplitude : 1;
   brain.scale.setScalar(breathe);
-  const waitingGlow = activityState.connection === 'connected' &&
+  const waitingGlow = (activityState.connection === 'connected' || activityState.connection === 'recovering') &&
     activityState.sourceStatus !== 'unavailable' && activityState.waitingSessions > 0;
   const waitBreath = VISUAL.waiting.colorMixMin +
     VISUAL.waiting.colorMixRange * (0.5 + 0.5 * Math.sin(now * VISUAL.waiting.breathSpeed));
@@ -1507,7 +1511,8 @@ function applyVisualSettings(candidate) {
   bloom.strength = VISUAL.scene.bloomStrength;
   bloom.radius = VISUAL.scene.bloomRadius;
   bloom.threshold = VISUAL.scene.bloomThreshold;
-  renderWaitingMarkers(activityState.connection === 'connected' && activityState.sourceStatus !== 'unavailable'
+  renderWaitingMarkers((activityState.connection === 'connected' || activityState.connection === 'recovering') &&
+    activityState.sourceStatus !== 'unavailable'
     ? activityState.waitingSessionIds : []);
   if (!libraryModalOpen) controls.update();
   return true;
@@ -1520,6 +1525,11 @@ createVisualSettingsPanel({
   form: document.getElementById('visual-settings-form'),
   presetSelect: document.getElementById('visual-settings-preset'),
   fields: document.getElementById('visual-settings-fields'),
+  quickFields: document.getElementById('visual-settings-quick'),
+  searchInput: document.getElementById('visual-settings-search'),
+  searchStatus: document.getElementById('visual-settings-search-status'),
+  clearSearchButton: document.getElementById('visual-settings-search-clear'),
+  title: document.getElementById('visual-settings-title'),
   status: document.getElementById('visual-settings-status'),
   errorSummary: document.getElementById('visual-settings-errors'),
   conflict: document.getElementById('visual-settings-conflict'),
@@ -1541,6 +1551,9 @@ createVisualSettingsPanel({
     settings: VISUAL,
   },
   applySettings: applyVisualSettings,
+  onOpenChange(open) {
+    workspaceUI.setAppearanceOpen(open);
+  },
 });
 
 createNavigationUI({ document });

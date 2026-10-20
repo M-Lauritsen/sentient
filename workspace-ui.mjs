@@ -124,6 +124,7 @@ export function createWorkspaceUI({
   };
   let currentSessionRows = [];
   let isEditing = false;
+  let appearanceOpen = false;
   let openSettingsId = null;
   let activeDrag = null;
   let pendingSwitch = null;
@@ -288,6 +289,7 @@ export function createWorkspaceUI({
   }
 
   function openEditor() {
+    if (appearanceOpen) return;
     if (!dialog.open) dialog.showModal();
     opener.setAttribute('aria-expanded', String(dialog.open));
   }
@@ -1044,6 +1046,7 @@ export function createWorkspaceUI({
   }
 
   opener.addEventListener('click', () => {
+    if (appearanceOpen) return;
     const isMobile = document.defaultView?.matchMedia?.('(max-width: 760px)')?.matches ??
       document.documentElement.clientWidth <= 760;
     if (isMobile) {
@@ -1177,6 +1180,16 @@ export function createWorkspaceUI({
     close() {
       closeTimeline();
       closeEditor();
+    },
+    setAppearanceOpen(open) {
+      appearanceOpen = Boolean(open);
+      root.toggleAttribute('inert', appearanceOpen);
+      opener.disabled = appearanceOpen;
+      if (appearanceOpen) {
+        document.body.classList.remove('workspace-mobile-open');
+        opener.setAttribute('aria-expanded', 'false');
+        closeEditor();
+      }
     },
     store,
   };

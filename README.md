@@ -63,6 +63,8 @@ does not load a CDN or send activity outside this machine.
   show RUNNING when their journal timestamps place the work within that observation
   window; their existing events are not replayed. Sessions already running at
   startup become visible when fresh tool work, reasoning, or message deltas arrive.
+  Turn starts are deduplicated per interaction and agent, so reused turn numbers
+  in later requests or delegated work do not hide running sessions.
 - **Activity scene:** Pulses represent observed work, not hidden cognition.
   Waiting pauses pulses. If work ends without a journal end event, pulses may
   continue until SENTIENT OS observes a terminal event or loses/re-baselines the
@@ -98,12 +100,14 @@ does not load a CDN or send activity outside this machine.
 
 “Quiet · not verified idle” means SENTIENT OS observed no fresh active interval; it
 does not mean every Copilot session is idle. If the local activity stream reports
-a connection error, the source header shows “Checking source” for up to 15 seconds
+a connection error, the source header keeps its previous text for up to 15 seconds
 before showing “Reconnecting · unknown”. Reconnection attempts start immediately;
 the delay only affects the warning. A valid recovery snapshot cancels the warning,
 and repeated errors do not extend the grace period. Activity coverage becomes
-unknown immediately, with live session indicators cleared until a valid snapshot
-arrives; stale activity is never treated as verified during the delay.
+unknown immediately. During the grace period, the scene keeps animating the
+last-known session state and session displays remain in place; no activity events
+are invented or counted. If the error persists for 15 seconds, stale session
+indicators and delegated branches are cleared and running-state pulses stop.
 
 A successful `session.task_complete`
 event lights up a bright, branching cascade of impulses, nodes and edges within
@@ -182,16 +186,26 @@ plugins and external integrations remain intentionally deferred.
 ## Editing visual settings
 
 Open **Appearance** from the application menu to preview the `balanced`, `subtle` or
-`intense` preset and edit any in-scope setting. Valid edits apply to the running
-scene, including node count; invalid or incomplete values do not. **Reset preview** returns to the
-last loaded file configuration. Changes remain temporary until **Export
-settings** downloads a replacement `visual-settings.mjs` and you save it over
+`intense` preset and edit any in-scope setting. The nonmodal drawer keeps the
+scene visible; closing it retains the current preview. Quick controls cover
+common adjustments, while searchable Advanced sections expose all 166
+configuration paths with friendly labels, help and exact numeric inputs.
+All 140 scalar numeric settings include a slider; vectors keep named X/Y/Z inputs.
+Suggested slider ranges are guidance only: valid values outside them remain
+unchanged and can be edited exactly. Pulse minimum/maximum and automatic
+rotation direction map back to the existing configuration fields.
+
+Valid edits preview the running scene; invalid drafts never apply. Node-count
+edits preview in the draft and rebuild the network only on Enter, blur or slider
+commit. **Reset to file** restores a setting, **Reset section to file** restores
+that section, and **Reset preview** returns to the whole last-loaded file
+configuration. Changes remain temporary until **Export settings** in **File
+actions** downloads a replacement `visual-settings.mjs` and you save it over
 the source file. Create personal presets from the current preview, select them
 later, save edits, or delete them. Personal preset definitions are stored only
 in this browser's local storage for this site; they are not written to
 `visual-settings.mjs`, shared with other browsers, or sent to the server.
-Clearing this site's browser data removes them. Preview changes remain temporary
-until exported and saved to the source file.
+Clearing this site's browser data removes them.
 
 Use **Reload from file** to read the current repository-authored
 `visual-settings.mjs` without refreshing the page. Automatic reload is optional,
@@ -205,7 +219,9 @@ This is public, browser-loaded configuration: never put secrets in it. Visual
 changes do not alter activity data, session state, timeline history or
 statistics.
 
-All 3D appearance and animation tuning lives in these sections:
+Advanced tuning is organized into Camera, Network, Motion, Event effects and
+Atmosphere. It retains the underlying configuration groups and exact file
+formats:
 
 | Section | Controls |
 | --- | --- |

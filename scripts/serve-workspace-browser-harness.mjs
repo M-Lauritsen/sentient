@@ -3,9 +3,15 @@ import { readFile } from 'node:fs/promises';
 
 const assets = new Map([
   ['/', ['tests/workspace-browser-harness.html', 'text/html; charset=utf-8']],
+  ['/appearance', ['tests/appearance-browser-harness.html', 'text/html; charset=utf-8']],
+  ['/appearance-browser-harness.mjs', ['tests/appearance-browser-harness.mjs', 'text/javascript; charset=utf-8']],
   ['/workspace-browser-harness.mjs', ['tests/workspace-browser-harness.mjs', 'text/javascript; charset=utf-8']],
   ['/activity-client.mjs', ['activity-client.mjs', 'text/javascript; charset=utf-8']],
   ['/activity-colors.mjs', ['activity-colors.mjs', 'text/javascript; charset=utf-8']],
+  ['/visual-config.mjs', ['visual-config.mjs', 'text/javascript; charset=utf-8']],
+  ['/visual-settings.mjs', ['visual-settings.mjs', 'text/javascript; charset=utf-8']],
+  ['/visual-settings-ui.mjs', ['visual-settings-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/three.module.js', ['node_modules/three/build/three.module.js', 'text/javascript; charset=utf-8']],
   ['/session-stats-ui.mjs', ['session-stats-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/workspace-model.mjs', ['workspace-model.mjs', 'text/javascript; charset=utf-8']],
   ['/workspace-ui.mjs', ['workspace-ui.mjs', 'text/javascript; charset=utf-8']],
@@ -29,7 +35,7 @@ const server = createServer(async (request, response) => {
     response.writeHead(200, {
       'Content-Type': asset[1],
       'Cache-Control': 'no-store',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'",
+      'Content-Security-Policy': "default-src 'self'; script-src 'self' 'sha256-v+eCoFIc4h3ug0mh21Zy6e0Vd/I2tIIB3qAa575EJkM='; style-src 'self' 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'",
       'X-Content-Type-Options': 'nosniff',
     });
     response.end(body);

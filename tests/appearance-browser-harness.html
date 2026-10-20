@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SENTIENT OS Appearance browser harness</title>
+    <link rel="stylesheet" href="/style.css">
+    <script type="importmap">
+      {"imports":{"three":"/three.module.js"}}
+    </script>
+    <style>
+      body { background: #020409; color: #d8e7ff; }
+      #synthetic-scene {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        gap: 12px;
+        color: #d8e7ff;
+      }
+      #synthetic-scene button { min-height: 40px; }
+    </style>
+  </head>
+  <body>
+    <main id="workspace" aria-label="Synthetic scene">
+      <section id="synthetic-scene">
+        <h1>Synthetic scene</h1>
+        <p>Appearance preview and topology counters contain no activity data.</p>
+        <output id="scene-state" aria-live="polite"></output>
+      </section>
+    </main>
+    <nav id="application-navigation" class="application-navigation" aria-label="Application">
+      <button id="application-menu-toggle" class="application-menu-toggle" type="button"
+        aria-haspopup="menu" aria-controls="application-menu" aria-expanded="false">Menu</button>
+      <ul id="application-menu" class="application-menu" role="menu"
+        aria-labelledby="application-menu-toggle" hidden>
+        <li role="none"><button id="library-open" class="application-menu-item" type="button"
+          role="menuitem">Library</button></li>
+        <li role="none"><button id="visual-settings-open" class="application-menu-item" type="button"
+          role="menuitem" aria-controls="visual-settings-dialog">Appearance</button></li>
+        <li role="none"><button id="workspace-open" class="application-menu-item" type="button"
+          role="menuitem">Workspace</button></li>
+        <li role="none"><button id="help-open" class="application-menu-item" type="button"
+          role="menuitem" aria-controls="help-dialog">Help</button></li>
+      </ul>
+    </nav>
+    <dialog id="help-dialog" class="help-dialog" aria-labelledby="help-title">
+      <h2 id="help-title">Synthetic Help</h2>
+      <button id="help-close" type="button">Close Help</button>
+    </dialog>
+    <dialog id="visual-settings-dialog" class="visual-settings-dialog"
+      aria-labelledby="visual-settings-title">
+      <header class="stats-dialog-header">
+        <h2 id="visual-settings-title" tabindex="-1">Appearance</h2>
+        <button id="visual-settings-close" class="stats-close" type="button">Return to scene</button>
+      </header>
+      <form id="visual-settings-form">
+        <div class="visual-settings-toolbar" aria-label="Appearance presets">
+          <label>Preset <select id="visual-settings-preset"></select></label>
+        </div>
+        <div class="visual-settings-personal-presets" role="group" aria-label="Personal appearance presets">
+          <label for="visual-settings-preset-name">Preset name</label>
+          <input id="visual-settings-preset-name" type="text" maxlength="48">
+          <button id="visual-settings-preset-save-as" type="button">Save as new</button>
+          <button id="visual-settings-preset-save" type="button">Save changes</button>
+          <button id="visual-settings-preset-delete" type="button">Delete preset</button>
+        </div>
+        <p id="visual-settings-help" class="visual-settings-help">
+          Synthetic browser check; no Copilot journals are read.
+        </p>
+        <p id="visual-settings-status" role="status" aria-live="polite"></p>
+        <p id="visual-settings-errors" class="visual-settings-errors" role="alert" hidden></p>
+        <div id="visual-settings-conflict" role="group" hidden>
+          <button id="visual-settings-use-file" type="button">Use file</button>
+          <button id="visual-settings-keep-preview" type="button">Keep preview</button>
+        </div>
+        <div class="visual-settings-scroll">
+          <section id="visual-settings-quick" class="visual-settings-quick"
+            aria-label="Quick appearance controls">
+            <h3>Quick controls</h3>
+          </section>
+          <div class="visual-settings-search">
+            <label for="visual-settings-search">Search advanced settings</label>
+            <input id="visual-settings-search" type="search" autocomplete="off"
+              aria-describedby="visual-settings-search-status">
+            <button id="visual-settings-search-clear" type="button" hidden>Clear search</button>
+            <p id="visual-settings-search-status" role="status" aria-live="polite"></p>
+          </div>
+          <div id="visual-settings-fields" class="visual-settings-fields"
+            aria-label="Advanced appearance settings"></div>
+          <details class="visual-file-actions">
+            <summary>File actions</summary>
+            <button id="visual-settings-reload" type="button">Reload from file</button>
+            <label><input id="visual-settings-auto-reload" type="checkbox"> Auto reload</label>
+            <button id="visual-settings-export" type="button">Export settings</button>
+          </details>
+        </div>
+        <footer class="visual-settings-actions">
+          <button id="visual-settings-reset" type="button">Reset preview</button>
+        </footer>
+      </form>
+    </dialog>
+    <script type="module" src="/appearance-browser-harness.mjs"></script>
+  </body>
+</html>

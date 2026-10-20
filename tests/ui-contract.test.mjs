@@ -13,6 +13,46 @@ const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
 const statsUi = await readFile(new URL('../session-stats-ui.mjs', import.meta.url), 'utf8');
 const workspaceUi = await readFile(new URL('../workspace-ui.mjs', import.meta.url), 'utf8');
 const navigationUi = await readFile(new URL('../navigation-ui.mjs', import.meta.url), 'utf8');
+const visualSettingsUi = await readFile(new URL('../visual-settings-ui.mjs', import.meta.url), 'utf8');
+
+test('source recovery retains the header, running indicators and workspace while marking coverage unknown', () => {
+  const context = {
+    thinkingPulseClock: { reset() {} },
+    impulseBuffer: { clear() {} },
+    timeline: { setCoverage(covered) { context.covered = covered; } },
+    document: { hidden: false, body: { classList: { toggle() {} } } },
+    performance: { now: () => 0 },
+    updateSubagentSummary() {},
+    renderWaitingMarkers(ids) { context.waitingIds = ids; },
+    workspaceUI: { update(state) { context.workspaceState = state; } },
+    activityState: null,
+  };
+  for (const name of ['$journals', '$sessions', '$waiting', '$unknown', '$running',
+    '$coverage', '$status', '$subtitle']) context[name] = { textContent: '' };
+  vm.createContext(context);
+  vm.runInContext(main.slice(main.indexOf('function renderActivityState(state) {'),
+    main.indexOf('\nconst activityClient =', main.indexOf('function renderActivityState(state) {'))), context);
+  const connected = { connection: 'connected', sourceStatus: 'available', coverage: 'journal-only',
+    activeSessions: 1, runningSessions: 1, waitingSessions: 0, waitingSessionIds: [] };
+  context.renderActivityState(connected);
+  assert.equal(context.$status.textContent, 'RUNNING');
+  const subtitle = context.$subtitle.textContent;
+  context.renderActivityState({ ...connected, connection: 'recovering', coverage: 'unknown' });
+  assert.equal(context.$status.textContent, 'RUNNING');
+  assert.equal(context.$subtitle.textContent, subtitle);
+  assert.equal(context.covered, false);
+  assert.equal(context.$running.textContent, '1');
+  assert.equal(context.workspaceState, connected, 'the workspace is not cleared during the grace period');
+  assert.equal(context.activityState.connection, 'recovering');
+  assert.match(context.$coverage.textContent, /CONNECTION GAP/);
+  assert.equal(context.waitingIds.length, 0);
+  context.renderActivityState({ ...connected, connection: 'retrying', coverage: 'unknown',
+    activeSessions: 0, runningSessions: 0 });
+  assert.equal(context.$status.textContent, 'RECONNECTING · UNKNOWN');
+  assert.equal(context.$running.textContent, '0');
+  context.renderActivityState(connected);
+  assert.equal(context.$status.textContent, 'RUNNING');
+});
 
 class TestElement {
   constructor(tagName, document) {
@@ -277,7 +317,7 @@ test('page identity is SENTIENT OS in the browser title and visible heading', ()
 });
 
 test('personal visual preset controls are labelled, wired, and storage is disclosed', () => {
-  assert.match(html, /aria-label="Personal visual presets"/);
+  assert.match(html, /aria-label="Personal appearance presets"/);
   assert.match(html, /id="visual-settings-preset-name"/);
   assert.match(html, /id="visual-settings-preset-save-as"/);
   assert.match(html, /id="visual-settings-preset-save"/);
@@ -286,6 +326,24 @@ test('personal visual preset controls are labelled, wired, and storage is disclo
   assert.match(main, /savePresetButton: document\.getElementById\('visual-settings-preset-save'\)/);
   assert.match(main, /deletePresetButton: document\.getElementById\('visual-settings-preset-delete'\)/);
   assert.match(html, /stored in this browser/);
+});
+
+test('Appearance is a searchable nonmodal drawer and suspends Workspace interaction', () => {
+  assert.match(html, /aria-controls="visual-settings-dialog"/);
+  assert.match(html, /aria-label="Quick appearance controls"/);
+  assert.match(html, /aria-label="Advanced appearance settings"/);
+  assert.match(html, /aria-live="polite"[\s\S]*visual-settings-search-status/);
+  assert.match(html, /id="visual-settings-search-clear"/);
+  assert.match(html, /<summary>File actions<\/summary>/);
+  assert.match(visualSettingsUi, /dialog\.show\(\)/);
+  assert.doesNotMatch(visualSettingsUi, /dialog\.showModal\(\)/);
+  assert.match(visualSettingsUi, /opener\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(css, /\.visual-settings-dialog\s*\{[^}]*inset:\s*0 0 0 auto/s);
+  assert.match(css, /\.visual-settings-dialog\s*\{[^}]*display:\s*none/s);
+  assert.match(css, /\.visual-settings-dialog\[open\]\s*\{\s*display:\s*flex/);
+  assert.match(css, /\.visual-settings-dialog::backdrop\s*\{\s*background:\s*transparent/);
+  assert.match(main, /workspaceUI\.setAppearanceOpen\(open\)/);
+  assert.match(workspaceUi, /root\.toggleAttribute\('inert', appearanceOpen\)/);
 });
 
 test('live UI has no fabricated/demo activity controls or external dependency URL', () => {

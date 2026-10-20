@@ -41,7 +41,7 @@ export function createThinkingPulseClock(settings = DEFAULT_RUNNING_SETTINGS) {
       const count = Number.isSafeInteger(state.runningSessions)
         ? state.runningSessions : state.thinkingSessions;
       const sessions = Number.isSafeInteger(count) ? Math.min(settings.maxSessions, Math.max(0, count)) : 0;
-      if (hidden || state.connection !== 'connected' ||
+      if (hidden || (state.connection !== 'connected' && state.connection !== 'recovering') ||
           state.sourceStatus === 'unavailable' || sessions === 0) {
         accumulated = 0;
         return 0;
@@ -663,7 +663,9 @@ export function createActivityClient({
     needsSnapshot = true;
     const connection = reconnectTimer !== null ? 'recovering'
       : state.connection === 'retrying' ? 'retrying' : 'unknown';
-    state = unknownConnection(state, connection);
+    state = connection === 'recovering'
+      ? { ...state, connection, coverage: 'unknown' }
+      : unknownConnection(state, connection);
     publishState();
   };
   const handleSnapshot = (message) => {
@@ -701,7 +703,7 @@ export function createActivityClient({
       return;
     }
     if (needsSnapshot || message.epoch !== streamEpoch) {
-      loseTree();
+      if (reconnectTimer === null) loseTree();
       markUnknown();
       return;
     }
@@ -738,10 +740,10 @@ export function createActivityClient({
       source.onerror = () => {
         if (closed || reconnectTimer !== null || state.connection === 'retrying') return;
         needsSnapshot = true;
-        loseTree();
-        state = unknownConnection(state, 'recovering');
+        state = { ...state, connection: 'recovering', coverage: 'unknown' };
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
+          loseTree();
           state = unknownConnection(state, 'retrying');
           publishState();
         }, 15_000);
