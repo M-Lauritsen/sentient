@@ -793,7 +793,7 @@ export function createWorkspaceUI({
         list.tabIndex = 0;
         list.setAttribute('aria-label', 'Session statuses and elapsed time');
         list.setAttribute('aria-live', 'off');
-        content.append(list, view.more);
+        content.append(list);
         view.list = list;
         sessionStatsDialog?.registerList?.(list);
       }
@@ -807,7 +807,6 @@ export function createWorkspaceUI({
         : 'Session statuses and elapsed time');
       if (unknown) {
         clearSessionStats(list, new Set());
-        view.more.textContent = '';
         view.rows = [];
       } else {
         let sessions = Array.isArray(activityState.sessions) ? activityState.sessions : [];
@@ -816,13 +815,6 @@ export function createWorkspaceUI({
         } else if (instance.config.filter === 'waiting') {
           sessions = sessions.filter(({ status }) => status === 'waiting');
         }
-        const expected = instance.config.filter === 'running'
-          ? activityState.runningSessions
-          : instance.config.filter === 'waiting'
-            ? activityState.waitingSessions
-            : activityState.sessions?.length;
-        const truncated = activityState.sessionsTruncated === true;
-        const omitted = Math.max(0, (expected ?? sessions.length) - sessions.length);
         const filteredRows = renderSessionRows({
           document,
           list,
@@ -834,9 +826,6 @@ export function createWorkspaceUI({
           pruneExpanded: false,
         });
         view.rows = filteredRows;
-        view.more.textContent = sessions.length && truncated
-          ? omitted > 0 ? `+${omitted} more not shown` : 'More sessions not shown'
-          : '';
       }
     } else if (instance.type === 'totals') {
       const totals = renderPageActivityTotals(document, pageActivityTotals);
@@ -913,17 +902,26 @@ export function createWorkspaceUI({
           entry.label);
         row.dataset.category = entry.category;
         row.dataset.glyph = entry.glyph;
+        if (entry.hook) row.dataset.hook = entry.hook;
         rows.set(entry.id, row);
       }
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
     }
     if (roll) {
+      const arrivalHeight = entries.filter(({ id }) => !previousPositions.has(id))
+        .reduce((height, { id }) => height + rows.get(id).getBoundingClientRect().height, 0);
+      const offsets = new Map();
+      let arrivalOffset = -arrivalHeight;
+      for (const [id, previous] of previousPositions) {
+        previous.animation?.cancel();
+        const offset = previous.top - rows.get(id).getBoundingClientRect().top;
+        offsets.set(id, offset);
+        arrivalOffset = Math.min(arrivalOffset, offset);
+      }
       for (const entry of entries) {
         const row = rows.get(entry.id);
-        const previous = previousPositions.get(entry.id);
-        if (!previous || typeof row.animate !== 'function') continue;
-        const offset = previous.top - row.getBoundingClientRect().top;
-        previous.animation?.cancel();
+        if (typeof row.animate !== 'function') continue;
+        const offset = offsets.get(entry.id) ?? arrivalOffset;
         if (offset) row.animate([
           { transform: `translateY(${offset}px)` },
           { transform: 'translateY(0)' },
@@ -959,8 +957,6 @@ export function createWorkspaceUI({
         view = makeModuleView(instance);
         view.expandedStats = expandedSessionStats;
         view.rows = [];
-        view.more = element(document, 'p', 'workspace-session-more');
-        if (instance.type === 'sessions') view.content.append(view.more);
         moduleViews.set(instance.id, view);
       }
       view.panel.dataset.moduleType = instance.type;

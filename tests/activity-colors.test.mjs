@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 import {
   CATEGORIES, CATEGORY_GLYPH, CATEGORY_HEX, CATEGORY_INDEX, CATEGORY_RGB, activityCategory,
+  HOOK_DEFAULTS, hookType, createScenePalette, applyHookColors,
 } from '../activity-colors.mjs';
 import { createImpulseFeed } from '../activity-client.mjs';
 import { createPageActivityTotals } from '../session-stats-ui.mjs';
@@ -11,6 +12,31 @@ import { createWorkspaceStore } from '../workspace-model.mjs';
 import { createWorkspaceUI } from '../workspace-ui.mjs';
 
 const root = new URL('../', import.meta.url);
+
+test('hook styles distinguish start, end and other hook events without changing aggregate categories', () => {
+  assert.equal(hookType('hook.start'), 'start');
+  assert.equal(hookType('hook.end'), 'end');
+  assert.equal(hookType('hook.future'), 'other');
+  for (const value of [null, 42, 'tool.execution_start', 'hooking.start', 'HOOK.start']) {
+    assert.equal(hookType(value), null);
+  }
+  assert.equal(activityCategory({ kind: 'activity', eventType: 'hook.start' }), 'unknown');
+  const dom = new JSDOM('<!doctype html><html></html>');
+  const hooks = { ...HOOK_DEFAULTS, startColor: 0xff0000, endColor: 0x00ff00, endImpact: 0 };
+  applyHookColors(dom.window.document, hooks);
+  assert.equal(dom.window.document.documentElement.style.getPropertyValue('--hook-start'), '#ff0000');
+  assert.equal(dom.window.document.documentElement.style.getPropertyValue('--hook-end'), '#00ff00');
+  const palette = createScenePalette({ scene: { categoryBrightness: 0.9 }, hooks });
+  const start = CATEGORIES.length * 3;
+  assert.ok(Math.abs(palette[start] - 0.9) < 1e-6);
+  assert.deepEqual([...palette.slice(start + 1, start + 3)], [0, 0]);
+  assert.deepEqual([...palette.slice(start + 3, start + 6)], [0, 0, 0],
+    'zero scene impact does not change the selected feed color');
+  const standard = createScenePalette({ scene: { categoryBrightness: 0.9 } });
+  assert.deepEqual([...palette.slice(0, start)], [...standard.slice(0, start)],
+    'non-hook scene colors remain unchanged');
+  dom.window.close();
+});
 
 test('activity category rules follow the documented first-match mapping', () => {
   const rows = [

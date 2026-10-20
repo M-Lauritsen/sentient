@@ -166,11 +166,14 @@ checkboxes. All categories includes every supported category, not unlimited
 history: feeds still share the latest eight accepted entries. A partial
 selection shows a mixed checkbox; clearing every category prompts you to choose
 categories, rather than implying no observed activity. Redundant filter summaries
-and session-state fallback messages are omitted. Empty session lists do not
+and session-state fallback messages are omitted, including the more-sessions
+notice on truncated lists. Session rows still reflect the bounded projection,
+not necessarily every running session. Empty session lists do not
 display placeholder text; unknown coverage retains its styling and accessible
 list label, alongside the page-wide coverage indicator.
-Refreshes retain existing feed rows; new arrivals roll vertically into view,
-shifting older rows down without resizing them. Reduced motion disables the roll.
+Refreshes retain existing feed rows; new arrivals slide vertically into view,
+shifting older rows down without resizing, fading or flipping them. Rapid arrivals
+continue from the current scroll position. Reduced motion disables the slide.
 The feed clips
 and fades older rows without an internal scrollbar.
 Density, legend and session filters are also in Settings, not the normal feed.
@@ -197,9 +200,9 @@ plugins and external integrations remain intentionally deferred.
 Open **Appearance** from the application menu to preview the `balanced`, `subtle` or
 `intense` preset and edit any in-scope setting. The nonmodal drawer keeps the
 scene visible; closing it retains the current preview. Quick controls cover
-common adjustments, while searchable Advanced sections expose all 166
+common adjustments, while searchable Advanced sections expose all 172
 configuration paths with friendly labels, help and exact numeric inputs.
-All 140 scalar numeric settings include a slider; vectors keep named X/Y/Z inputs.
+All 143 scalar numeric settings include a slider; vectors keep named X/Y/Z inputs.
 Suggested slider ranges are guidance only: valid values outside them remain
 unchanged and can be edited exactly. Pulse minimum/maximum and automatic
 rotation direction map back to the existing configuration fields.
@@ -228,6 +231,16 @@ This is public, browser-loaded configuration: never put secrets in it. Visual
 changes do not alter activity data, session state, timeline history or
 statistics.
 
+**Appearance → Advanced → Event effects** includes separate `hook.start`,
+`hook.end` and other `hook.*` colors, shared by feed text and scene pulses.
+Each has a scene-impact control from 0 (off) through 1 (normal) to 4 (maximum).
+Impact changes pulse brightness and spread, not feed animation. Hook text keeps
+the same smooth slide with no flashing. Hook events still count in the existing
+unknown aggregate category; per-hook styling does not add statistics categories
+or expose hook arguments/results. Existing appearance presets receive hook
+defaults when they do not yet contain hook settings. Save a personal preset
+for browser-local persistence, or export settings to save the configuration file.
+
 Advanced tuning is organized into Camera, Network, Motion, Event effects and
 Atmosphere. It retains the underlying configuration groups and exact file
 formats:
@@ -239,6 +252,7 @@ formats:
 | `pulses` | Head/trail appearance, speed, arrival energy and ordinary edge light |
 | `running` | Per-session background rate, session cap, hops, spread and seed energy |
 | `activity` | Grouped-burst intensity cap, spread, hops, seed energy and heat |
+| `hooks` | Separate start, end and fallback hook colors and scene-impact strengths |
 | `subagents` | Growth/fade timing, point sizes, branch brightness, anchor colors and retirement flashes |
 | `waiting` | Marker appearance and waiting-glow breathing, color blend and opacity |
 | `dust` | Point appearance, twinkle and rotation/sway |
@@ -247,7 +261,7 @@ formats:
 | `scene` | Background, category light multiplier, edge visibility/idle colour, breathing, load response, bloom and glows |
 | `effects` | Independent dust, floor, breathing, waiting glow/markers and subagent-transition switches |
 
-The shipped values preserve the existing appearance. Inline comments describe
+Non-hook defaults preserve the existing appearance. Inline comments describe
 units, constraints and suggested ranges. Ranges are guidance, not automatic
 clamps: use finite numbers, nonnegative except signed positions/rotation,
 integer hop/count values, positive durations/grid spacing/load divisors, and

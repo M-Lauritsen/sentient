@@ -133,7 +133,7 @@ window.appearanceHarness = {
     const numericFields = [...document.querySelectorAll(
       '#visual-settings-fields [data-setting-path][data-quick-projection="false"]',
     )].filter((field) => field.querySelectorAll('input[type="number"]').length === 1);
-    if (numericFields.length !== 140 || numericFields.some((field) =>
+    if (numericFields.length !== 143 || numericFields.some((field) =>
       field.querySelectorAll('input[type="range"]').length !== 1)) {
       throw new Error('Every scalar numeric setting must have one Advanced slider.');
     }

@@ -1,6 +1,8 @@
 import { resolveVisualSettings } from './visual-config.mjs';
+import { HOOK_DEFAULTS } from './activity-colors.mjs';
 
 export const VISUAL = {
+  "hooks": { ...HOOK_DEFAULTS },
   "camera": {
     "fov": 50,
     "position": [

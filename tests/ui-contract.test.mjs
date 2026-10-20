@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
-import { CATEGORIES, CATEGORY_HEX, CATEGORY_RGB, CATEGORY_INDEX } from '../activity-colors.mjs';
+import { CATEGORIES, CATEGORY_HEX, CATEGORY_RGB, CATEGORY_INDEX, HOOK_TYPES } from '../activity-colors.mjs';
 import { VISUAL } from '../visual-settings.mjs';
 import { createCategoryBurstPlan, createImpulseBuffer } from '../activity-client.mjs';
 import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from '../session-stats-ui.mjs';
@@ -416,9 +416,9 @@ test('workspace modules keep session visibility separate from bounded source sta
   assert.match(html, /data-workspace-dock="bottom-left"/);
   assert.match(main, /workspaceUI\.update\(state\)/);
   assert.match(workspaceUi, /projectActiveHudSessions\(activityState\)/);
-  assert.match(workspaceUi, /'COVERAGE UNKNOWN'/);
-  assert.match(workspaceUi, /'COVERAGE PARTIAL · SESSION COVERAGE UNKNOWN'/);
-  assert.match(workspaceUi, /'No matching sessions'/);
+  assert.match(workspaceUi, /COVERAGE UNKNOWN · ACTIVITY VIEW UNKNOWN/);
+  assert.match(workspaceUi, /Session statuses and elapsed time · coverage/);
+  assert.doesNotMatch(workspaceUi, /No matching sessions|Additional sessions not shown|workspace-session-more/);
   assert.match(workspaceUi, /instance\.config\.filter === 'waiting'/);
   assert.match(workspaceUi, /SESSION_LABELS/);
   assert.match(workspaceUi, /sessionStatsDialog\?\.registerList/);
@@ -672,7 +672,6 @@ test('waiting counter and scene affordances stay bounded and activity-free', () 
   assert.match(main, /sessionIds\.slice\(0, 8\)/);
   assert.match(main, /\$waiting\.textContent = String\(state\.connection === 'connected' && state\.sourceStatus !== 'unavailable'[\s\S]*?state\.waitingSessions \?\? 0 : 0\)/);
   assert.match(main, /activityState\.sourceStatus !== 'unavailable'\s*&&\s*activityState\.waitingSessions > 0/);
-  assert.match(workspaceUi, /const omitted = Math\.max\(0, \(expected \?\? sessions\.length\) - sessions\.length\)/);
   assert.match(main, /coreGlow\.material\.color\.lerpColors/);
   assert.match(main, /Math\.sin\(now \* VISUAL\.waiting\.breathSpeed\)/);
   assert.match(main, /CATEGORY_HEX\.waiting/);
@@ -692,7 +691,7 @@ function sceneFunction(name) {
 test('pulse and RGB edge writers use category channels, preserve kind motion and reuse buffers', () => {
   const SCENE_RGB = Float32Array.from(CATEGORY_RGB, (channel) =>
     0.9 * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
-  assert.match(main, /const SCENE_RGB = Float32Array\.from\(CATEGORY_RGB/);
+  assert.match(main, /const SCENE_RGB = createScenePalette\(VISUAL\)/);
   const context = vm.createContext({
     Math, SCENE_RGB, CATEGORY_INDEX, VISUAL,
     P: 1, T: 2, E: 1,
@@ -805,7 +804,7 @@ test(`${activity.eventType} produces one network cascade per frame without explo
   const impulseBuffer = createImpulseBuffer();
   impulseBuffer.add(activity);
   const context = vm.createContext({
-    CATEGORY_INDEX, VISUAL, document: { hidden: false }, performance: { now: () => 1 }, Math, N: 1,
+    CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, VISUAL, document: { hidden: false }, performance: { now: () => 1 }, Math, N: 1,
     nodeEnergy: new Float32Array(1), nodeHot: new Float32Array(1),
     adjacency: [[0, 1, 2, 3, 4]],
     otherEnd: (edge) => edge + 1,
@@ -816,7 +815,8 @@ test(`${activity.eventType} produces one network cascade per frame without explo
     impulseFeed: { add() {} },
     fireFrom: (...args) => calls.push(args),
   });
-  vm.runInContext([sceneFunction('renderCompletionCascade'), sceneFunction('renderObservedImpulses')].join('\n'), context);
+  vm.runInContext([sceneFunction('renderCompletionCascade'), sceneFunction('renderHookPulses'),
+    sceneFunction('renderObservedImpulses')].join('\n'), context);
   vm.runInContext('renderObservedImpulses()', context);
   assert.equal(calls.length, 5, 'grouped completions share one central and four neighbouring seeds');
   assert.deepEqual(calls[0], [0, 7, 2, -1, 5, CATEGORY_INDEX.completion]);

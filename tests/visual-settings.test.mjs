@@ -6,7 +6,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import * as THREE from 'three';
-import { CATEGORY_INDEX, CATEGORY_RGB, CATEGORY_HEX } from '../activity-colors.mjs';
+import { CATEGORY_INDEX, CATEGORY_RGB, CATEGORY_HEX, HOOK_DEFAULTS, HOOK_TYPES, CATEGORIES,
+  createScenePalette, applyHookColors } from '../activity-colors.mjs';
 import { createThinkingPulseClock, createImpulseBuffer, createCategoryBurstPlan,
   createActivityTimeline, impulseIntensity } from '../activity-client.mjs';
 import { createPageActivityTotals } from '../session-stats-ui.mjs';
@@ -133,7 +134,8 @@ function sceneFunction(name) {
 function makeNetworkHarness(VISUAL) {
   const context = vm.createContext({
     VISUAL, THREE, CATEGORY_INDEX, CATEGORY_HEX, CATEGORY_RGB, validateVisualSettings, structuredClone,
-    SCENE_RGB: Float32Array.from(CATEGORY_RGB), pixelRatio: 1,
+    createScenePalette, applyHookColors,
+    SCENE_RGB: createScenePalette(VISUAL), pixelRatio: 1,
     CFG: { radius: 10, neighbours: 3, maxEdgeLen: 4.5, dust: 2, maxPulses: 16, trail: 7 },
     brain: new THREE.Group(), scene: new THREE.Scene(),
     camera: new THREE.PerspectiveCamera(),
@@ -147,6 +149,7 @@ function makeNetworkHarness(VISUAL) {
       waitingSessionIds: ['AAAA'], runningSessions: 1, sessions: [],
     },
     document: {
+      documentElement: { style: { setProperty() {} } },
       getElementById: () => ({}),
       createElement: () => ({
         getContext: () => ({
@@ -171,6 +174,7 @@ test('visual settings characterize the latest tuned defaults, not structural cap
   const visual = await settings();
   const configModule = await import('../visual-settings.mjs');
   assert.deepEqual(visual, {
+    hooks: { ...HOOK_DEFAULTS },
     camera: {
       fov: 50, position: [0, 4, 31], target: [0, 0, 0], damping: 0.06,
       minDistance: 14, maxDistance: 60, autoRotate: true, autoRotateSpeed: 0.35,
@@ -253,7 +257,7 @@ test('visual settings characterize the latest tuned defaults, not structural cap
   assert.match(main, /import \{ VISUAL as VISUAL_DEFAULTS, VISUAL_PRESET, VISUAL_OVERRIDES,\s*EFFECTIVE_VISUAL as VISUAL \} from '\.\/visual-settings\.mjs'/);
   assert.match(main, /maxPulses: 1600/);
   assert.match(main, /trail: 7/);
-  assert.match(main, /CATEGORY_RGB, \(channel\)/);
+  assert.match(main, /createScenePalette\(VISUAL\)/);
   assert.equal(configModule.VISUAL_PRESET, 'balanced');
   assert.deepEqual(configModule.VISUAL_ERRORS, []);
   assert.deepEqual(configModule.EFFECTIVE_VISUAL, resolveVisualSettings(
@@ -671,6 +675,121 @@ test('invalid count and line-mode drafts preserve the last applied preview', asy
   }
 });
 
+test('hook Advanced controls preview, validate and preserve legacy preset compatibility', async () => {
+  const defaults = await settings();
+  const legacy = structuredClone(defaults);
+  delete legacy.hooks;
+  const resolved = resolveVisualSettings(legacy, 'balanced');
+  assert.deepEqual(resolved.errors, []);
+  assert.deepEqual(resolved.settings.hooks, HOOK_DEFAULTS);
+  const harness = makePanelHarness({ defaults: legacy });
+  const [color] = harness.control('hooks.startColor');
+  const [strength] = harness.control('hooks.startImpact');
+  color.value = '#abcdef';
+  color.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).hooks.startColor, 0xabcdef);
+  assert.equal(harness.applied.at(-1).hooks.endColor, HOOK_DEFAULTS.endColor);
+  strength.value = '0';
+  strength.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).hooks.startImpact, 0);
+  const count = harness.applied.length;
+  strength.value = '-1';
+  strength.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.length, count, 'invalid hook strength never reaches the scene');
+  const invalid = structuredClone(defaults);
+  invalid.hooks.endImpact = 5;
+  assert.ok(validateVisualSettings(invalid).some(({ path }) => path === 'hooks.endImpact'));
+  invalid.hooks.endImpact = 1;
+  invalid.hooks.endColor = 0x1000000;
+  assert.ok(validateVisualSettings(invalid).some(({ path }) => path === 'hooks.endColor'));
+});
+
+test('personal hook styles persist and pre-hook personal presets receive defaults', async () => {
+  const defaults = await settings();
+  const storage = makeMemoryStorage();
+  const first = makePanelHarness({ defaults, storage });
+  const [color] = first.control('hooks.endColor');
+  color.value = '#123456';
+  color.dispatch('input');
+  await new Promise((resolve) => setImmediate(resolve));
+  first.elements.presetNameInput.value = 'Hook styles';
+  first.elements.saveAsPresetButton.click();
+  const second = makePanelHarness({ defaults, storage });
+  second.elements.presetSelect.value = 'user:Hook styles';
+  second.elements.presetSelect.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(second.applied.at(-1).hooks.endColor, 0x123456);
+  const [key, serialized] = storage.values.entries().next().value;
+  const legacy = JSON.parse(serialized);
+  delete legacy.presets[0].settings.hooks;
+  storage.values.set(key, JSON.stringify(legacy));
+  const third = makePanelHarness({ defaults, storage });
+  third.elements.presetSelect.value = 'user:Hook styles';
+  third.elements.presetSelect.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(third.applied.at(-1).hooks, HOOK_DEFAULTS);
+});
+
+test('live hook preview updates scene palette and feed colors without rebuilding geometry', async () => {
+  const defaults = await settings();
+  const context = makeNetworkHarness(structuredClone(defaults));
+  const css = new Map();
+  context.document.documentElement.style.setProperty = (name, value) => css.set(name, value);
+  const geometry = context.network().nodeGeo;
+  const originalPalette = [...context.SCENE_RGB.slice(0, CATEGORY_RGB.length)];
+  context.candidate = structuredClone(defaults);
+  Object.assign(context.candidate.hooks, { startColor: 0xff0000, startImpact: 2, endImpact: 0 });
+  vm.runInContext('applyVisualSettings(candidate)', context);
+  assert.equal(context.network().nodeGeo, geometry);
+  assert.deepEqual([...context.SCENE_RGB.slice(0, CATEGORY_RGB.length)], originalPalette);
+  assert.ok(Math.abs(context.SCENE_RGB[CATEGORY_RGB.length] -
+    defaults.scene.categoryBrightness * 2) < 1e-6);
+  assert.deepEqual([...context.SCENE_RGB.slice(CATEGORY_RGB.length + 3, CATEGORY_RGB.length + 6)],
+    [0, 0, 0]);
+  assert.equal(css.get('--hook-start'), '#ff0000');
+  assert.equal(css.get('--hook-end'), '#c4b5fd', 'disabled scene effects retain feed color');
+});
+
+test('hook scene effects honor per-type strength without duplicate unknown bursts or collection changes', async () => {
+  const VISUAL = await settings();
+  VISUAL.hooks.startImpact = 0;
+  VISUAL.hooks.endImpact = 2;
+  const impulseBuffer = createImpulseBuffer();
+  impulseBuffer.add({ kind: 'activity', eventType: 'hook.start', count: 8 });
+  impulseBuffer.add({ kind: 'activity', eventType: 'hook.end', count: 2 });
+  impulseBuffer.add({ kind: 'activity', eventType: 'tool.execution_start', count: 1 });
+  const calls = [], feed = [], totals = [];
+  const context = vm.createContext({
+    VISUAL, CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, impulseBuffer,
+    document: { hidden: false }, performance: { now: () => 1 }, Math, N: 1,
+    nodeHot: [0], nodeEnergy: [0],
+    timeline: { add: (counts) => totals.push([...counts]) },
+    impulseFeed: { add: (...args) => feed.push(args) },
+    categoryBurstPlan: createCategoryBurstPlan(), impulseIntensity,
+    fireFrom: (...args) => calls.push(args),
+  });
+  vm.runInContext(sceneFunction('renderHookPulses') + sceneFunction('renderObservedImpulses') +
+    '\nrenderObservedImpulses()', context);
+  assert.deepEqual(calls, [
+    [0, 4, 1, -1, 3, CATEGORIES.length + 1],
+    [0, 1, 1, -1, 1, CATEGORY_INDEX.tool],
+  ]);
+  assert.equal(feed.length, 3, 'disabled hook effects still produce feed rows');
+  assert.equal(totals[0][CATEGORY_INDEX.unknown], 10, 'hook statistics still accumulate');
+  assert.ok(context.nodeHot[0] > 0);
+  const hookOnly = createImpulseBuffer();
+  hookOnly.add({ kind: 'activity', eventType: 'hook.end' });
+  context.impulseBuffer = hookOnly;
+  context.document.hidden = true;
+  vm.runInContext('renderObservedImpulses()', context);
+  context.document.hidden = false;
+  vm.runInContext('renderObservedImpulses()', context);
+  assert.equal(calls.length, 2, 'hidden hook activity does not replay later');
+});
+
 test('all advanced paths appear once and quick controls share the same canonical draft', async () => {
   const harness = makePanelHarness({ defaults: await settings() });
   const descendants = (element) => [element, ...element.children.flatMap(descendants)];
@@ -678,8 +797,8 @@ test('all advanced paths appear once and quick controls share the same canonical
     element.attributes.get('data-setting-path') &&
     element.attributes.get('data-quick-projection') === 'false');
   const paths = advanced.map((element) => element.attributes.get('data-setting-path'));
-  assert.equal(paths.length, 166);
-  assert.equal(new Set(paths).size, 166);
+  assert.equal(paths.length, 172);
+  assert.equal(new Set(paths).size, 172);
   assert.deepEqual([...paths].sort(),
     VISUAL_SETTING_DEFINITIONS.map(({ path }) => path).sort());
 
@@ -710,7 +829,7 @@ test('all advanced paths appear once and quick controls share the same canonical
 test('every scalar numeric setting renders a slider with finite valid guidance and steps', async () => {
   const harness = makePanelHarness({ defaults: await settings() });
   const numeric = VISUAL_SETTING_DEFINITIONS.filter(({ type }) => type === 'number');
-  assert.equal(numeric.length, 140);
+  assert.equal(numeric.length, 143);
   for (const { path, constraints } of numeric) {
     const controls = harness.control(path);
     const sliders = controls.filter(({ type }) => type === 'range');
@@ -1024,7 +1143,7 @@ test('effect switches leave synthetic feed, timeline, and page totals unchanged'
       totals.add(event);
     }
     const context = vm.createContext({
-      VISUAL, CATEGORY_INDEX, impulseBuffer: buffer, document: { hidden: false },
+      VISUAL, CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, impulseBuffer: buffer, document: { hidden: false },
       timeline: { add: (counts) => timeline.push(Array.from(counts)) },
       performance: { now: () => 100 }, Math, N: 1,
       impulseFeed: { add: (...entry) => feed.push(entry) },
@@ -1034,7 +1153,8 @@ test('effect switches leave synthetic feed, timeline, and page totals unchanged'
       fireFrom: (...args) => rendered.push(args),
       nodeEnergy: new Float32Array(1), nodeHot: new Float32Array(1),
     });
-    vm.runInContext(sceneFunction('renderObservedImpulses') + '\nrenderObservedImpulses()', context);
+    vm.runInContext(sceneFunction('renderHookPulses') + sceneFunction('renderObservedImpulses') +
+      '\nrenderObservedImpulses()', context);
     results.push({
       feed, timeline, pageTotals: Array.from(totals.counts), rendered,
     });
@@ -1210,6 +1330,8 @@ test('exported settings module preserves defaults and layered overrides as a loa
   try {
     const currentConfig = new URL('../visual-config.mjs', import.meta.url);
     await copyFile(currentConfig, path.join(directory, 'visual-config.mjs'));
+    await copyFile(new URL('../activity-colors.mjs', import.meta.url),
+      path.join(directory, 'activity-colors.mjs'));
     const exportedFile = path.join(directory, 'visual-settings.mjs');
     await writeFile(exportedFile, createVisualSettingsModuleSource({
       defaults, preset: 'subtle', overrides,
@@ -1510,7 +1632,7 @@ test('nondefault grouped burst settings control motion, excitation and bounded i
   impulseBuffer.add({ kind: 'activity', eventType: 'session.error', count: 2 });
   const calls = [], feed = [];
   const context = vm.createContext({
-    VISUAL, CATEGORY_INDEX, impulseBuffer, document: { hidden: false },
+    VISUAL, CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, impulseBuffer, document: { hidden: false },
     performance: { now: () => 0 }, Math, N: 1,
     nodeEnergy: [0], nodeHot: [0],
     timeline: { add() {} }, categoryBurstPlan: createCategoryBurstPlan(),
@@ -1518,7 +1640,8 @@ test('nondefault grouped burst settings control motion, excitation and bounded i
     impulseFeed: { add: (...args) => feed.push(args) },
     fireFrom: (...args) => calls.push(args),
   });
-  vm.runInContext(sceneFunction('renderObservedImpulses') + '\nrenderObservedImpulses()', context);
+  vm.runInContext(sceneFunction('renderHookPulses') + sceneFunction('renderObservedImpulses') +
+    '\nrenderObservedImpulses()', context);
   assert.deepEqual(calls, [
     [0, 7, 0, -1, 1, CATEGORY_INDEX.reasoning],
     [0, 2, 1, -1, 1, CATEGORY_INDEX.tool],

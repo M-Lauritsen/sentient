@@ -1,4 +1,10 @@
+import { HOOK_DEFAULTS } from './activity-colors.mjs';
+
 const SHAPE = {
+  hooks: {
+    hex: 'startColor endColor otherColor',
+    number: 'startImpact endImpact otherImpact',
+  },
   camera: {
     number: 'fov damping minDistance maxDistance autoRotateSpeed',
     vector3: 'position target',
@@ -121,6 +127,7 @@ export const VISUAL_SETTING_DEFINITIONS = Object.freeze(
           ...(!SIGNED_PATHS.has(path) && type === 'number' && !ZERO_TO_ONE_PATHS.has(path) &&
               !POSITIVE_PATHS.has(path) ? { minimum: 0 } : {}),
           ...(path === 'activity.maxIntensity' ? { minimum: 1 } : {}),
+          ...(group === 'hooks' && type === 'number' ? { minimum: 0, maximum: 4 } : {}),
           ...(path === 'nodes.count' ? { minimum: 2, maximum: 4000 } : {}),
           ...(STRICT_UNIT_PATHS.has(path) ? { exclusiveMinimum: 0, exclusiveMaximum: 1 } : {}),
           ...(MAX_ONE_EXCLUSIVE_PATHS.has(path) ? { exclusiveMaximum: 1 } : {}),
@@ -133,6 +140,7 @@ export const VISUAL_SETTING_DEFINITIONS = Object.freeze(
 );
 
 const GROUP_LABELS = Object.freeze({
+  hooks: 'Hooks',
   camera: 'Camera',
   nodes: 'Nodes',
   pulses: 'Pulses',
@@ -149,6 +157,12 @@ const GROUP_LABELS = Object.freeze({
 });
 
 const FRIENDLY_LABELS = Object.freeze({
+  'hooks.startColor': 'hook.start color',
+  'hooks.endColor': 'hook.end color',
+  'hooks.otherColor': 'Other hook events color',
+  'hooks.startImpact': 'hook.start scene impact',
+  'hooks.endImpact': 'hook.end scene impact',
+  'hooks.otherImpact': 'Other hook events scene impact',
   'camera.fov': 'Field of view',
   'camera.position': 'Camera position',
   'camera.target': 'Orbit center',
@@ -298,6 +312,10 @@ function friendlySettingLabel(path) {
 function settingHelpText(definition, label) {
   const { path, type, constraints, unit } = definition;
   const details = [];
+  if (path.startsWith('hooks.')) {
+    details.push(type === 'hex' ? 'Shared by activity-feed text and scene pulses.'
+      : 'Scene pulse strength: 0 disables the effect; 1 is normal; 4 is maximum. Feed text is unchanged.');
+  }
   if (type === 'number') {
     details.push('Enter a finite number.');
     if (constraints.integer) details.push('Use a whole number.');
@@ -332,7 +350,7 @@ function sectionForSetting(path) {
     return 'network';
   }
   if (group === 'pulses' || group === 'running') return 'motion';
-  if (['activity', 'subagents', 'waiting', 'completion', 'impact'].includes(group) ||
+  if (['activity', 'hooks', 'subagents', 'waiting', 'completion', 'impact'].includes(group) ||
       group === 'effects' && !['dust', 'floor', 'latticeBreathing'].includes(name)) {
     return 'event-effects';
   }
@@ -514,7 +532,7 @@ export function resolveVisualSettings(defaults, presetName = 'balanced', fileOve
     return { settings: null, errors: [{ path: 'preset', message: `Unknown preset "${String(presetName)}".` }] };
   }
 
-  const settings = cloneValue(defaults);
+  const settings = cloneValue({ ...defaults, hooks: defaults.hooks ?? HOOK_DEFAULTS });
   for (const [layerName, overrides] of [
     [`preset:${presetName}`, VISUAL_PRESETS[presetName]],
     ['fileOverrides', fileOverrides],
@@ -556,6 +574,7 @@ export function validateVisualSettings(settings) {
   for (const [group, definitions] of definitionsByGroup) {
     const values = settings[group];
     if (!Object.hasOwn(settings, group)) {
+      if (group === 'hooks') continue;
       errors.push({ path: group, message: 'Required settings group is missing.' });
       continue;
     }

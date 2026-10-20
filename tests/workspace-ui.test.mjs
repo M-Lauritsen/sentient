@@ -171,7 +171,7 @@ test('new arrivals roll retained rows down, while refresh and reduced motion lea
   dom.window.matchMedia = () => ({ matches: reducedMotion });
   const rolls = [];
   dom.window.HTMLElement.prototype.getBoundingClientRect = function () {
-    return { top: [...(this.parentElement?.children ?? [])].indexOf(this) * 26 };
+    return { top: [...(this.parentElement?.children ?? [])].indexOf(this) * 26, height: 26 };
   };
   dom.window.HTMLElement.prototype.animate = function (frames) {
     rolls.push({ label: this.textContent, frames });
@@ -181,14 +181,66 @@ test('new arrivals roll retained rows down, while refresh and reduced motion lea
   assert.deepEqual(rolls, [{
     label: 'Thinking',
     frames: [{ transform: 'translateY(-26px)' }, { transform: 'translateY(0)' }],
+  }, {
+    label: 'Task completed',
+    frames: [{ transform: 'translateY(-26px)' }, { transform: 'translateY(0)' }],
+  }, {
+    label: 'Thinking',
+    frames: [{ transform: 'translateY(-26px)' }, { transform: 'translateY(0)' }],
   }]);
   ui.refresh();
-  assert.equal(rolls.length, 1, 'ordinary refresh does not restart the roll');
+  assert.equal(rolls.length, 3, 'ordinary refresh does not restart the roll');
   reducedMotion = true;
   feed.add('step');
   assert.deepEqual([...list.children].map((row) => row.textContent),
     ['Task step', 'Task completed', 'Thinking']);
-  assert.equal(rolls.length, 1, 'reduced motion still inserts activity but does not animate it');
+  assert.equal(rolls.length, 3, 'reduced motion still inserts activity but does not animate it');
+});
+
+test('rapid feed arrivals continue the visible slide without fading or snapping retained rows', () => {
+  const { document, dom, ui, feed } = setup();
+  ui.update(connectedState());
+  const active = new Map();
+  const starts = new Map();
+  dom.window.HTMLElement.prototype.getBoundingClientRect = function () {
+    const index = [...(this.parentElement?.children ?? [])].indexOf(this);
+    return { top: index * 26 + (active.has(this) ? -13 : 0), height: 26 };
+  };
+  dom.window.HTMLElement.prototype.getAnimations = function () {
+    return active.has(this) ? [active.get(this)] : [];
+  };
+  dom.window.HTMLElement.prototype.animate = function (frames, options) {
+    starts.set(this, frames);
+    active.set(this, { id: options.id, cancel: () => active.delete(this) });
+  };
+  feed.add('thinking');
+  const first = document.querySelector('.workspace-feed .impulse-entry');
+  feed.add('completion');
+  assert.deepEqual(starts.get(first), [
+    { transform: 'translateY(-39px)' }, { transform: 'translateY(0)' },
+  ], 'continue from the visible -13px offset plus the new 26px row');
+  feed.add('step');
+  assert.deepEqual(starts.get(first), [
+    { transform: 'translateY(-39px)' }, { transform: 'translateY(0)' },
+  ]);
+  assert.equal(document.querySelector('.workspace-feed').children[2], first);
+  assert.deepEqual(starts.get(document.querySelector('.workspace-feed').firstElementChild), [
+    { transform: 'translateY(-39px)' }, { transform: 'translateY(0)' },
+  ], 'new arrivals stay above retained rows during a rapid update');
+});
+
+test('hook feed rows preserve smooth slide identity and select independent hook styles', () => {
+  const { document, ui, feed } = setup();
+  ui.update(connectedState());
+  for (const eventType of ['hook.start', 'hook.end', 'hook.future', 'future.event']) {
+    feed.add('activity', undefined, eventType);
+  }
+  const rows = [...document.querySelectorAll('.workspace-feed .impulse-entry')];
+  assert.deepEqual(rows.map((row) => row.dataset.hook), [undefined, 'other', 'end', 'start']);
+  assert.deepEqual(rows.map((row) => row.textContent),
+    ['future.event', 'hook.future', 'hook.end', 'hook.start']);
+  ui.refresh();
+  assert.ok(rows.every((row, index) => document.querySelector('.workspace-feed').children[index] === row));
 });
 
 test('catalogue modules render filtered totals and legend, with one live timeline', () => {
@@ -367,11 +419,13 @@ test('empty session projections do not display relocated session-state messages'
   assert.equal(content.querySelectorAll('.session-row').length, 3);
 });
 
-test('truncated session projections always disclose omitted rows', () => {
+test('truncated session projections show session rows without a more-sessions notice', () => {
   const { document, ui } = setup();
   ui.update(connectedState({ sessionsTruncated: true }));
   const module = document.querySelector('.workspace-module[data-module-type="sessions"]');
-  assert.equal(module.querySelector('.workspace-session-more').textContent, 'More sessions not shown');
+  assert.equal(module.querySelector('.workspace-session-more'), null);
+  assert.equal(module.querySelectorAll('.session-row').length, 3);
+  assert.doesNotMatch(module.querySelector('.workspace-module-content').textContent, /not shown/i);
 
   ui.update(connectedState({
     activeSessions: 40,
@@ -391,7 +445,12 @@ test('truncated session projections always disclose omitted rows', () => {
   const filter = module.querySelector('.workspace-module-options select[name="filter"]');
   filter.value = 'running';
   filter.dispatchEvent(new document.defaultView.Event('change', { bubbles: true }));
-  assert.equal(module.querySelector('.workspace-session-more').textContent, '+8 more not shown');
+  assert.equal(module.querySelector('.workspace-session-more'), null);
+  assert.equal(module.querySelectorAll('.session-row').length, 22);
+  assert.doesNotMatch(module.querySelector('.workspace-module-content').textContent, /not shown/i);
+  ui.refresh();
+  assert.equal(module.querySelector('.workspace-session-more'), null);
+  assert.equal(module.querySelectorAll('.session-row').length, 22);
 });
 
 test('pointer drag, keyboard movement, and sizes are equivalent layout controls', () => {

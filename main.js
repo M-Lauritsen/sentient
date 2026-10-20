@@ -9,7 +9,8 @@ import { createActivityClient, createImpulseFeed, createImpulseBuffer, impulseIn
 import { createPageActivityTotals, createSessionStatsDialog, createTimelineDialog } from './session-stats-ui.mjs';
 import { createWorkspaceStore } from './workspace-model.mjs';
 import { createWorkspaceUI } from './workspace-ui.mjs';
-import { CATEGORIES, CATEGORY_HEX, CATEGORY_INDEX, CATEGORY_RGB } from './activity-colors.mjs';
+import { CATEGORIES, CATEGORY_HEX, CATEGORY_INDEX, HOOK_TYPES,
+  createScenePalette, applyHookColors } from './activity-colors.mjs';
 import { VISUAL as VISUAL_DEFAULTS, VISUAL_PRESET, VISUAL_OVERRIDES,
   EFFECTIVE_VISUAL as VISUAL } from './visual-settings.mjs';
 import { validateVisualSettings } from './visual-config.mjs';
@@ -31,8 +32,8 @@ const CFG = {
 // 3 = duration-scaled impact burst.
 // Motion and category are independent; RGB storage is shared and never rebuilt.
 // Shader attributes are linear; apply scene brightness before trail brightness.
-const SCENE_RGB = Float32Array.from(CATEGORY_RGB, (channel) =>
-  VISUAL.scene.categoryBrightness * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+const SCENE_RGB = createScenePalette(VISUAL);
+applyHookColors(document, VISUAL.hooks);
 
 // ---------- renderer / scene ----------
 const container = document.getElementById('app');
@@ -1207,7 +1208,7 @@ function renderImpactBurst(node, category, durationMs) {
 }
 
 function renderObservedImpulses() {
-  const { byCategory, sceneByCategory, entries, impacts } = impulseBuffer.drain();
+  const { byCategory, sceneByCategory, hookCounts, entries, impacts } = impulseBuffer.drain();
   if (document.hidden) return;
   timeline.add(byCategory, performance.now());
   for (let i = 0; i < impacts.length; i++) {
@@ -1217,6 +1218,7 @@ function renderObservedImpulses() {
     const { kind, toolName, eventType, count } = entries[i];
     impulseFeed.add(kind, toolName, eventType, count);
   }
+  renderHookPulses(hookCounts);
   // Counts strengthen a bounded impulse, rather than rendering one per token.
   const plan = categoryBurstPlan.plan(sceneByCategory);
   for (let i = 0; i < plan.length; i++) {
@@ -1234,6 +1236,20 @@ function renderObservedImpulses() {
     if (kind === 0) nodeEnergy[node] = Math.min(VISUAL.nodes.energyCap,
       nodeEnergy[node] + VISUAL.activity.reasoningEnergy * intensity);
     else nodeHot[node] = Math.min(VISUAL.activity.stepHeatCap, nodeHot[node] + VISUAL.activity.stepHeat * intensity);
+  }
+}
+
+function renderHookPulses(counts) {
+  for (let index = 0; index < HOOK_TYPES.length; index++) {
+    const strength = VISUAL.hooks[`${HOOK_TYPES[index]}Impact`];
+    if (!counts[index] || strength === 0) continue;
+    const intensity = Math.min(VISUAL.activity.maxIntensity,
+      Math.max(1, Math.round(impulseIntensity(counts[index], VISUAL.activity) * strength)));
+    const node = (Math.random() * N) | 0;
+    fireFrom(node, intensity, 1, -1, Math.min(VISUAL.activity.maxSpread, intensity),
+      CATEGORIES.length + index);
+    nodeHot[node] = Math.min(VISUAL.activity.stepHeatCap,
+      nodeHot[node] + VISUAL.activity.stepHeat * intensity);
   }
 }
 
@@ -1377,9 +1393,7 @@ function applyVisualSettings(candidate) {
   const changed = (path) =>
     JSON.stringify(path.split('.').reduce((value, key) => value[key], previous)) !==
     JSON.stringify(path.split('.').reduce((value, key) => value[key], candidate));
-  const nextSceneRgb = Float32Array.from(CATEGORY_RGB, (channel) =>
-    candidate.scene.categoryBrightness *
-      (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
+  const nextSceneRgb = createScenePalette(candidate);
   const nextNodeSize = !topologyChanged && (changed('nodes.largeChance') || changed('nodes.largeSizeMin') ||
     changed('nodes.largeSizeRange') || changed('nodes.baseSizeMin') || changed('nodes.baseSizeRange'))
     ? Float32Array.from({ length: N }, () => Math.random() < candidate.nodes.largeChance
@@ -1426,6 +1440,7 @@ function applyVisualSettings(candidate) {
   if (nextEdgeBase) edgeBase.set(nextEdgeBase);
   edgeLines.visible = VISUAL.scene.edgeVisibility !== 'hidden';
   SCENE_RGB.set(nextSceneRgb);
+  applyHookColors(document, VISUAL.hooks);
 
   const nodeUniforms = nodeMat.uniforms;
   nodeUniforms.uScale.value = VISUAL.nodes.scale * pixelRatio;

@@ -40,6 +40,45 @@ export const CATEGORY_INDEX = Object.freeze(Object.fromEntries(
   CATEGORIES.map((category, index) => [category, index]),
 ));
 
+export const HOOK_TYPES = Object.freeze(['start', 'end', 'other']);
+export const HOOK_DEFAULTS = Object.freeze({
+  startColor: 0x5eead4,
+  endColor: 0xc4b5fd,
+  otherColor: 0x94a3b8,
+  startImpact: 1,
+  endImpact: 1,
+  otherImpact: 0.5,
+});
+
+export function hookType(eventType) {
+  if (typeof eventType !== 'string' || !eventType.startsWith('hook.')) return null;
+  return eventType === 'hook.start' ? 'start' : eventType === 'hook.end' ? 'end' : 'other';
+}
+
+export function hookPalette(settings = HOOK_DEFAULTS) {
+  return HOOK_TYPES.flatMap((type) => {
+    const color = settings[`${type}Color`];
+    return [16, 8, 0].map((shift) => ((color >> shift) & 0xff) / 255);
+  });
+}
+
+export function createScenePalette(settings) {
+  const hooks = settings.hooks ?? HOOK_DEFAULTS;
+  return Float32Array.from([...CATEGORY_RGB, ...hookPalette(hooks)], (channel, index) => {
+    const hook = HOOK_TYPES[Math.floor(index / 3) - CATEGORIES.length];
+    const strength = hook ? hooks[`${hook}Impact`] : 1;
+    const linear = channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    return settings.scene.categoryBrightness * linear * strength;
+  });
+}
+
+export function applyHookColors(document, settings = HOOK_DEFAULTS) {
+  for (const type of HOOK_TYPES) {
+    document.documentElement.style.setProperty(`--hook-${type}`,
+      `#${settings[`${type}Color`].toString(16).padStart(6, '0')}`);
+  }
+}
+
 const SHELL_TOOLS = Object.freeze([
   'bash', 'powershell', 'shell', 'read_bash', 'write_bash', 'stop_bash',
 ]);

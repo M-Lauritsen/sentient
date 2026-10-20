@@ -230,12 +230,33 @@ test('frame buffer bounds labels and render intensity while accounting for every
   assert.equal(drained.byCategory, result.byCategory, 'category totals reuse their typed array');
   assert.deepEqual([...drained.byCategory], Array(CATEGORIES.length).fill(0));
   assert.deepEqual([...drained.sceneByCategory], Array(CATEGORIES.length).fill(0));
-  assert.deepEqual({ ...drained, byCategory: undefined, sceneByCategory: undefined }, {
-    blue: 0, orange: 0, entries: [], impacts: [], byCategory: undefined, sceneByCategory: undefined,
+  assert.deepEqual([...drained.hookCounts], [0, 0, 0]);
+  assert.deepEqual({ ...drained, byCategory: undefined, sceneByCategory: undefined, hookCounts: undefined }, {
+    blue: 0, orange: 0, entries: [], impacts: [], byCategory: undefined, sceneByCategory: undefined, hookCounts: undefined,
   });
   buffer.add({ kind: 'step' });
   buffer.clear();
   assert.equal(buffer.drain().orange, 0);
+});
+
+test('hook effects retain bounded per-type counts independently of feed labels and generic unknown motion', () => {
+  const buffer = createImpulseBuffer();
+  buffer.add({ kind: 'activity', eventType: 'hook.start', count: 3, durationMs: 5000 });
+  buffer.add({ kind: 'activity', eventType: 'hook.end', count: 2, durationMs: 6000 });
+  buffer.add({ kind: 'activity', eventType: 'hook.future', count: 4 });
+  for (let i = 0; i < 10; i++) buffer.add({ kind: 'activity', eventType: `future.event${i}` });
+  const result = buffer.drain();
+  assert.deepEqual([...result.hookCounts], [3, 2, 4]);
+  assert.equal(result.entries.length, 8);
+  assert.equal(result.byCategory[CATEGORIES.indexOf('unknown')], 19);
+  assert.equal(result.sceneByCategory[CATEGORIES.indexOf('unknown')], 10);
+  assert.equal(result.impacts.length, 0, 'hooks do not create a second, uncontrolled duration burst');
+  assert.deepEqual([...buffer.drain().hookCounts], [0, 0, 0]);
+  buffer.add({ kind: 'activity', eventType: 'hook.start', count: 2 });
+  buffer.clear();
+  assert.deepEqual([...buffer.drain().hookCounts], [0, 0, 0]);
+  buffer.add({ kind: 'activity', eventType: 'hook.start', count: -1 });
+  assert.deepEqual([...buffer.drain().hookCounts], [0, 0, 0]);
 });
 
 test('impulse feed rejects unknown kinds instead of displaying arbitrary text', () => {

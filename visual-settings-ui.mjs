@@ -1,4 +1,5 @@
 import { Color, LinearSRGBColorSpace, SRGBColorSpace } from 'three';
+import { HOOK_DEFAULTS } from './activity-colors.mjs';
 import {
   VISUAL_PRESETS,
   VISUAL_SETTING_DEFINITIONS,
@@ -67,7 +68,9 @@ function readPersonalPresets(storage) {
       throw new Error(`Saved preset "${name}" is invalid (${errors[0].path}: ${errors[0].message}).`);
     }
     names.add(normalizedName);
-    presets.push({ name, settings: clone(preset.settings) });
+    presets.push({ name, settings: clone({
+      ...preset.settings, hooks: preset.settings.hooks ?? HOOK_DEFAULTS,
+    }) });
   }
   return presets;
 }
