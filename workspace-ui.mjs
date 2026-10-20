@@ -132,7 +132,9 @@ export function createWorkspaceUI({
   const collapsed = new Set();
 
   const dialog = element(document, 'dialog', 'workspace-dialog');
+  dialog.id = 'workspace-dialog';
   dialog.setAttribute('aria-labelledby', 'workspace-dialog-title');
+  opener.setAttribute('aria-controls', 'workspace workspace-dialog');
   const dialogHeader = element(document, 'header', 'workspace-dialog-header');
   const dialogTitle = element(document, 'h2', '', 'Workspace');
   dialogTitle.id = 'workspace-dialog-title';
@@ -287,6 +289,7 @@ export function createWorkspaceUI({
 
   function openEditor() {
     if (!dialog.open) dialog.showModal();
+    opener.setAttribute('aria-expanded', String(dialog.open));
   }
 
   function closeEditor() {
@@ -1057,8 +1060,10 @@ export function createWorkspaceUI({
   dialog.addEventListener('click', (event) => {
     if (event.target === dialog) closeEditor();
   });
-  dialog.addEventListener('close', () =>
-    (isEditing ? editingDone : opener).focus({ preventScroll: true }));
+  dialog.addEventListener('close', () => {
+    opener.setAttribute('aria-expanded', 'false');
+    (isEditing ? editingDone : opener).focus({ preventScroll: true });
+  });
   settingsButton.addEventListener('click', openEditor);
   profileSelect.addEventListener('change', () => requestSwitch(profileSelect.value));
   saveButton.addEventListener('click', saveDraft);

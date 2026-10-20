@@ -9,6 +9,7 @@ const assets = new Map([
   ['/session-stats-ui.mjs', ['session-stats-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/workspace-model.mjs', ['workspace-model.mjs', 'text/javascript; charset=utf-8']],
   ['/workspace-ui.mjs', ['workspace-ui.mjs', 'text/javascript; charset=utf-8']],
+  ['/navigation-ui.mjs', ['navigation-ui.mjs', 'text/javascript; charset=utf-8']],
   ['/style.css', ['style.css', 'text/css; charset=utf-8']],
 ]);
 const root = new URL('../', import.meta.url);

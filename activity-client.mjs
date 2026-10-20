@@ -647,8 +647,13 @@ export function createActivityClient({
   let needsSnapshot = true;
   let source = null;
   let closed = false;
+  let reconnectTimer = null;
 
   const publishState = () => onState({ ...state });
+  const clearReconnectTimer = () => {
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  };
   const publishTree = (sessions, changes, reset) => onTree({ sessions, ...changes, reset });
   const loseTree = () => {
     publishTree([], diffSubagents(state.treeSessions, []), false);
@@ -656,7 +661,9 @@ export function createActivityClient({
   };
   const markUnknown = () => {
     needsSnapshot = true;
-    state = unknownConnection(state, 'unknown');
+    const connection = reconnectTimer !== null ? 'recovering'
+      : state.connection === 'retrying' ? 'retrying' : 'unknown';
+    state = unknownConnection(state, connection);
     publishState();
   };
   const handleSnapshot = (message) => {
@@ -677,6 +684,7 @@ export function createActivityClient({
     streamEpoch = message.epoch;
     streamSequence = message.sequence;
     needsSnapshot = false;
+    clearReconnectTimer();
     state = { ...snapshot, connection: 'connected' };
     publishState();
     publishTree(snapshot.treeSessions, changes, reset);
@@ -693,10 +701,8 @@ export function createActivityClient({
       return;
     }
     if (needsSnapshot || message.epoch !== streamEpoch) {
-      needsSnapshot = true;
       loseTree();
-      state = unknownConnection(state, 'unknown');
-      publishState();
+      markUnknown();
       return;
     }
     if (message.sequence <= streamSequence) return;
@@ -730,16 +736,22 @@ export function createActivityClient({
         try { handleActivity(JSON.parse(event.data)); } catch { markUnknown(); }
       });
       source.onerror = () => {
-        if (closed) return;
+        if (closed || reconnectTimer !== null || state.connection === 'retrying') return;
         needsSnapshot = true;
         loseTree();
-        state = unknownConnection(state, 'retrying');
+        state = unknownConnection(state, 'recovering');
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          state = unknownConnection(state, 'retrying');
+          publishState();
+        }, 15_000);
         publishState();
       };
       publishState();
     },
     disconnect() {
       closed = true;
+      clearReconnectTimer();
       source?.close();
       source = null;
       needsSnapshot = true;

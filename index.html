@@ -69,30 +69,6 @@
 				LOAD
 				<b id="load">0%</b>
 			</span>
-			<button
-				id="library-open"
-				class="visual-settings-open library-open"
-				type="button"
-				aria-haspopup="dialog"
-				aria-controls="library-dialog"
-				aria-expanded="false">
-				Library
-			</button>
-			<button
-				id="workspace-open"
-				class="visual-settings-open workspace-open"
-				type="button"
-				aria-expanded="false">
-				Workspace
-			</button>
-			<button
-				id="visual-settings-open"
-				class="visual-settings-open"
-				type="button"
-				aria-haspopup="dialog"
-				aria-controls="visual-settings-dialog">
-				VISUAL SETTINGS
-			</button>
 		</header>
 
 		<aside
@@ -167,6 +143,99 @@
 				</aside>
 			</div>
 		</main>
+
+		<nav
+			id="application-navigation"
+			class="application-navigation"
+			aria-label="Application">
+			<button
+				id="application-menu-toggle"
+				class="application-menu-toggle"
+				type="button"
+				aria-haspopup="menu"
+				aria-controls="application-menu"
+				aria-expanded="false">
+				Menu
+			</button>
+			<ul
+				id="application-menu"
+				class="application-menu"
+				role="menu"
+				aria-labelledby="application-menu-toggle"
+				hidden>
+				<li role="none">
+					<button
+						id="library-open"
+						class="application-menu-item library-open"
+						type="button"
+						role="menuitem"
+						aria-haspopup="dialog"
+						aria-controls="library-dialog"
+						aria-expanded="false">
+						Library
+					</button>
+				</li>
+				<li role="none">
+					<button
+						id="visual-settings-open"
+						class="application-menu-item"
+						type="button"
+						role="menuitem"
+						aria-haspopup="dialog"
+						aria-controls="visual-settings-dialog"
+						aria-expanded="false">
+						Appearance
+					</button>
+				</li>
+				<li role="none">
+					<button
+						id="workspace-open"
+						class="application-menu-item workspace-open"
+						type="button"
+						role="menuitem"
+						aria-controls="workspace workspace-dialog"
+						aria-expanded="false">
+						Workspace
+					</button>
+				</li>
+				<li role="none">
+					<button
+						id="help-open"
+						class="application-menu-item"
+						type="button"
+						role="menuitem"
+						aria-haspopup="dialog"
+						aria-controls="help-dialog">
+						Help
+					</button>
+				</li>
+			</ul>
+		</nav>
+
+		<dialog
+			id="help-dialog"
+			class="help-dialog"
+			aria-labelledby="help-title"
+			aria-describedby="help-description">
+			<header class="stats-dialog-header">
+				<h2 id="help-title">SENTIENT OS help</h2>
+				<button
+					id="help-close"
+					class="stats-close"
+					type="button"
+					aria-label="Close help">
+					&times;
+				</button>
+			</header>
+			<div class="help-content" id="help-description">
+				<p>Use the scene to inspect observed local Copilot activity. Drag to orbit and scroll to zoom.</p>
+				<p>Source and coverage remain visible at the top. Unknown or partial coverage is not the same as no activity.</p>
+				<p>Workspace arranges the activity feed, sessions, timeline and other modules. Changes affect presentation, not collection.</p>
+				<p>Library is a read-only view of selected Markdown files; it does not show or change active Copilot configuration.</p>
+				<p>Appearance previews visual settings for this page. Export is required to save them to the repository file.</p>
+				<p>Activity stays local to this machine. Prompts, paths, session titles and raw session identifiers are not shown in the interface.</p>
+			</div>
+		</dialog>
 
 		<dialog
 			id="session-stats-dialog"

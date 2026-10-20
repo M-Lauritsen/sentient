@@ -12,6 +12,7 @@ const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
 const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
 const statsUi = await readFile(new URL('../session-stats-ui.mjs', import.meta.url), 'utf8');
 const workspaceUi = await readFile(new URL('../workspace-ui.mjs', import.meta.url), 'utf8');
+const navigationUi = await readFile(new URL('../navigation-ui.mjs', import.meta.url), 'utf8');
 
 class TestElement {
   constructor(tagName, document) {
@@ -371,6 +372,30 @@ test('workspace modules keep session visibility separate from bounded source sta
   assert.match(css, /\.workspace-session-list\s*\{/);
   assert.match(css, /\.workspace-dock-right/);
   assert.match(css, /prefers-reduced-motion: reduce/);
+});
+
+test('application menu replaces top launchers and preserves the existing destination controls', () => {
+  const menu = html.match(/<nav\s+id="application-navigation"[\s\S]*?<\/nav>/)?.[0];
+  assert.ok(menu);
+  assert.match(menu, /id="application-menu-toggle"[^>]*aria-haspopup="menu"[^>]*aria-expanded="false"/);
+  assert.match(menu, /role="menu"[^>]*hidden/);
+  for (const [id, label] of [
+    ['library-open', 'Library'],
+    ['visual-settings-open', 'Appearance'],
+    ['workspace-open', 'Workspace'],
+    ['help-open', 'Help'],
+  ]) {
+    assert.match(menu, new RegExp(`id="${id}"[^>]*role="menuitem"`));
+    assert.match(menu, new RegExp(`>\\s*${label}\\s*<`));
+    assert.equal((html.match(new RegExp(`id="${id}"`, 'g')) ?? []).length, 1);
+  }
+  assert.doesNotMatch(html.match(/<header class="hud hud-top">[\s\S]*?<\/header>/)?.[0] ?? '', /library-open|workspace-open|visual-settings-open/);
+  assert.match(html, /id="help-dialog"[^>]*aria-labelledby="help-title"/);
+  assert.match(navigationUi, /event\.key === 'ArrowDown'/);
+  assert.match(navigationUi, /event\.key === 'Escape'/);
+  assert.match(main, /createNavigationUI\(\{ document \}\)/);
+  assert.match(css, /\.application-menu\s*\{[\s\S]*bottom: calc\(100% \+ 8px\)/);
+  assert.match(css, /\.application-navigation\s*\{[\s\S]*right: 24px;[\s\S]*bottom: 22px/);
 });
 
 test('session statistics use an accessible centered native dialog and text-only content', () => {

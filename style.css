@@ -89,18 +89,95 @@ html, body {
   flex-wrap: wrap;
 }
 
-.visual-settings-open {
+.application-navigation {
+  position: fixed;
+  right: 24px;
+  bottom: 22px;
+  z-index: 4;
   pointer-events: auto;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  padding: 7px 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 11px;
+  text-shadow: 0 0 8px rgba(61, 139, 255, 0.6);
+}
+
+.application-menu-toggle,
+.application-menu-item {
+  border: 1px solid rgba(110, 165, 255, 0.5);
+  background: rgba(3, 8, 18, 0.96);
+  color: var(--text);
+  padding: 9px 12px;
   font: inherit;
   letter-spacing: inherit;
-  line-height: 1;
-  white-space: nowrap;
+  line-height: 1.2;
   cursor: pointer;
-  transition: color 120ms ease, text-shadow 120ms ease;
+}
+
+.application-menu-toggle:hover,
+.application-menu-item:hover {
+  border-color: var(--blue);
+  color: #d8e7ff;
+}
+
+.application-menu-toggle:focus-visible,
+.application-menu-item:focus-visible,
+.help-dialog :focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.application-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  display: grid;
+  gap: 4px;
+  width: max-content;
+  max-width: min(240px, calc(100vw - 24px));
+  margin: 0;
+  padding: 6px;
+  border: 1px solid rgba(110, 165, 255, 0.5);
+  background: rgba(3, 8, 18, 0.98);
+  list-style: none;
+}
+
+.application-menu[hidden] { display: none; }
+.application-menu li { min-width: 0; }
+.application-menu-item { width: 100%; text-align: left; }
+.application-menu-item[aria-expanded="true"] { color: #d8e7ff; }
+
+.help-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(80vh, 680px);
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid rgba(110, 165, 255, 0.5);
+  background: rgba(3, 8, 18, 0.98);
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.help-dialog::backdrop { background: rgba(0, 2, 8, 0.78); }
+.help-dialog h2 { margin: 0; color: #d8e7ff; }
+.help-content p { margin: 12px 0; }
+.help-content p:last-child { margin-bottom: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .application-navigation *, .help-dialog * { scroll-behavior: auto; transition: none; }
+}
+
+@media (forced-colors: active) {
+  .application-menu, .application-menu-toggle, .application-menu-item, .help-dialog {
+    background: Canvas;
+    color: CanvasText;
+    border-color: ButtonText;
+    box-shadow: none;
+  }
+  .application-menu-toggle:focus-visible,
+  .application-menu-item:focus-visible,
+  .help-dialog :focus-visible {
+    outline-color: Highlight;
+  }
 }
 
 .visual-settings-dialog {
@@ -139,11 +216,6 @@ html, body {
 
 .visual-settings-dialog button { cursor: pointer; }
 .visual-settings-dialog button:hover { border-color: var(--blue); }
-.visual-settings-open:hover {
-  color: #d8e7ff;
-  text-shadow: 0 0 8px rgba(61, 139, 255, 0.75);
-}
-.visual-settings-open:focus-visible,
 .visual-settings-dialog button:focus-visible,
 .visual-settings-dialog select:focus-visible,
 .visual-settings-dialog input:focus-visible {
@@ -196,7 +268,7 @@ html, body {
 .library-dialog button:disabled { cursor: not-allowed; color: #9caec8; border-style: dashed; }
 .library-dialog button[aria-pressed="true"] { border: 2px solid var(--orange); font-weight: bold; }
 .library-dialog button[aria-pressed="true"]::before { content: "Selected · "; }
-.library-open:focus-visible, .library-dialog :focus-visible {
+.library-dialog :focus-visible {
   outline: 2px solid var(--blue); outline-offset: 2px;
 }
 .library-browser { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 20px; margin-top: 16px; }
@@ -500,7 +572,7 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
 
 .title {
   position: fixed;
-  right: 24px;
+  left: 24px;
   bottom: 22px;
   margin: 0;
   font-weight: 200;
@@ -543,10 +615,12 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
 }
 
 @media (max-width: 640px) {
-  .title { right: 16px; }
+  .title { left: 16px; }
   .hud-bottom { bottom: 176px; }
   .hud-top { gap: 1rem; font-size: 9px; }
   .hud-coverage { top: 74px; padding: 0 12px; font-size: 9px; }
+  .application-navigation { right: 12px; bottom: 12px; font-size: 9px; }
+  .application-menu-toggle, .application-menu-item { padding: 8px 10px; }
   .hud-impulses { top: 118px; left: 16px; width: min(440px, calc(100vw - 32px)); }
   .hud-sessions {
     top: calc(118px + min(208px, 25vh) + 38px);
@@ -616,10 +690,11 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
   outline-offset: -1px;
 }
 .workspace-dock-left { grid-area: 1 / 1; }
-.workspace-dock-right { grid-area: 1 / 3 / 3 / 4; }
+.workspace-dock-right { grid-area: 1 / 3 / 3 / 4; padding-bottom: 76px; }
 .workspace-dock-bottom-left {
   grid-area: 2 / 1;
   max-height: min(45vh, 420px);
+  padding-bottom: 44px;
 }
 .workspace-dock-bottom {
   grid-area: 2 / 2;
@@ -644,6 +719,9 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
 }
 .workspace-module[data-size="compact"] { --workspace-content-height: 128px; }
 .workspace-module[data-size="large"] { --workspace-content-height: 320px; }
+.workspace-module[data-module-type="timeline"][data-size="compact"] { --workspace-content-height: 96px; }
+.workspace-module[data-module-type="timeline"][data-size="standard"] { --workspace-content-height: 112px; }
+.workspace-module[data-module-type="timeline"][data-size="large"] { --workspace-content-height: 320px; }
 .workspace-module-header {
   display: flex;
   align-items: center;
@@ -875,13 +953,14 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
   .hud-timeline { bottom: 56px; left: 16px; width: min(256px, calc(100% - 32px)); }
 }
 @media (max-width: 760px) {
-  .workspace-open { position: fixed; top: 20px; right: 16px; }
+  .title { left: 16px; }
   .workspace { display: none; inset: 0; z-index: 5; padding: 62px 16px 24px; overflow-y: auto; overscroll-behavior: contain; background: rgba(2, 4, 9, 0.97); pointer-events: auto; }
   body.workspace-mobile-open .workspace { display: flex; flex-direction: column; gap: 10px; }
   .workspace-dock { position: static; display: flex; flex: 0 0 auto; flex-direction: column; gap: 10px; width: 100%; max-height: none; overflow: visible; transform: none; pointer-events: auto; }
   .workspace-dock:empty { display: none; }
   .workspace-dock-bottom { width: 100%; }
   .workspace-dock-bottom-left { max-height: none; }
+  .workspace-dock { padding-bottom: 0; }
   .workspace-module { max-height: none; overflow: visible; }
   .workspace-module[data-size="compact"], .workspace-module[data-size="large"] { max-height: none; }
   .workspace-editing-bar { position: static; transform: none; max-width: none; }

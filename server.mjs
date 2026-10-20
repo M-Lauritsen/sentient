@@ -59,6 +59,7 @@ const STATIC_FILES = new Map([
 	['/session-stats-ui.mjs', ['session-stats-ui.mjs', 'text/javascript; charset=utf-8']],
 	['/workspace-model.mjs', ['workspace-model.mjs', 'text/javascript; charset=utf-8']],
 	['/workspace-ui.mjs', ['workspace-ui.mjs', 'text/javascript; charset=utf-8']],
+	['/navigation-ui.mjs', ['navigation-ui.mjs', 'text/javascript; charset=utf-8']],
 	['/copilot-library-ui.mjs', ['copilot-library-ui.mjs', 'text/javascript; charset=utf-8']],
 	['/copilot/library-markdown.mjs', ['copilot/library-markdown.mjs', 'text/javascript; charset=utf-8']],
 	['/copilot/library-render-limits.mjs', ['copilot/library-render-limits.mjs', 'text/javascript; charset=utf-8']],

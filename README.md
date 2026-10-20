@@ -97,7 +97,15 @@ does not load a CDN or send activity outside this machine.
   button, Escape, or the backdrop to restore the compact view.
 
 “Quiet · not verified idle” means SENTIENT OS observed no fresh active interval; it
-does not mean every Copilot session is idle. A successful `session.task_complete`
+does not mean every Copilot session is idle. If the local activity stream reports
+a connection error, the source header shows “Checking source” for up to 15 seconds
+before showing “Reconnecting · unknown”. Reconnection attempts start immediately;
+the delay only affects the warning. A valid recovery snapshot cancels the warning,
+and repeated errors do not extend the grace period. Activity coverage becomes
+unknown immediately, with live session indicators cleared until a valid snapshot
+arrives; stale activity is never treated as verified during the delay.
+
+A successful `session.task_complete`
 event lights up a bright, branching cascade of impulses, nodes and edges within
 the lattice. Grouped completions share one bounded cascade per frame, with no
 shockwave, camera shake, floor ripple or completion-triggered global flash.
@@ -116,7 +124,12 @@ The current journal sample did not include that event or
 `assistant.reasoning`, so those details may not appear. The journal format is
 internal and can change.
 
-## Workspace controls
+## Application menu and workspace controls
+
+Use the lower-right **Menu** to open **Library**, **Appearance**, **Workspace**
+or **Help**. The menu opens upward; use the arrow keys to traverse it, Home and
+End to reach its first and last item, and Escape to dismiss it and return focus
+to Menu. Source and coverage status remain visible at the top.
 
 Open **Workspace** to manage the docked feed, sessions and live timeline. Select
 **Edit layout** to close the manager and reveal pointer drag handles. A visible
@@ -168,7 +181,7 @@ plugins and external integrations remain intentionally deferred.
 
 ## Editing visual settings
 
-Open **Visual settings** in the HUD to preview the `balanced`, `subtle` or
+Open **Appearance** from the application menu to preview the `balanced`, `subtle` or
 `intense` preset and edit any in-scope setting. Valid edits apply to the running
 scene, including node count; invalid or incomplete values do not. **Reset preview** returns to the
 last loaded file configuration. Changes remain temporary until **Export

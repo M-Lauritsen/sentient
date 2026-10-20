@@ -490,6 +490,24 @@ test('storage failures remain visibly unsaved and mobile drawer does not rewrite
   assert.equal(store.getState().dirty, false);
 });
 
+test('workspace opener expanded state tracks both menu and module-settings entry points', () => {
+  const { document } = setup();
+  const opener = document.getElementById('workspace-open');
+  const dialog = document.querySelector('.workspace-dialog');
+  document.querySelector('.workspace-settings-open').click();
+  assert.equal(dialog.open, true);
+  assert.equal(opener.getAttribute('aria-expanded'), 'true');
+  dialog.close();
+  assert.equal(opener.getAttribute('aria-expanded'), 'false');
+
+  opener.click();
+  assert.equal(dialog.open, true);
+  assert.equal(opener.getAttribute('aria-expanded'), 'true');
+  dialog.close();
+  assert.equal(opener.getAttribute('aria-expanded'), 'false');
+  assert.equal(document.activeElement, opener);
+});
+
 test('normal viewing keeps configuration hidden for every module and settings have one active disclosure', () => {
   const { document, ui } = setup();
   ui.update(connectedState());

@@ -15,6 +15,7 @@ import { VISUAL as VISUAL_DEFAULTS, VISUAL_PRESET, VISUAL_OVERRIDES,
 import { validateVisualSettings } from './visual-config.mjs';
 import { createVisualSettingsPanel } from './visual-settings-ui.mjs';
 import { createLibraryDialog } from './copilot-library-ui.mjs';
+import { createNavigationUI } from './navigation-ui.mjs';
 
 // Structural geometry and fixed buffer capacities; node count can rebuild the network.
 const CFG = {
@@ -1111,6 +1112,9 @@ function renderActivityState(state) {
   if (state.connection === 'connecting') {
     $status.textContent = 'CONNECTING';
     $subtitle.textContent = 'connecting to local activity files';
+  } else if (state.connection === 'recovering') {
+    $status.textContent = 'CHECKING SOURCE';
+    $subtitle.textContent = 'activity not verified during connection gap';
   } else if (state.connection === 'retrying' || state.connection === 'unknown') {
     $status.textContent = 'RECONNECTING · UNKNOWN';
     $subtitle.textContent = 'activity not verified during connection gap';
@@ -1538,6 +1542,8 @@ createVisualSettingsPanel({
   },
   applySettings: applyVisualSettings,
 });
+
+createNavigationUI({ document });
 
 createLibraryDialog({
   document,

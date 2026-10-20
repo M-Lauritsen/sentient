@@ -26,8 +26,7 @@
       Loading synthetic workspace data...
     </div>
     <header class="hud hud-top">
-      <button id="workspace-open" class="visual-settings-open workspace-open" type="button"
-        aria-expanded="false">Workspace</button>
+    <span>Source · <b id="status">CONNECTED</b></span>
     </header>
     <main id="workspace" class="workspace" aria-label="Docked workspace">
       <section class="workspace-dock workspace-dock-left" data-workspace-dock="left" aria-label="Left dock"></section>
@@ -47,6 +46,33 @@
         </aside>
       </div>
     </main>
+    <aside class="hud hud-coverage" id="coverage">Coverage complete · unknown is not zero</aside>
+    <nav id="application-navigation" class="application-navigation" aria-label="Application">
+      <button id="application-menu-toggle" class="application-menu-toggle" type="button"
+        aria-haspopup="menu" aria-controls="application-menu" aria-expanded="false">Menu</button>
+      <ul id="application-menu" class="application-menu" role="menu"
+        aria-labelledby="application-menu-toggle" hidden>
+        <li role="none"><button id="library-open" class="application-menu-item" type="button"
+          role="menuitem" aria-haspopup="dialog" aria-controls="library-dialog">Library</button></li>
+        <li role="none"><button id="visual-settings-open" class="application-menu-item" type="button"
+          role="menuitem" aria-haspopup="dialog" aria-controls="visual-settings-dialog">Appearance</button></li>
+        <li role="none"><button id="workspace-open" class="application-menu-item workspace-open" type="button"
+          role="menuitem" aria-controls="workspace workspace-dialog" aria-expanded="false">Workspace</button></li>
+        <li role="none"><button id="help-open" class="application-menu-item" type="button"
+          role="menuitem" aria-haspopup="dialog" aria-controls="help-dialog">Help</button></li>
+      </ul>
+    </nav>
+    <dialog id="help-dialog" class="help-dialog" aria-labelledby="help-title">
+      <header class="stats-dialog-header">
+        <h2 id="help-title">SENTIENT OS help</h2>
+        <button id="help-close" type="button" aria-label="Close help">Close</button>
+      </header>
+      <p>Coverage gaps are unknown, not zero activity. Library is read-only.</p>
+    </dialog>
+    <footer class="hud hud-bottom">
+      <h1 class="title">SENTIENT OS</h1>
+      <p class="subtitle">synthetic activity · local browser check</p>
+    </footer>
     <dialog id="timeline-dialog" class="stats-dialog timeline-dialog" aria-labelledby="timeline-title">
       <header class="stats-dialog-header">
         <h2 id="timeline-title">Recent activity · synthetic</h2>
