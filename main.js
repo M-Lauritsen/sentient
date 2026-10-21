@@ -19,6 +19,7 @@ import { createLibraryDialog } from './copilot-library-ui.mjs';
 import { createNavigationUI } from './navigation-ui.mjs';
 import { createDemoActivity, DEMO_WAITING_IDS } from './demo-activity.mjs';
 import { demoFocusForPath } from './visual-settings-preview.mjs';
+import { createPwaLifecycle } from './pwa-lifecycle-client.mjs';
 
 // Structural geometry and fixed buffer capacities; node count can rebuild the network.
 const CFG = {
@@ -1102,6 +1103,16 @@ function renderThinking(dt) {
 }
 
 function renderActivityState(state) {
+  if (state.lifecycleInvalid) {
+    for (let slot = 0; slot < P; slot++) {
+      if (!pActive[slot] || pDemo[slot]) continue;
+      pActive[slot] = 0;
+      activePulses--;
+      pulseSize.fill(0, slot * T, (slot + 1) * T);
+    }
+    thinkingPulseClock.reset();
+    impulseBuffer.clear();
+  }
   if (state.connection === 'recovering') {
     activityState = state;
     timeline.setCoverage(false, performance.now());
@@ -1170,6 +1181,7 @@ function renderActivityState(state) {
 }
 
 const activityClient = createActivityClient({
+  canAccept: () => lifecycleClient?.checkFresh() ?? false,
   onState: (state) => {
     renderActivityState(state);
     demoMarkersDirty = true;
@@ -1188,7 +1200,7 @@ const activityClient = createActivityClient({
     }
   },
 });
-activityClient.connect();
+let lifecycleClient;
 
 document.addEventListener('visibilitychange', () => {
   impulseBuffer.clear();
@@ -1403,6 +1415,7 @@ let sessionTimer = 0;
 let timelineTimer = 0;
 
 function frame() {
+  lifecycleClient?.checkFresh();
   const dt = Math.min(clock.getDelta(), 0.05);
   const now = clock.elapsedTime;
 
@@ -1720,7 +1733,7 @@ createVisualSettingsPanel({
 
 createNavigationUI({ document });
 
-createLibraryDialog({
+const libraryDialog = createLibraryDialog({
   document,
   onModalChange(open) {
     libraryModalOpen = open;
@@ -1732,5 +1745,23 @@ createLibraryDialog({
     }
   },
 });
+
+const lifecycleStatus = document.getElementById('lifecycle-status');
+lifecycleClient = createPwaLifecycle({
+  onInvalidate() {
+    activityClient.suspend();
+    libraryDialog.invalidate();
+  },
+  onReady() { activityClient.resume(); },
+  onStatus(state) {
+    lifecycleStatus.hidden = state === 'owned' || state === 'manual';
+    lifecycleStatus.textContent = state === 'checking'
+      ? 'Checking local backend · activity coverage unknown.'
+      : state === 'busy'
+        ? 'Backend capacity reached · activity coverage unknown. Close unused SENTIENT windows/tabs and wait for abandoned leases to expire; retrying automatically.'
+        : 'Backend unavailable · activity coverage unknown. Run the SENTIENT launcher (starts server); the browser app shortcut cannot start it.';
+  },
+});
+lifecycleClient.start();
 
 frame();

@@ -1,5 +1,31 @@
 # Windows Library boundary (ticket 01)
 
+## Optional console-free desktop entry
+
+`DesktopLauncher.cs` is a separate GUI-subsystem entry for the existing Brave
+Node launcher. Build it explicitly with `npm run build:desktop-launcher`.
+It uses the existing Framework64 compiler, targets x64 Windows and references
+framework Windows Forms only. No dependency download or runtime build occurs.
+Keep the ignored `bin\SentientLauncher.exe` in this checkout's `native\bin`;
+distributions offering this entry must build and include it there.
+
+Pass exactly one argument: the quoted absolute path to an existing `node.exe`.
+The entry resolves the fixed `desktop\launch.mjs` relative to itself, selects
+Brave, uses `UseShellExecute=false` and `CreateNoWindow=true`, and waits for the
+Node supervisor. It drains output with bounded retained stderr and displays
+only recognized error codes with fixed recovery text, never raw diagnostics.
+It does not own a new listener, adopt a server, manage browser processes, or
+change the Node supervisor/lease policy. No job object encloses Brave.
+
+Run `node --test tests\desktop-hidden-launcher.test.mjs tests\pwa-launcher.test.mjs`
+for synthetic process/window-allocation, argument, exit and failure coverage.
+Tests compile disposable entries and fake Node executables, not user shortcuts
+or browser profiles. See the root README for shortcut setup and rollback.
+Microsoft's [CreateNoWindow documentation](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.processstartinfo.createnowindow?view=netframework-4.8.1)
+requires `UseShellExecute=false` for console suppression.
+
+## Library helper
+
 This is maintained application source, **not a general-purpose file server**. The Library is not yet integrated with HTTP or the browser. Activity startup does not run this helper.
 
 ## Build and distribution

@@ -57,6 +57,7 @@ const STATIC_FILES = new Map([
 	['/visual-settings-ui.mjs', ['visual-settings-ui.mjs', 'text/javascript; charset=utf-8']],
 	['/visual-settings-worker.mjs', ['visual-settings-worker.mjs', 'text/javascript; charset=utf-8']],
 	['/activity-client.mjs', ['activity-client.mjs', 'text/javascript; charset=utf-8']],
+	['/pwa-lifecycle-client.mjs', ['pwa-lifecycle-client.mjs', 'text/javascript; charset=utf-8']],
 	['/activity-colors.mjs', ['activity-colors.mjs', 'text/javascript; charset=utf-8']],
 	['/demo-activity.mjs', ['demo-activity.mjs', 'text/javascript; charset=utf-8']],
 	['/visual-settings-preview.mjs', ['visual-settings-preview.mjs', 'text/javascript; charset=utf-8']],

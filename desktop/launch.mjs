@@ -21,7 +21,7 @@ const MESSAGES = {
 	START_FAILED: 'The owned server could not start. Check the checkout and local source access.',
 	READY_TIMEOUT: 'The owned server did not become ready within 15 seconds.',
 	BROWSER_LAUNCH_FAILED: 'Brave dispatch failed. Check the installed app shortcut and profile.',
-	NO_PARTICIPATING_WINDOW: 'No page registered within 120 seconds. Real page participation requires ticket 03.',
+	NO_PARTICIPATING_WINDOW: 'No page registered within 120 seconds. Reopen the installed Brave app and check its backend connection.',
 	OWNERSHIP_LOST: 'The private server ownership or readiness check failed.',
 	CLEANUP_FAILED: 'Owned-child cleanup could not be confirmed.',
 };

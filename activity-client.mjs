@@ -660,6 +660,7 @@ export function createActivityClient({
   onState = () => {},
   onActivity = () => {},
   onTree = () => {},
+  canAccept = () => true,
 } = {}) {
   let state = { ...EMPTY };
   let streamSequence = -1;
@@ -668,6 +669,7 @@ export function createActivityClient({
   let source = null;
   let closed = false;
   let reconnectTimer = null;
+  let suspended = false;
 
   const publishState = () => onState({ ...state });
   const clearReconnectTimer = () => {
@@ -749,15 +751,20 @@ export function createActivityClient({
 
   return {
     connect() {
-      if (closed || source || typeof EventSourceImpl !== 'function') return;
+      if (closed || suspended || source || typeof EventSourceImpl !== 'function') return;
       source = new EventSourceImpl(url);
+      const current = source;
+      const accepts = () => !closed && !suspended && source === current && canAccept();
       source.addEventListener('snapshot', (event) => {
+        if (!accepts()) return;
         try { handleSnapshot(JSON.parse(event.data)); } catch { markUnknown(); }
       });
       source.addEventListener('activity', (event) => {
+        if (!accepts()) return;
         try { handleActivity(JSON.parse(event.data)); } catch { markUnknown(); }
       });
       source.onerror = () => {
+        if (!accepts()) return;
         if (closed || reconnectTimer !== null || state.connection === 'retrying') return;
         needsSnapshot = true;
         state = { ...state, connection: 'recovering', coverage: 'unknown' };
@@ -770,6 +777,24 @@ export function createActivityClient({
         publishState();
       };
       publishState();
+    },
+    suspend() {
+      if (closed) return;
+      suspended = true;
+      clearReconnectTimer();
+      source?.close();
+      source = null;
+      needsSnapshot = true;
+      streamSequence = -1;
+      streamEpoch = null;
+      loseTree();
+      state = { ...unknownConnection(state, 'unknown'), lifecycleInvalid: true };
+      publishState();
+    },
+    resume() {
+      if (closed) return;
+      suspended = false;
+      this.connect();
     },
     disconnect() {
       closed = true;

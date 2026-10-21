@@ -1162,3 +1162,16 @@ body.source-error #status, body.source-unknown #status { color: var(--orange); }
   .workspace-catalog > .workspace-label input { flex: 1 1 auto; width: 0; min-width: 0; max-width: 100%; }
   body.workspace-mobile-open .hud-coverage { z-index: 1; }
 }
+.lifecycle-status {
+  position: fixed;
+  top: 3.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  max-width: min(42rem, 90vw);
+  padding: .75rem 1rem;
+  color: #e4f6f3;
+  background: #102426;
+  border: 1px solid #477c76;
+  font-size: .85rem;
+}

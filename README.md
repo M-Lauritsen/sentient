@@ -99,20 +99,83 @@ node desktop\launch.mjs --browser brave
 From another directory, pass the absolute quoted path to `desktop\launch.mjs`.
 This starts a private owned Node child at `http://127.0.0.1:43187/`, verifies
 matching IPC and HTTP readiness, then dispatches the installed Brave app.
-Keep the launcher running; Ctrl+C requests cleanup of its own child.
+For this terminal entry, keep the launcher running; Ctrl+C requests cleanup of its own child.
 No installation, optional Library build, elevation, startup hook or browser
 profile modification is performed.
 
-**Before ticket 03:** real app pages do not yet register leases. The launcher
-therefore reports `NO_PARTICIPATING_WINDOW` after 120 seconds and stops its
-owned server even if the app window is visible. Use ordinary `npm start` for
-ongoing use until browser participation is implemented.
+Real app windows and ordinary same-origin tabs register independent, memory-only
+document leases and renew every 15 seconds while scheduling permits. Ordinary
+`npm start` exposes no lifecycle controls: pages detect that mode and do not
+claim server ownership or send heartbeats.
 
-The owned server supports up to eight synthetic participating documents.
+The owned server supports up to eight participating documents.
 One valid lease keeps it alive; leases expire after 90 seconds without renewal,
 then a 30-second empty grace applies. A last release also starts that grace.
 These are best-effort scheduled bounds, not OS-wide last-window detection;
 browser process exit does not indicate window closure.
+
+Closing or navigating away attempts an authenticated keepalive release.
+Lost close notifications fall back to lease expiry. Hiding/minimizing does not
+release a lease, but browser/OS suspension may delay heartbeats enough for the
+server to stop while a window remains open. A ninth document shows unavailable
+coverage and retries with bounded backoff; close unused app windows/tabs and
+allow abandoned leases to expire rather than raising the limit.
+
+Returning from hiding, bfcache, focus or a long scheduling gap revalidates the
+boot session and a fresh SSE snapshot before accepting new activity. Known
+lease loss immediately clears stale running motion, session/tree state and
+Library selections. Page-wide historical activity totals and layout/appearance
+preferences remain; gap events are not replayed or backfilled.
+If a loaded page loses its server, its notice says to run the SENTIENT launcher.
+An unloaded browser app shortcut cannot start Node and may instead show the
+browser's own unavailable-page UI. Run the launcher, then reload that window if
+it never loaded the app; an already-loaded window can reconnect.
+
+### Console-free Windows shortcut
+
+To launch without leaving a console window open, build the optional small
+Windows GUI entry once:
+
+```powershell
+npm run build:desktop-launcher
+```
+
+This uses the existing x64 Windows .NET Framework 4.x compiler and framework
+assemblies, just like the Library helper. No SDK, package, service, elevation,
+execution-policy change or sign-in hook is installed. The generated
+`native\bin\SentientLauncher.exe` is ignored; rebuild it after changing its
+source, and keep it in that folder alongside this checkout.
+
+Use Windows **New > Shortcut** and set the target to quoted absolute paths:
+
+```text
+"C:\Your Checkout\sentient\native\bin\SentientLauncher.exe" "C:\Program Files\nodejs\node.exe"
+```
+
+Use your actual checkout and existing Node executable paths. Name the shortcut
+**SENTIENT launcher (starts server)**. Its working directory may be elsewhere.
+The GUI entry starts only this checkout's fixed `desktop\launch.mjs` with Brave
+selected, without a console, and waits for the Node supervisor to exit. Failures
+show a bounded error dialog instead of disappearing into a hidden terminal.
+For detailed recovery guidance, use the terminal entry above.
+
+The Node supervisor still runs in the background; lease aggregation, suspension
+limits and automatic shutdown are unchanged. Close all participating app
+windows/tabs and allow the release/expiry grace to finish. There is no tray,
+service or new shutdown control; do not kill unrelated Node/browser processes.
+To return to the terminal workflow, remove your optional shortcut and run
+`node desktop\launch.mjs`; do not start another launcher while the first owns
+the port. You can remove the generated GUI executable after it has exited.
+
+For a console-based shortcut instead, target `node.exe` directly:
+
+```text
+"C:\Program Files\nodejs\node.exe" "C:\Your Checkout\sentient\desktop\launch.mjs" --browser brave
+```
+
+Both launcher variants are distinct from Brave's **SENTIENT OS** shortcut,
+which opens the installed browser app only.
+No shortcut is created automatically and no sign-in launch is enabled.
 
 Errors contain bounded codes and recovery guidance. `PORT_IN_USE` means stop
 your independently started server yourself; the launcher never adopts or
@@ -121,6 +184,11 @@ unambiguous Brave app/profile shortcut; `BROWSER_UNAVAILABLE` means restore
 its Brave installation. Startup/readiness/dispatch failures clean only the
 held child. `CLEANUP_FAILED` means cleanup was not confirmed, not success.
 No browser process, discovered PID or process tree is terminated.
+
+To roll back, stop the launcher with Ctrl+C and use ordinary `npm start` /
+Ctrl+C. Browser uninstall and removal of either shortcut are separate explicit
+Windows/browser actions. There is no persisted lifecycle state to migrate or
+clear, and no offline activity/Library cache.
 
 Three.js 0.160.0 is pinned and served locally, including its license. The page
 does not load a CDN or send activity outside this machine.

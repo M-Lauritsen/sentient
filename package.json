@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:desktop-launcher": "node scripts/build-desktop-launcher.mjs",
     "build:library-renderer": "node scripts/build-library-renderer.mjs",
     "build:library-helper": "node scripts/build-library-helper.mjs",
     "start": "node server.mjs",
