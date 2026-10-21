@@ -133,12 +133,51 @@ it never loaded the app; an already-loaded window can reconnect.
 
 ### Console-free Windows shortcut
 
-To launch without leaving a console window open, build the optional small
-Windows GUI entry once:
+Use this shortcut as the everyday entry point: it starts the Node backend,
+waits for readiness, then opens the installed Brave app **without a console
+window**. Brave's browser-created **SENTIENT OS** shortcut cannot start Node;
+adding arguments to that browser shortcut does not change this.
 
-```powershell
-npm run build:desktop-launcher
-```
+First install SENTIENT OS in Brave as described above, with Node.js 22+ and
+this checkout's dependencies already present. Stop any manually started
+`npm start` server before using the launcher.
+
+#### Create the shortcut
+
+1. In a terminal at the checkout root, build the optional Windows GUI entry:
+
+   ```powershell
+   npm run build:desktop-launcher
+   ```
+
+2. Find the absolute path to your existing Node executable:
+
+   ```powershell
+   (Get-Command node.exe).Source
+   ```
+
+3. Right-click an empty area of the Windows Desktop and select **New >
+   Shortcut**. In **Type the location of the item**, enter the following,
+   replacing both paths with your actual paths. Keep each path in double quotes:
+
+   ```text
+   "C:\Your Checkout\sentient\native\bin\SentientLauncher.exe" "C:\Program Files\nodejs\node.exe"
+   ```
+
+4. Select **Next**, name it **SENTIENT launcher (starts server)**, then select
+   **Finish**. Under shortcut **Properties > Shortcut**, check that **Target**
+   contains the executable followed by exactly one argument: the Node path.
+   No `--browser` argument is needed; this GUI entry selects Brave.
+5. Double-click the new shortcut. SENTIENT should open in its installed Brave
+   app window without opening a console. The shortcut's **Start in** directory
+   may be elsewhere; startup does not depend on it.
+
+Keep the original browser-created **SENTIENT OS** shortcut installed: the
+launcher uses it to identify and validate the intended Brave app/profile.
+Create a separate launcher shortcut rather than replacing the browser
+shortcut's target. No shortcut is created automatically by the build.
+
+#### Build requirements and everyday use
 
 This uses the existing x64 Windows .NET Framework 4.x compiler and framework
 assemblies, just like the Library helper. No SDK, package, service, elevation,
@@ -146,23 +185,21 @@ execution-policy change or sign-in hook is installed. The generated
 `native\bin\SentientLauncher.exe` is ignored; rebuild it after changing its
 source, and keep it in that folder alongside this checkout.
 
-Use Windows **New > Shortcut** and set the target to quoted absolute paths:
-
-```text
-"C:\Your Checkout\sentient\native\bin\SentientLauncher.exe" "C:\Program Files\nodejs\node.exe"
-```
-
-Use your actual checkout and existing Node executable paths. Name the shortcut
-**SENTIENT launcher (starts server)**. Its working directory may be elsewhere.
 The GUI entry starts only this checkout's fixed `desktop\launch.mjs` with Brave
 selected, without a console, and waits for the Node supervisor to exit. Failures
 show a bounded error dialog instead of disappearing into a hidden terminal.
+Opening the GUI executable without the Node argument shows `NODE_UNAVAILABLE`;
+use the configured shortcut, not the executable by itself.
 For detailed recovery guidance, use the terminal entry above.
 
 The Node supervisor still runs in the background; lease aggregation, suspension
 limits and automatic shutdown are unchanged. Close all participating app
 windows/tabs and allow the release/expiry grace to finish. There is no tray,
 service or new shutdown control; do not kill unrelated Node/browser processes.
+After the final participating document closes, shutdown normally follows a
+30-second release grace; a missed release can take roughly two minutes after
+the last accepted heartbeat under normal scheduling. Do not immediately
+relaunch while shutdown is pending; an existing listener produces `PORT_IN_USE`.
 To return to the terminal workflow, remove your optional shortcut and run
 `node desktop\launch.mjs`; do not start another launcher while the first owns
 the port. You can remove the generated GUI executable after it has exited.
