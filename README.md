@@ -51,6 +51,77 @@ Library integration tests compile disposable helpers on supported x64 Windows
 with the existing .NET Framework compiler; they do not require or replace the
 application's `native/bin/LibraryHelper.exe`.
 
+## Install in a browser
+
+Browser installation is optional and remains controlled by the browser; the
+install action's availability and placement vary by browser, version and policy.
+
+1. Start the server manually with `npm start` and keep it running.
+2. In the Brave, Edge or Chrome profile where you want the app, open
+   <http://127.0.0.1:43187/> and use that browser's install-app action. Confirm
+   the installed app is named **SENTIENT OS** and uses the SENTIENT icon.
+   See [Edge's install steps](https://learn.microsoft.com/microsoft-edge/progressive-web-apps/ux#installing-a-pwa)
+   and [Chrome's install flow](https://developer.chrome.com/docs/devtools/progressive-web-apps#trigger-installation).
+3. Do not enable browser-provided automatic launch at sign-in. The installed app
+   is scoped to that browser profile and cannot start the Node.js server.
+4. Stop this independently started server with Ctrl+C before later using the
+   companion launcher. If the server is stopped, the browser-created shortcut
+   may show a browser-owned unavailable page; it cannot start the server.
+
+Installation adds no offline shell or service worker; activity and Library data
+are not cached by the PWA.
+
+## Windows owned-server launcher (Brave)
+
+The checkout launcher currently supports **Brave only**, selected by default.
+Edge and Google Chrome launcher activation are deferred; their browser-created
+shortcuts can still be used while a manually started server is running.
+
+Install SENTIENT OS in Brave at the canonical origin above and use Brave's app
+UI to create a **SENTIENT OS** desktop or Start-menu app shortcut. Keep one
+unambiguous installed app/profile selection. Identical desktop/Start-menu
+shortcuts are fine; multiple different profiles or app IDs fail closed.
+The launcher reads browser-created shortcuts in the standard Desktop and
+`Brave Apps` Start-menu folders, checks the standard Brave installation,
+profile and app resources, and reconstructs only the profile/app-ID arguments.
+It never executes arbitrary shortcut text, guesses an app ID or substitutes
+an ordinary URL app window. Nonstandard installations are not supported.
+
+With Node.js 22+, this checkout and its dependencies already present, stop your
+own `npm start` server first, then run:
+
+```powershell
+node desktop\launch.mjs
+# Equivalent explicit selection:
+node desktop\launch.mjs --browser brave
+```
+
+From another directory, pass the absolute quoted path to `desktop\launch.mjs`.
+This starts a private owned Node child at `http://127.0.0.1:43187/`, verifies
+matching IPC and HTTP readiness, then dispatches the installed Brave app.
+Keep the launcher running; Ctrl+C requests cleanup of its own child.
+No installation, optional Library build, elevation, startup hook or browser
+profile modification is performed.
+
+**Before ticket 03:** real app pages do not yet register leases. The launcher
+therefore reports `NO_PARTICIPATING_WINDOW` after 120 seconds and stops its
+owned server even if the app window is visible. Use ordinary `npm start` for
+ongoing use until browser participation is implemented.
+
+The owned server supports up to eight synthetic participating documents.
+One valid lease keeps it alive; leases expire after 90 seconds without renewal,
+then a 30-second empty grace applies. A last release also starts that grace.
+These are best-effort scheduled bounds, not OS-wide last-window detection;
+browser process exit does not indicate window closure.
+
+Errors contain bounded codes and recovery guidance. `PORT_IN_USE` means stop
+your independently started server yourself; the launcher never adopts or
+stops an existing listener. `APP_ACTIVATION_UNAVAILABLE` means restore one
+unambiguous Brave app/profile shortcut; `BROWSER_UNAVAILABLE` means restore
+its Brave installation. Startup/readiness/dispatch failures clean only the
+held child. `CLEANUP_FAILED` means cleanup was not confirmed, not success.
+No browser process, discovered PID or process tree is terminated.
+
 Three.js 0.160.0 is pinned and served locally, including its license. The page
 does not load a CDN or send activity outside this machine.
 
