@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { VISUAL_SETTING_DEFINITIONS, VISUAL_SETTING_PRESENTATION } from '../visual-config.mjs';
+import { VISUAL_SETTING_DEFINITIONS, VISUAL_SETTING_PRESENTATION } from '../appearance/visual-config.mjs';
 import {
   DEMO_FOCUSES,
   demoFocusForPath,
   applyPreviewSweep,
   previewSweepValue,
   sweepablePath,
-} from '../visual-settings-preview.mjs';
+} from '../appearance/visual-settings-preview.mjs';
 
 const definition = (path) => VISUAL_SETTING_DEFINITIONS.find((item) => item.path === path);
 const presentation = (path) => VISUAL_SETTING_PRESENTATION[path];

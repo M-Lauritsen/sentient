@@ -147,7 +147,7 @@ test('PWA installability assets are valid, same-origin, explicit and independent
 	assert.equal((await fetch(`${base}/package.json`)).status, 404);
 
 	const filesWithoutOfflineCaching = await Promise.all([
-		'index.html', 'server.mjs', 'bootstrap.mjs', 'main.js', 'activity-client.mjs', 'copilot-library-ui.mjs',
+		'index.html', 'server.mjs', 'bootstrap.mjs', 'main.js', 'activity/activity-client.mjs', 'library/copilot-library-ui.mjs',
 	].map((file) => readFile(new URL(`../${file}`, import.meta.url), 'utf8')));
 	assert.doesNotMatch(filesWithoutOfflineCaching.join('\n'), /serviceWorker|caches\.open/iu);
 });

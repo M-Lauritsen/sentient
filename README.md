@@ -47,9 +47,36 @@ helper build; Library support must not be inferred from activity availability.
 Open <http://127.0.0.1:43187/>. Stop with Ctrl+C. If the port is already in use,
 the server fails closed; it does not choose another port or bind to the network.
 `npm test` runs the synthetic source, HTTP/SSE, client, and UI-contract tests.
+Test files run serially to avoid cross-file CPU contention consuming the Library
+renderer tests' 250 ms wall-clock budget, which includes worker startup. This
+keeps the production deadline and test assertions unchanged at the cost of a
+longer full-suite run.
 Library integration tests compile disposable helpers on supported x64 Windows
 with the existing .NET Framework compiler; they do not require or replace the
 application's `native/bin/LibraryHelper.exe`.
+
+## Code navigation
+
+Root `bootstrap.mjs`, `main.js` and `server.mjs` are the startup/composition
+entry points. Root `visual-settings.mjs` remains the editable tuning file.
+
+| Folder | Responsibility |
+| --- | --- |
+| `activity\` | Activity projection/client, palette, presentation and synthetic demo |
+| `appearance\` | Settings validation, presets, UI, preview and reload worker |
+| `ui\` | HUD, navigation and session statistics |
+| `workspace\` | Workspace model and UI |
+| `library\` | Browser Library dialog |
+| `lifecycle\` | Browser/backend lifecycle client |
+| `scene\` | Rendering resources, graph construction and appearance application |
+| `network-topology-design\` | Individual topology algorithms and explicit registry |
+| `copilot\` | Journal source and existing Library internals |
+
+The server explicitly maps folder-based module URLs and retains the previous
+root module URLs as compatibility aliases. It does not serve folders wholesale.
+Exported settings use `appearance\visual-config.mjs`; reload still reads the
+root settings file. `visual-settings_copy.mjs` is not loaded or served and has
+been left untouched.
 
 ## Install in a browser
 
@@ -385,7 +412,7 @@ nonmodal drawer keeps the scene visible; closing it retains the current preview.
 The header and preset controls scroll with the settings, leaving more room for
 controls. Save as new, Save changes, Export settings and Reset preview remain
 available in the footer.
-Quick controls cover common adjustments, while searchable Advanced sections expose all 172
+Quick controls cover common adjustments, while searchable Advanced sections expose all 173
 configuration paths with friendly labels, help and exact numeric inputs.
 Searching shows only matching Advanced controls and hides empty sections and
 duplicate Quick controls. Clear the search to restore all controls and the
@@ -463,6 +490,8 @@ formats:
 | Section | Controls |
 | --- | --- |
 | `camera` | Field of view, initial position, orbit center, damping, zoom limits and automatic rotation |
+| root `topology` | Selects `lattice` (default), `organic`, flat triangular `waves`, or twisting double-helix `dna` |
+| `waves` | Wave amplitude, wavelength and phase speed; used only by `waves` |
 | `nodes` | Live network count; base sizes, brightness, colors, twinkle, whitening, excitation cap and decay |
 | `pulses` | Head/trail appearance, speed, arrival energy and ordinary edge light |
 | `running` | Per-session background rate, session cap, hops, spread and seed energy |
@@ -497,11 +526,58 @@ without shockwaves, camera shake, ripples or completion-triggered global flashes
 It accepts integers **2–4000**; higher counts cost more
 rebuild work because each node searches the network for nearest neighbours.
 Count changes from panel edits, personal presets, reset, or file reload rebuild
-nodes, connections and adjacency immediately, without reloading the application.
+nodes, connections and adjacency when applied, without reloading the application.
 The rebuild clears in-flight visual pulses and node/edge excitation, re-anchors
 session branches and waiting markers, and releases the old network geometry.
-The activity connection, feed, timeline history and statistics are preserved.
+The activity connection, pending observations, feed, timeline history,
+statistics and session/subagent state are preserved.
 An invalid value or failed rebuild leaves the previous valid network active.
+
+`topology` is a root-level visual setting in **Appearance → Advanced →
+Network**. It accepts `lattice` (the default), `organic`, `waves` and `dna`; older settings files
+without the field continue to use `lattice`. Lattice retains the existing
+Fibonacci-sphere placement. Organic uses randomized points in the same
+spherical shell. Waves uses a flat rectangular sheet with horizontal, vertical
+and diagonal connections forming triangles. Its node heights continuously rise
+and fall into travelling crests; there is no underlying sphere. The sheet is
+tilted toward the viewer so its surface is visible with the existing camera.
+Lattice and Organic retain nearest-neighbor connectivity. All four retain
+connecting edges and edge-traveling activity pulses. A topology change rebuilds the network
+and clears old-graph pulses and node/edge excitation while preserving observed
+activity state. Organic is a generic style; no exact visual-reference parity is
+claimed because no specific reference image or identifier was supplied.
+
+DNA is a long, diagonally framed double helix: two continuous strands joined
+by spaced, subdivided rungs. Both tips dissolve into scattered, fading particles;
+the central helix stays intact. It twists around its own length with a gentle
+travelling torsion, rather than automatically orbiting the camera.
+The existing **Automatic rotation**, speed and Direction controls govern
+strand twisting in DNA mode; disabling rotation or setting speed to zero
+freezes the twist. Reduced motion also freezes it. Manual camera orbit and
+zoom remain available; other styles keep their configured camera auto-orbit.
+Impulses can start throughout the helix and travel along either strand and
+across rungs, using unchanged activity categories and burst rules.
+At the dissolving tips, activity lines and trails fade out while pulse heads
+become soft particle glints; activity processing and the central pulses are unchanged.
+Moving nodes, edges, trails, waiting markers and delegated-work roots stay
+attached. Use **Always visible** connecting lines to see the rungs even when
+idle. DNA interprets the supplied blue particle-helix references; exact image
+parity is not claimed.
+
+For Waves, **Appearance → Advanced → Motion** exposes `waves.amplitude`
+(default 1.6 world units, range 0–3), `waves.wavelength` (default 10 world
+units, range 4–40), and `waves.speed` (default 0.8 radians/second, range 0–3).
+Two crossing wave components produce up to 1.35 times the configured amplitude.
+Zero amplitude restores the undeformed positions; zero speed freezes the wave.
+Reduced motion freezes its phase while leaving observed impulse logic intact.
+These controls preview live without rebuilding geometry. Old files and presets
+without `waves` receive these defaults, which do not affect other styles.
+Nodes, lines, pulse trails, waiting markers and delegated-work anchors share
+the moving positions; current edge lengths drive pulse travel.
+Waves are decorative motion, not evidence of observed work. They do not
+create events or change activity totals, categories, coverage or status.
+For visible connecting lines even without activity, use **Always visible**;
+the existing **Activity only** and **Hidden** choices remain respected.
 
 `scene.edgeBaseColor` controls the idle connecting-line colour (linear RGB).
 `scene.edgeVisibility` supports `'always'` (default: idle lines plus activity),
@@ -510,17 +586,59 @@ An invalid value or failed rebuild leaves the previous valid network active.
 connections or stop travelling pulses, node excitation, or separate subagent
 branches. Active highlights keep their activity-category colours.
 
-Category colors remain in **`activity-colors.mjs`**. Other structural geometry and
-fixed buffer capacities (including pulse/trail counts) remain in `main.js`'s
-`CFG`; they are deliberately not visual settings. Shader-facing settings are
+Category colors remain in **`activity\activity-colors.mjs`**. Other structural geometry and
+fixed buffer capacities (including pulse/trail counts) live in
+`scene\structural-config.mjs`; they are deliberately not visual settings. Shader-facing settings are
 passed as uniforms, so tuning these values does not require editing GLSL.
-Topology rules, node/dust placement, branch geometry, floor mesh dimensions,
-renderer resource limits, accessibility safeguards and HUD/CSS styling are
-also unchanged and remain outside this file. Numeric shader math constants
-(such as normalized point coordinates) are implementation details, not tuning.
+Topology selection is configurable, but topology generation rules, node/dust
+placement, branch geometry, floor mesh dimensions, renderer resource limits,
+accessibility safeguards and HUD/CSS styling remain structural. Numeric shader
+math constants (such as normalized point coordinates) are implementation
+details, not tuning.
 Activity mapping, statuses, hidden-tab discard and network/privacy behavior
 are unaffected. Visual preview and file reload preserve page-local activity
 totals and timeline history; a full document refresh still resets them.
+
+### Network design modules
+
+Each design lives in `network-topology-design\`: `lattice.mjs`, `organic.mjs`,
+`waves.mjs` and `dna.mjs`. The explicit registry in `index.mjs` supplies the
+selected design to `scene\network.mjs` and the scene's presentation consumers.
+`scene\network.mjs` owns shared nearest-neighbor connectivity, graph buffers,
+geometry allocation/cleanup and moving-edge synchronization.
+
+`main.js` composes the owners and keeps the animation loop's ordering explicit:
+
+| Module | Ownership |
+| --- | --- |
+| `scene\network-renderer.mjs` | Node shaders, edge colors, graph installation, node decay and motion phases |
+| `scene\pulses.mjs` | Bounded pulse pool, traversal, trails, excitation and observed/demo pulse counts |
+| `scene\subagents.mjs` | Delegated anchors, branch buffers, growth, retirement and remapping |
+| `scene\ambience.mjs` | Dust, floor, shared glow texture, waiting markers and ambient load |
+| `scene\viewport.mjs` | Resize and Appearance-panel projection framing |
+| `scene\appearance.mjs` | Validate/prepare settings before mutation, then delegate to resource owners |
+| `activity\activity-presentation.mjs` | Accepted activity and scene-only demo effects |
+| `ui\hud-ui.mjs` | Source status, timeline drawing, counters and existing workspace/statistics wiring |
+
+Graph consumers obtain the current network after rebuilds rather than retaining
+old arrays. Successful graph installation resets graph-bound pulses and remaps
+delegated anchors; observed activity, pending impulses, totals and history remain
+with their existing models. Glow sprites share one ambience-owned texture;
+appearance preparation disposes a candidate texture if graph preparation fails.
+
+A design's `createLayout` supplies per-node placement and, when needed, explicit
+connections and final position adjustments. Placement stays interleaved with
+node-size sampling to preserve the existing random stream. Moving designs also
+provide `updateMotion`; phase state survives switching/rebuilding. Optional
+presentation rules describe orientation, camera auto-orbit, node dissolve length
+and edge/pulse brightness. Shared renderers retain their buffers and shaders.
+
+To add a design, create its module and register it in
+`network-topology-design\index.mjs`, add its explicit `STATIC_FILES` mapping in
+`server.mjs`, then extend the existing topology options/help in
+`appearance\visual-config.mjs`, tests and documentation. No filesystem discovery or plugin
+loader is used. Settings validation still owns accepted configuration values;
+the registry does not change defaults, presets or exported settings.
 
 ## Privacy and limitations
 

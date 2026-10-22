@@ -1,5 +1,5 @@
-import { projectActivity } from './activity-client.mjs';
-import { activityCategory, CATEGORIES, CATEGORY_INDEX } from './activity-colors.mjs';
+import { projectActivity } from '../activity/activity-client.mjs';
+import { activityCategory, CATEGORIES, CATEGORY_INDEX } from '../activity/activity-colors.mjs';
 
 const MAX_CATEGORY_TOTAL = 0xffffffff;
 

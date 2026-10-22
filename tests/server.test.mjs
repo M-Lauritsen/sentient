@@ -20,10 +20,78 @@ function record(type, data = {}) {
 test('server-side activity projection does not import browser visual settings', async () => {
 	const [server, client] = await Promise.all([
 		readFile(new URL('../server.mjs', import.meta.url), 'utf8'),
-		readFile(new URL('../activity-client.mjs', import.meta.url), 'utf8'),
+		readFile(new URL('../activity/activity-client.mjs', import.meta.url), 'utf8'),
 	]);
-	assert.match(server, /from '\.\/activity-client\.mjs'/);
-	assert.doesNotMatch(client, /from '\.\/visual-settings\.mjs'/);
+	assert.match(server, /from '\.\/activity\/activity-client\.mjs'/);
+	assert.doesNotMatch(client, /from ['"][^'"]*visual-settings\.mjs['"]/);
+});
+
+test('scene and presentation modules are explicitly served without exposing adjacent files', async (t) => {
+	const activityRoot = await fixture(t);
+	const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
+	t.after(() => app.stop());
+	const { port } = await app.start();
+	const base = `http://127.0.0.1:${port}`;
+	for (const module of ['scene/network.mjs', 'scene/structural-config.mjs',
+		'scene/network-renderer.mjs', 'scene/pulses.mjs', 'scene/subagents.mjs',
+		'scene/ambience.mjs', 'scene/viewport.mjs', 'scene/appearance.mjs',
+		'activity/activity-presentation.mjs', 'ui/hud-ui.mjs', 'network-topology-design/index.mjs',
+		'network-topology-design/lattice.mjs', 'network-topology-design/organic.mjs',
+		'network-topology-design/waves.mjs', 'network-topology-design/dna.mjs']) {
+		const response = await fetch(`${base}/${module}`);
+		assert.equal(response.status, 200, module);
+		assert.match(response.headers.get('content-type'), /^text\/javascript/);
+		assert.equal(await response.text(), await readFile(new URL(`../${module}`, import.meta.url), 'utf8'));
+	}
+	for (const unlisted of ['/scene/unlisted.mjs', '/network-topology-design/unlisted.mjs',
+		'/visual-settings_copy.mjs', '/tests/network-topology.test.mjs']) {
+		assert.equal((await fetch(`${base}${unlisted}`)).status, 404, unlisted);
+	}
+});
+
+test('organized modules and legacy URLs serve the same code with resolvable browser dependencies', async (t) => {
+	const activityRoot = await fixture(t);
+	const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
+	t.after(() => app.stop());
+	const { port } = await app.start();
+	const base = `http://127.0.0.1:${port}`;
+	const modules = {
+		activity: ['activity-client', 'activity-colors', 'activity-presentation', 'demo-activity'],
+		appearance: ['visual-config', 'visual-settings-ui', 'visual-settings-preview', 'visual-settings-worker'],
+		ui: ['hud-ui', 'navigation-ui', 'session-stats-ui'],
+		workspace: ['workspace-model', 'workspace-ui'],
+		library: ['copilot-library-ui'],
+		lifecycle: ['pwa-lifecycle-client'],
+	};
+	const pending = ['/bootstrap.mjs', '/main.js', '/visual-settings.mjs'];
+	for (const [folder, names] of Object.entries(modules)) {
+		for (const name of names) {
+			const canonical = `/${folder}/${name}.mjs`;
+			const legacy = `/${name}.mjs`;
+			const expected = await readFile(new URL(`..${canonical}`, import.meta.url), 'utf8');
+			for (const url of [canonical, legacy]) {
+				const response = await fetch(`${base}${url}`);
+				assert.equal(response.status, 200, url);
+				assert.match(response.headers.get('content-type'), /^text\/javascript/, url);
+				assert.equal(await response.text(), expected, url);
+				pending.push(url);
+			}
+		}
+		assert.equal((await fetch(`${base}/${folder}/unlisted.mjs`)).status, 404);
+	}
+	const checked = new Set();
+	while (pending.length) {
+		const url = pending.pop();
+		if (checked.has(url)) continue;
+		checked.add(url);
+		const response = await fetch(`${base}${url}`);
+		assert.equal(response.status, 200, url);
+		const source = await response.text();
+		for (const match of source.matchAll(/(?:^\s*(?:import|export)\s+(?:\{[^}]*\}|\*[^;\n]*|[A-Za-z_$][\w$]*)\s+from\s*|\bimport\s*\(\s*|\bnew URL\(\s*)['"](\.{1,2}\/[^'"]+\.(?:mjs|js))['"]/gm)) {
+			pending.push(new URL(match[1], `${base}${url}`).pathname);
+		}
+	}
+	assert.equal((await fetch(`${base}/visual-settings_copy.mjs`)).status, 404);
 });
 
 test('SSE session projection uses stable opaque ids and excludes internal keys', async (t) => {
@@ -298,8 +366,8 @@ test('loopback server serves only explicit app assets and denies traversal', asy
 	assert.equal(visualConfig.status, 200);
 	assert.match(await visualConfig.text(), /validateVisualSettings/);
 	for (const asset of [
-		'visual-settings-ui.mjs', 'visual-settings-worker.mjs',
-		'workspace-model.mjs', 'workspace-ui.mjs', 'navigation-ui.mjs',
+		'appearance/visual-settings-ui.mjs', 'appearance/visual-settings-worker.mjs',
+		'workspace/workspace-model.mjs', 'workspace/workspace-ui.mjs', 'ui/navigation-ui.mjs',
 	]) {
 		const response = await fetch(`${base}/${asset}`);
 		assert.equal(response.status, 200);

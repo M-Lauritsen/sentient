@@ -246,8 +246,8 @@ async function integration() {
     await reader.cancel(); reader = undefined;
 
     // Original scene/feed/timeline/palette/settings modules remain served.
-    for (const route of ['/', '/main.js', '/activity-client.mjs', '/activity-colors.mjs',
-      '/session-stats-ui.mjs', '/visual-settings.mjs', '/visual-settings-ui.mjs', '/style.css']) {
+    for (const route of ['/', '/main.js', '/activity/activity-client.mjs', '/activity/activity-colors.mjs',
+      '/ui/session-stats-ui.mjs', '/visual-settings.mjs', '/appearance/visual-settings-ui.mjs', '/style.css']) {
       const response = await fetch(`${client.origin}${route}`);
       assert.equal(response.status, 200, route);
       const text = await response.text();
@@ -280,7 +280,7 @@ async function integration() {
     await app.stop();
     const previousConstructions = libraryConstructions;
     client = await start({ disabled: true });
-    for (const route of ['/', '/main.js', '/activity-client.mjs', '/visual-settings.mjs']) {
+    for (const route of ['/', '/main.js', '/activity/activity-client.mjs', '/visual-settings.mjs']) {
       assert.equal((await fetch(`${client.origin}${route}`)).status, 200);
     }
     const dormantSse = await fetch(`${client.origin}/events`, {

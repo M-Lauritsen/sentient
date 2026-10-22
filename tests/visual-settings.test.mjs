@@ -1,23 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import * as THREE from 'three';
 import { CATEGORY_INDEX, CATEGORY_RGB, CATEGORY_HEX, HOOK_DEFAULTS, HOOK_TYPES, CATEGORIES,
-  createScenePalette, applyHookColors } from '../activity-colors.mjs';
+  createScenePalette, applyHookColors } from '../activity/activity-colors.mjs';
 import { createThinkingPulseClock, createImpulseBuffer, createCategoryBurstPlan,
-  createActivityTimeline, impulseIntensity } from '../activity-client.mjs';
-import { createPageActivityTotals } from '../session-stats-ui.mjs';
+  createActivityTimeline, impulseIntensity } from '../activity/activity-client.mjs';
+import { createPageActivityTotals } from '../ui/session-stats-ui.mjs';
 import { loadVisualConfiguration, startVisualApplication, validateVisualSettings,
   resolveVisualSettings, VISUAL_PRESETS, VISUAL_SETTING_DEFINITIONS,
   VISUAL_SETTING_PRESENTATION,
-  mergeVisualOverrides, visualConfigurationSignature, createVisualSettingsModuleSource } from '../visual-config.mjs';
-import { createVisualSettingsPanel } from '../visual-settings-ui.mjs';
+  mergeVisualOverrides, visualConfigurationSignature, createVisualSettingsModuleSource } from '../appearance/visual-config.mjs';
+import { createVisualSettingsPanel } from '../appearance/visual-settings-ui.mjs';
+import { createSceneContext, sceneFunction } from './scene-test-context.mjs';
+import { installSceneHarness } from './scene-harness.mjs';
 
-const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
+
+const sourceFiles = ['main.js', 'scene/structural-config.mjs', 'scene/network-renderer.mjs',
+  'scene/pulses.mjs', 'scene/subagents.mjs', 'scene/ambience.mjs', 'scene/viewport.mjs',
+  'activity/activity-presentation.mjs', 'ui/hud-ui.mjs', 'scene/appearance.mjs'];
+const sources = Object.fromEntries(await Promise.all(sourceFiles.map(async file =>
+  [file, (await readFile(new URL('../' + file, import.meta.url), 'utf8')).replace(/^  /gm, '')])));
+const main = Object.values(sources).join('\n');
+
 const settings = async () => structuredClone((await import('../visual-settings.mjs')).VISUAL);
 
 class TestElement {
@@ -126,15 +135,9 @@ function makeMemoryStorage(initial = {}) {
   };
 }
 
-function sceneFunction(name) {
-  const body = main.slice(main.indexOf(`function ${name}(`));
-  const end = /\r?\n}\r?\n/.exec(body);
-  assert.ok(end, `${name} is extractable`);
-  return body.slice(0, end.index + end[0].length);
-}
 
-function makeNetworkHarness(VISUAL) {
-  const context = vm.createContext({
+function makeNetworkHarness(VISUAL, overrides = {}) {
+  const context = createSceneContext({
     VISUAL, THREE, CATEGORY_INDEX, CATEGORY_HEX, CATEGORY_RGB, validateVisualSettings, structuredClone,
     createScenePalette, applyHookColors,
     SCENE_RGB: createScenePalette(VISUAL), pixelRatio: 1,
@@ -160,15 +163,8 @@ function makeNetworkHarness(VISUAL) {
       }),
     },
   });
-  vm.runInContext(main.slice(main.indexOf('// ---------- nodes ----------'),
-    main.indexOf('// ---------- HUD ----------')) +
-    sceneFunction('renderWaitingMarkers') + sceneFunction('applyVisualSettings') + `
-    globalThis.network = () => ({
-      N, E, nodePos, nodeEnergy, nodeHot, nodeSize, adjacency, edgeA, edgeB, edgeLen,
-      nodeGeo, nodePoints, edgeGeo, edgeLines, edgeBase, fireEdges, activePulses, pActive, pFrom, pEdge,
-      pulsePos, pulseCol, pulseSize, pulseGeo, waitingMarkerGroups,
-      subagentAnchors, activeSubagentBranches, fadingSubagentBranches,
-    });`, context);
+  Object.assign(context, overrides);
+  installSceneHarness(context);
   return context;
 }
 
@@ -177,6 +173,8 @@ test('visual settings characterize the latest tuned defaults, not structural cap
   const configModule = await import('../visual-settings.mjs');
   assert.deepEqual(visual, {
     hooks: { ...HOOK_DEFAULTS },
+    topology: 'lattice',
+    waves: { amplitude: 1.6, wavelength: 10, speed: 0.8 },
     camera: {
       fov: 50, position: [0, 4, 31], target: [0, 0, 0], damping: 0.06,
       minDistance: 14, maxDistance: 60, autoRotate: true, autoRotateSpeed: 0.35,
@@ -270,7 +268,9 @@ test('visual settings validate all known paths and reject malformed values witho
   const defaults = await settings();
   assert.deepEqual(validateVisualSettings(defaults), []);
   const expectedPaths = Object.entries(defaults).flatMap(([group, values]) =>
-    Object.keys(values).map((name) => `${group}.${name}`)).sort();
+    typeof values === 'object'
+      ? Object.keys(values).map((name) => `${group}.${name}`)
+      : [group]).sort();
   assert.deepEqual(VISUAL_SETTING_DEFINITIONS.map(({ path }) => path).sort(), expectedPaths);
 
   const cases = [
@@ -280,6 +280,7 @@ test('visual settings validate all known paths and reject malformed values witho
     ['scene.edgeBaseColor[0]', (value) => { value.scene.edgeBaseColor = [-0.1, 0.2, 0.3]; }],
     ['scene.background', (value) => { value.scene.background = 0x1000000; }],
     ['effects.floor', (value) => { value.effects.floor = 1; }],
+    ['topology', (value) => { value.topology = 'grid'; }],
     ['scene.bloomRadius', (value) => { value.scene.bloomRadius = 1.1; }],
     ['scene.breathAmplitude', (value) => { value.scene.breathAmplitude = -0.1; }],
     ['floor.fineSpacing', (value) => { value.floor.fineSpacing = 0; }],
@@ -303,6 +304,22 @@ test('visual settings validate all known paths and reject malformed values witho
 test('network count and line modes validate exact boundaries without mutating defaults', async () => {
   const defaults = await settings();
   defaults.nodes.count = 1200;
+  const legacyDefaults = structuredClone(defaults);
+  delete legacyDefaults.topology;
+  delete legacyDefaults.waves;
+  assert.deepEqual(validateVisualSettings(legacyDefaults), []);
+  assert.equal(resolveVisualSettings(legacyDefaults).settings.topology, 'lattice');
+  assert.deepEqual(resolveVisualSettings(legacyDefaults).settings.waves,
+    { amplitude: 1.6, wavelength: 10, speed: 0.8 });
+  const legacyPanel = makePanelHarness({ defaults: legacyDefaults });
+  assert.equal(legacyPanel.control('waves.amplitude')[0].value, '1.6');
+  const [legacyTopology] = legacyPanel.control('topology');
+  legacyTopology.value = 'waves';
+  legacyTopology.dispatch('change');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(legacyPanel.applied.at(-1).topology, 'waves');
+  legacyPanel.elements.resetButton.click();
+  assert.equal(legacyPanel.applied.at(-1).topology, 'lattice');
   assert.equal(defaults.nodes.count, 1200);
   assert.equal(defaults.scene.edgeVisibility, 'always');
   for (const count of [2, 4000]) {
@@ -325,14 +342,24 @@ test('network count and line modes validate exact boundaries without mutating de
     assert.equal(result.settings, null);
     assert.ok(result.errors.some(({ path }) => path.endsWith('scene.edgeVisibility')));
   }
+  for (const topology of ['lattice', 'organic', 'waves', 'dna']) {
+    const result = resolveVisualSettings(defaults, 'balanced', { topology });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.settings.topology, topology);
+  }
+  const invalidTopology = resolveVisualSettings(defaults, 'balanced', { topology: 'grid' });
+  assert.equal(invalidTopology.settings, null);
+  assert.ok(invalidTopology.errors.some(({ path }) => path === 'topology'));
   assert.equal(defaults.nodes.count, 1200);
 });
 
 test('startup topology uses the requested count and produces valid connected endpoints', async () => {
-  for (const count of [2, 37, 4000]) {
+  for (const [topology, count] of ['lattice', 'waves', 'dna'].flatMap(topology =>
+    [2, 3, 4, 37, 4000].map(count => [topology, count]))) {
     const VISUAL = await settings();
+    VISUAL.topology = topology;
     VISUAL.nodes.count = count;
-    const context = vm.createContext({
+    const context = createSceneContext({
       VISUAL, THREE, CFG: { radius: 10, neighbours: 3, maxEdgeLen: 4.5 },
       Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
     });
@@ -348,6 +375,7 @@ test('startup topology uses the requested count and produces valid connected end
       const a = result.edgeA[edge], b = result.edgeB[edge];
       assert.ok(a >= 0 && a < count && b >= 0 && b < count && a !== b);
       assert.ok(result.adjacency[a].includes(edge) && result.adjacency[b].includes(edge));
+      assert.ok(Number.isFinite(result.edgeLen[edge]) && result.edgeLen[edge] > 0);
     }
   }
 });
@@ -437,7 +465,84 @@ test('live network rebuild changes actual topology, disposes old geometry, and p
     'pending observed activity is not discarded with visual pulses');
 });
 
-test('failed or invalid network rebuild keeps the previous network and settings intact', async () => {
+for (const topology of ['organic', 'waves', 'dna']) {
+test(`${topology} topology rebuilds the graph and preserves observed activity state`, async () => {
+  const VISUAL = await settings();
+  VISUAL.nodes.count = 37;
+  const context = makeNetworkHarness(VISUAL);
+  let randomState = 123456789;
+  context.Math = Object.assign(Object.create(Math), {
+    random() {
+      randomState = (randomState * 1664525 + 1013904223) >>> 0;
+      return randomState / 0x100000000;
+    },
+  });
+  context.pageActivityTotals = createPageActivityTotals();
+  context.pageActivityTotals.add({ kind: 'step', count: 3 });
+  context.timeline = createActivityTimeline(0);
+  context.timeline.setCoverage(true, 0);
+  context.timeline.add(context.pageActivityTotals.counts, 1000);
+  const originalTimeline = structuredClone(context.timeline.read(1000));
+  const originalTotals = Array.from(context.pageActivityTotals.counts);
+  context.impulseBuffer = createImpulseBuffer();
+  context.impulseBuffer.add({ kind: 'step', count: 3 });
+  vm.runInContext(`
+    const session = { sid: 'AAAA', status: 'running', anchorIndex: N - 1 };
+    subagentAnchors.push(session);
+    subagentAnchorBySid.set(session.sid, session);
+    addSubagentBranch(session, { sid: 'BBBB', ageMs: 5000 }, false);
+    fireFrom(N - 1, 2, 0);
+    writePulseBuffers();
+  `, context);
+  const before = context.network();
+  before.nodeEnergy[0] = 1;
+  before.edgeR[0] = 1;
+  assert.equal(before.nodeEnergy[0], 1);
+  assert.equal(before.edgeR[0], 1);
+  let oldNodeDisposed = 0, oldEdgeDisposed = 0;
+  before.nodeGeo.addEventListener('dispose', () => oldNodeDisposed++);
+  before.edgeGeo.addEventListener('dispose', () => oldEdgeDisposed++);
+  context.candidate = structuredClone(VISUAL);
+  context.candidate.topology = topology;
+
+  vm.runInContext('applyVisualSettings(candidate)', context);
+
+  const next = context.network();
+  assert.equal(VISUAL.topology, topology);
+  assert.notEqual(next.nodeGeo, before.nodeGeo);
+  assert.notEqual(next.edgeGeo, before.edgeGeo);
+  assert.notDeepEqual(Array.from(next.nodePos), Array.from(before.nodePos));
+  assert.equal(oldNodeDisposed, 1);
+  assert.equal(oldEdgeDisposed, 1);
+  assert.equal(next.N, 37);
+  assert.equal(next.activePulses, 0);
+  assert.ok(next.nodeEnergy.every((energy) => energy === 0));
+  assert.ok(next.edgeR.every((energy) => energy === 0));
+  assert.ok(next.edgeG.every((energy) => energy === 0));
+  assert.ok(next.edgeBColor.every((energy) => energy === 0));
+  assert.ok([...next.nodePos, ...next.edgeLen].every(Number.isFinite));
+  assert.ok(next.edgeLen.every((length) => length > 0));
+  assert.ok(next.adjacency.every((edges) => edges.length > 0));
+  for (let edge = 0; edge < next.E; edge++) {
+    assert.ok(next.edgeA[edge] >= 0 && next.edgeA[edge] < next.N);
+    assert.ok(next.edgeB[edge] >= 0 && next.edgeB[edge] < next.N);
+    assert.ok(next.adjacency[next.edgeA[edge]].includes(edge));
+    assert.ok(next.adjacency[next.edgeB[edge]].includes(edge));
+  }
+  assert.equal(next.subagentAnchors.length, 1);
+  assert.equal(next.activeSubagentBranches.length, 1);
+  assert.equal(context.activityState.connection, 'connected');
+  assert.deepEqual(context.timeline.read(1000), originalTimeline);
+  assert.deepEqual(Array.from(context.pageActivityTotals.counts), originalTotals);
+  assert.equal(context.impulseBuffer.drain().byCategory[CATEGORY_INDEX.tool], 3);
+
+  vm.runInContext('fireFrom(N - 1, 2, 0)', context);
+  assert.ok(context.network().activePulses > 0, 'subsequent activity traverses the new graph');
+});
+}
+
+for (const topology of ['organic', 'waves', 'dna']) {
+test(`${topology} failed or invalid rebuild keeps the previous network and settings intact`, async () => {
   const VISUAL = await settings();
   VISUAL.nodes.count = 37;
   const context = makeNetworkHarness(VISUAL);
@@ -448,7 +553,8 @@ test('failed or invalid network rebuild keeps the previous network and settings 
   assert.equal(context.network().nodeGeo, before.nodeGeo);
   assert.equal(VISUAL.nodes.count, 37);
 
-  context.candidate.nodes.count = 60;
+  context.candidate.nodes.count = 37;
+  context.candidate.topology = topology;
   let discardedGeometries = 0;
   context.THREE = {
     ...THREE,
@@ -462,7 +568,316 @@ test('failed or invalid network rebuild keeps the previous network and settings 
   assert.equal(context.network().edgeGeo, before.edgeGeo);
   assert.equal(context.network().N, 37);
   assert.equal(VISUAL.nodes.count, 37);
+  assert.equal(VISUAL.topology, 'lattice');
   assert.equal(discardedGeometries, 1, 'partially built geometry is disposed');
+});
+}
+
+test('waves move a flat triangular sheet while edges, pulses, waiting markers and delegates follow', async () => {
+  const VISUAL = await settings();
+  VISUAL.nodes.count = 100;
+  VISUAL.topology = 'waves';
+  const context = makeNetworkHarness(VISUAL);
+  const network = context.network();
+  const rest = Array.from(network.nodeRestPos);
+  assert.ok(rest.filter((_, i) => i % 3 === 1).every(y => y === 0),
+    'every node starts on one flat plane, not a sphere');
+  assert.equal(network.E, 261, '10 by 10 sheet has horizontal, vertical and diagonal edges');
+  const reachable = new Set([0]);
+  const pending = [0];
+  while (pending.length) {
+    const node = pending.pop();
+    for (const e of network.adjacency[node]) {
+      const other = network.edgeA[e] === node ? network.edgeB[e] : network.edgeA[e];
+      if (!reachable.has(other)) { reachable.add(other); pending.push(other); }
+    }
+  }
+  assert.equal(reachable.size, network.N, 'impulses can traverse the complete sheet');
+  vm.runInContext(`
+    renderWaitingMarkers(['AAAA']);
+    const session = { sid: 'AAAA', status: 'running', anchorIndex: 3 };
+    subagentAnchors.push(session);
+    subagentAnchorBySid.set(session.sid, session);
+    addSubagentBranch(session, { sid: 'BBBB', ageMs: 5000 }, false);
+    fireFrom(3, 2, 0);
+    updateNetworkMotion(0);
+  `, context);
+  const first = Array.from(network.nodePos);
+  assert.notDeepEqual(first, rest, 'spatial crests exist without activity');
+  vm.runInContext('updateNetworkMotion(1); renderSubagentTree(1); writePulseBuffers()', context);
+  const moving = Array.from(network.nodePos);
+  assert.notDeepEqual(moving, first, 'crests travel without an impulse');
+  const offsets = moving.filter((_, i) => i % 3 === 1).map((y, i) => y - rest[i * 3 + 1]);
+  assert.ok(Math.max(...offsets) - Math.min(...offsets) > 1,
+    'motion is spatially varying, not a rigid bob or global scale');
+  for (let i = 0; i < network.N; i++) {
+    assert.equal(moving[i * 3], rest[i * 3]);
+    assert.equal(moving[i * 3 + 2], rest[i * 3 + 2]);
+    assert.ok(Math.abs(offsets[i]) <= VISUAL.waves.amplitude * 1.35 + 1e-6);
+  }
+  assert.ok(Math.max(...moving.filter((_, i) => i % 3 === 1)) -
+    Math.min(...moving.filter((_, i) => i % 3 === 1)) <= VISUAL.waves.amplitude * 2.7,
+    'sheet thickness comes only from wave displacement');
+  for (let e = 0; e < network.E; e++) {
+    const a = network.edgeA[e] * 3, b = network.edgeB[e] * 3;
+    assert.deepEqual(Array.from(network.edgeGeo.attributes.position.array.slice(e * 6, e * 6 + 6)),
+      [...moving.slice(a, a + 3), ...moving.slice(b, b + 3)]);
+    assert.ok(network.edgeLen[e] > 0 && Number.isFinite(network.edgeLen[e]));
+    assert.ok(Math.abs(network.edgeLen[e] -
+      Math.hypot(...moving.slice(a, a + 3).map((v, i) => v - moving[b + i]))) < 1e-6);
+    assert.ok(network.adjacency[a / 3].includes(e) && network.adjacency[b / 3].includes(e));
+  }
+  assert.ok(vm.runInContext(`
+    Array.from(anchorPositions.slice(0, 3)).every((v, i) => v === nodePos[9 + i]) &&
+    Array.from(branchLinePositions.slice(0, 3)).every((v, i) => v === nodePos[9 + i])
+  `, context), 'delegate anchors and branch roots track moving nodes');
+  const marker = network.waitingMarkerGroups[0];
+  assert.deepEqual(marker.position.toArray(),
+    moving.slice(marker.userData.anchorIndex * 3, marker.userData.anchorIndex * 3 + 3));
+  assert.ok(context.network().activePulses > 0, 'motion does not clear pulses');
+  assert.ok(vm.runInContext(`
+    const slot = pActive.findIndex(Boolean), edge = pEdge[slot];
+    const from = pFrom[slot] * 3, to = otherEnd(edge, pFrom[slot]) * 3;
+    pT[slot] = 0.25;
+    writePulseBuffers();
+    const onEdge = [0, 1, 2].every(c => Math.abs(pulsePos[slot * T * 3 + c] -
+      (nodePos[from + c] + (nodePos[to + c] - nodePos[from + c]) * 0.25)) < 1e-6);
+    updatePulses(10);
+    onEdge && nodeEnergy.some(value => value > 0);
+  `, context), 'pulses interpolate current endpoints and excite neighbours on arrival');
+  vm.runInContext('reducedMotion = true; updateNetworkMotion(10)', context);
+  assert.deepEqual(Array.from(network.nodePos), moving, 'reduced motion freezes crests');
+  vm.runInContext('reducedMotion = false', context);
+  VISUAL.waves.speed = 0;
+  vm.runInContext('updateNetworkMotion(10)', context);
+  assert.deepEqual(Array.from(network.nodePos), moving, 'zero speed freezes crests');
+  VISUAL.waves.amplitude = 0;
+  vm.runInContext('updateNetworkMotion(0)', context);
+  assert.deepEqual(Array.from(network.nodePos), rest, 'zero amplitude restores rest positions without drift');
+});
+
+test('DNA twists connected strands and rungs while pulses and anchors follow without a camera orbit', async () => {
+  const VISUAL = await settings();
+  VISUAL.topology = 'dna';
+  VISUAL.nodes.count = 4000;
+  const cameraContext = createSceneContext({
+    VISUAL, THREE, window: { innerWidth: 800, innerHeight: 400 }, renderer: { domElement: {} },
+    OrbitControls: class { constructor() { this.target = new THREE.Vector3(); } },
+  });
+  vm.runInContext(main.slice(main.indexOf('const camera ='), main.indexOf('const composer =')) +
+    '\nglobalThis.automaticOrbit = controls.autoRotate;', cameraContext);
+  assert.equal(cameraContext.automaticOrbit, false, 'DNA suppresses camera auto-orbit at startup too');
+  const context = makeNetworkHarness(VISUAL);
+  const network = context.network();
+  const rest = Array.from(network.nodeRestPos);
+  const reached = new Set([0]), pending = [0];
+  while (pending.length) {
+    const node = pending.pop();
+    for (const e of network.adjacency[node]) {
+      const other = network.edgeA[e] === node ? network.edgeB[e] : network.edgeA[e];
+      if (!reached.has(other)) { reached.add(other); pending.push(other); }
+    }
+  }
+  assert.equal(reached.size, 4000, 'both strands and every rung form one traversable graph');
+  assert.equal(network.E, 4034, 'dense backbone samples join through 36 spaced, subdivided rungs');
+  for (let sample = 0; sample < 1600; sample++) {
+    const a = sample * 6, b = a + 3;
+    if (Math.abs(rest[a + 1]) <= 11 * 0.72) {
+      assert.ok(Math.abs(rest[a] + rest[b]) < 1e-6);
+      assert.ok(Math.abs(rest[a + 2] + rest[b + 2]) < 1e-6);
+      assert.ok(Math.abs(Math.hypot(rest[a], rest[a + 2]) - 2.6) < 1e-6);
+    }
+    assert.equal(rest[a + 1], rest[b + 1]);
+  }
+  assert.equal(rest[1], -11);
+  assert.equal(rest[1599 * 6 + 1], 11);
+  vm.runInContext(`
+    applyVisualSettings(structuredClone(VISUAL));
+    renderWaitingMarkers(['AAAA']);
+    const session = { sid: 'AAAA', status: 'running', anchorIndex: 3 };
+    subagentAnchors.push(session);
+    subagentAnchorBySid.set(session.sid, session);
+    addSubagentBranch(session, { sid: 'BBBB', ageMs: 5000 }, false);
+    updateNetworkMotion(1);
+    renderSubagentTree(1);
+  `, context);
+  assert.equal(context.controls.autoRotate, false);
+  const moving = Array.from(network.nodePos);
+  assert.notDeepEqual(moving, rest);
+  assert.equal(network.activePulses, 0, 'decorative twisting does not create activity');
+  const twistAt = (node) => {
+    const i = node * 3;
+    return Math.atan2(rest[i] * moving[i + 2] - rest[i + 2] * moving[i],
+      rest[i] * moving[i] + rest[i + 2] * moving[i + 2]);
+  };
+  assert.ok(Math.abs(twistAt(0) - twistAt(1600)) > 0.01,
+    'torsion varies along the length, rather than just rigidly spinning the whole object');
+  for (let i = 0; i < network.N; i++) {
+    const offset = i * 3;
+    assert.equal(moving[offset + 1], rest[offset + 1], 'axial positions do not orbit or bob');
+    assert.ok(Math.abs(Math.hypot(moving[offset], moving[offset + 2]) -
+      Math.hypot(rest[offset], rest[offset + 2])) < 1e-6, 'twisting preserves the radial profile');
+    assert.ok(Math.hypot(...moving.slice(offset, offset + 3)) < network.nodeGeo.boundingSphere.radius);
+  }
+  assert.ok(vm.runInContext(`
+    Array.from(anchorPositions.slice(0, 3)).every((v, i) => v === nodePos[9 + i]) &&
+    Array.from(branchLinePositions.slice(0, 3)).every((v, i) => v === nodePos[9 + i])
+  `, context), 'delegated-work roots track the twisting strand');
+  const marker = network.waitingMarkerGroups[0];
+  assert.deepEqual(marker.position.toArray(),
+    moving.slice(marker.userData.anchorIndex * 3, marker.userData.anchorIndex * 3 + 3));
+  for (let e = 0; e < network.E; e++) {
+    const a = network.edgeA[e] * 3, b = network.edgeB[e] * 3;
+    assert.deepEqual(Array.from(network.edgeGeo.attributes.position.array.slice(e * 6, e * 6 + 6)),
+      [...moving.slice(a, a + 3), ...moving.slice(b, b + 3)]);
+    assert.ok(Number.isFinite(network.edgeLen[e]) && network.edgeLen[e] > 0);
+    assert.ok(Math.abs(network.edgeLen[e] -
+      Math.hypot(...moving.slice(a, a + 3).map((v, i) => v - moving[b + i]))) < 1e-6);
+  }
+  // Exercise both tips, both strands and rung interiors, not just the helix center.
+  for (const node of [0, 1, 1600, 1601, 3198, 3199, 3200, 3600, 3999]) {
+    context.seed = node;
+    assert.ok(vm.runInContext(`(() => {
+      pActive.fill(0);
+      fireFrom(seed, 2, 0);
+      const slot = pActive.findIndex(Boolean);
+      pT[slot] = 0.25;
+      writePulseBuffers();
+      const from = pFrom[slot] * 3, to = otherEnd(pEdge[slot], pFrom[slot]) * 3;
+      return [0, 1, 2].every(c => Math.abs(pulsePos[slot * T * 3 + c] -
+        (nodePos[from + c] * 0.75 + nodePos[to + c] * 0.25)) < 1e-6);
+    })()`, context));
+  }
+  vm.runInContext('updatePulses(10); writeEdgeColors(0.1)', context);
+  assert.ok(network.nodeEnergy.some(value => value > 0), 'arrivals excite the DNA graph');
+  assert.ok(network.edgeGeo.attributes.color.array.some(value => value > 0));
+  vm.runInContext('reducedMotion = true; updateNetworkMotion(10)', context);
+  assert.deepEqual(Array.from(network.nodePos), moving, 'reduced motion freezes twist');
+  vm.runInContext('reducedMotion = false', context);
+  VISUAL.camera.autoRotate = false;
+  vm.runInContext('updateNetworkMotion(10)', context);
+  assert.deepEqual(Array.from(network.nodePos), moving, 'rotation switch freezes twist');
+  VISUAL.camera.autoRotate = true;
+  VISUAL.camera.autoRotateSpeed = 0;
+  vm.runInContext('updateNetworkMotion(10)', context);
+  assert.deepEqual(Array.from(network.nodePos), moving, 'zero speed freezes twist');
+  VISUAL.camera.autoRotateSpeed = -0.35;
+  vm.runInContext('updateNetworkMotion(1)', context);
+  assert.deepEqual(Array.from(network.nodePos), rest, 'reversed speed unwinds without drift');
+  context.candidate = structuredClone(VISUAL);
+  context.candidate.topology = 'lattice';
+  vm.runInContext('applyVisualSettings(candidate)', context);
+  assert.equal(context.controls.autoRotate, true, 'leaving DNA restores configured camera orbit');
+});
+
+test('DNA dissolves only at both tips and softens activity without changing the central helix', async () => {
+  const VISUAL = await settings();
+  VISUAL.topology = 'dna';
+  VISUAL.nodes.count = 4000;
+  VISUAL.scene.edgeVisibility = 'always';
+  const context = makeNetworkHarness(VISUAL);
+  const network = context.network();
+  const spread = [[], []];
+  for (let sample = 0; sample < 1600; sample++) {
+    const t = sample / 1599;
+    for (let strand = 0; strand < 2; strand++) {
+      const i = sample * 2 + strand, offset = i * 3;
+      const angle = t * Math.PI * 5 + strand * Math.PI;
+      const x = Math.fround(Math.cos(angle) * 2.6), z = Math.fround(Math.sin(angle) * 2.6);
+      assert.equal(network.nodePos[offset + 1], Math.fround((t - 0.5) * 22));
+      if (t >= 0.14 && t <= 0.86) {
+        assert.equal(network.nodePos[offset], x, 'middle 72% retains its exact strand placement');
+        assert.equal(network.nodePos[offset + 2], z);
+      } else if (t < 0.05 || t > 0.95) {
+        spread[t < 0.05 ? 0 : 1].push(Math.hypot(network.nodePos[offset] - x,
+          network.nodePos[offset + 2] - z));
+      }
+    }
+  }
+  for (const offsets of spread) {
+    assert.ok(offsets.reduce((sum, n) => sum + n, 0) / offsets.length > 1.5,
+      'each tip fans into particles rather than terminating in a clean strand');
+    assert.ok(Math.max(...offsets) - Math.min(...offsets) > 1,
+      'tip scatter varies per particle instead of moving the whole end together');
+  }
+  vm.runInContext('writeEdgeColors(0)', context);
+  for (const e of [0, 1, 3196, 3197]) {
+    assert.equal(network.edgeGeo.attributes.color.array[e * 6], 0,
+      'idle tip connections dissolve completely instead of drawing a tangled net');
+    network.edgeR[e] = 0.75;
+  }
+  const middleEdge = 1598;
+  const idleColor = VISUAL.scene.edgeBaseColor[0] * network.edgeBase[middleEdge];
+  assert.ok(Math.abs(network.edgeGeo.attributes.color.array[middleEdge * 6] - idleColor) < 1e-6,
+    'central connecting-line brightness is unchanged');
+  vm.runInContext('writeEdgeColors(0)', context);
+  for (const e of [0, 1, 3196, 3197]) {
+    assert.equal(network.edgeGeo.attributes.color.array[e * 6], 0,
+      'activity does not reveal zigzag connections between dissolved particles');
+    assert.equal(network.edgeR[e], 0.75, 'visual fading preserves excitation state');
+  }
+  VISUAL.scene.edgeVisibility = 'active';
+  for (const e of [100, 250, 450, middleEdge]) network.edgeR[e] = 0.75;
+  vm.runInContext('writeEdgeColors(0)', context);
+  const highlights = [100, 250, 450, middleEdge].map(e =>
+    network.edgeGeo.attributes.color.array[e * 6]);
+  assert.ok(highlights[0] > 0 && highlights[0] < highlights[1] &&
+    highlights[1] < highlights[2], 'active lines fade progressively toward the tip');
+  assert.equal(highlights[3], 0.75, 'central activity lines retain full brightness');
+  assert.ok(vm.runInContext(`(() => {
+    const samples = [0, 1, 1598, 1599];
+    for (const node of samples) {
+      pActive.fill(0);
+      fireFrom(node, 2, 0);
+      const slot = pActive.findIndex(Boolean);
+      pT[slot] = 0.5;
+      writePulseBuffers();
+      const base = slot * T;
+      const central = node > 1;
+      const head = pulseCol[base * 3 + 2];
+      const trail = pulseCol[(base + 1) * 3 + 2];
+      const expected = SCENE_RGB[pCat[slot] * 3 + 2] * VISUAL.pulses.headBrightness;
+      if (central ? Math.abs(head - expected) > 1e-6 : !(head > 0 && head < expected * 0.16 && trail < 1e-6)) {
+        return false;
+      }
+      if (!pActive[slot] || pulseSize[base] <= 0) return false;
+    }
+    return true;
+  })()`, context), 'both tip heads become soft glints without trails; central pulses stay full brightness');
+  assert.equal(vm.runInContext('nodeMat.uniforms.uDnaHalfLength.value', context), 11);
+  assert.match(vm.runInContext('nodeMat.fragmentShader', context), /uActiveBrightness\), vDissolve/);
+  context.candidate = structuredClone(VISUAL);
+  context.candidate.nodes.baseSizeMin += 0.1;
+  context.candidate.scene.edgeVariationMin += 0.1;
+  vm.runInContext('applyVisualSettings(candidate); writeEdgeColors(0)', context);
+  assert.equal(context.network().nodeGeo, network.nodeGeo, 'live tuning does not rebuild or undo the tips');
+  context.candidate = structuredClone(VISUAL);
+  context.candidate.topology = 'lattice';
+  vm.runInContext('applyVisualSettings(candidate)', context);
+  assert.equal(vm.runInContext('nodeMat.uniforms.uDnaHalfLength.value', context), 0,
+    'other styles do not acquire a dissolve fade');
+});
+
+test('wave settings validate bounded motion and preview without reallocating the graph', async () => {
+  const VISUAL = await settings();
+  for (const [key, invalid] of [['amplitude', 3.1], ['amplitude', -1],
+    ['wavelength', 0], ['wavelength', 41], ['speed', -1], ['speed', Infinity]]) {
+    const result = resolveVisualSettings(VISUAL, 'balanced', { waves: { [key]: invalid } });
+    assert.equal(result.settings, null);
+    assert.ok(result.errors.some(({ path }) => path.endsWith(`waves.${key}`)));
+  }
+  for (const topology of ['lattice', 'organic', 'waves']) {
+    VISUAL.topology = topology;
+    VISUAL.nodes.count = 37;
+    const context = makeNetworkHarness(VISUAL);
+    const before = context.network();
+    context.candidate = structuredClone(VISUAL);
+    context.candidate.waves.amplitude = 2;
+    vm.runInContext('applyVisualSettings(candidate); updateNetworkMotion(1)', context);
+    const next = context.network();
+    assert.equal(next.nodeGeo, before.nodeGeo, 'motion tuning does not rebuild');
+    if (topology !== 'waves') assert.equal(next.nodeRestPos, null, 'existing styles remain static');
+  }
 });
 
 test('line modes change rendered edges only and preserve decaying activity', async () => {
@@ -470,7 +885,7 @@ test('line modes change rendered edges only and preserve decaying activity', asy
     const VISUAL = await settings();
     VISUAL.scene.edgeVisibility = mode;
     VISUAL.scene.edgeBaseColor = [0.2, 0.4, 0.6];
-    const context = vm.createContext({
+    const context = createSceneContext({
       VISUAL, Math, E: 2, edgeR: [1, 0], edgeG: [0.5, 0], edgeBColor: [0.25, 0],
       edgeBase: [1, 1], edgeColors: new Float32Array(12),
       edgeLines: { visible: true }, edgeGeo: { attributes: { color: {} } },
@@ -527,6 +942,72 @@ test('count preview, reload, reset and export apply count live without a page re
   assert.equal(harness.applied.at(-1).nodes.count, 800);
   assert.doesNotMatch(harness.elements.status.textContent, /refresh/i);
 });
+
+test('topology selector previews, resets root-level settings and exports the selection', async (t) => {
+  const defaults = await settings();
+  const harness = makePanelHarness({ defaults, overrides: { topology: 'organic' } });
+  const [topology] = harness.control('topology');
+  assert.deepEqual(topology.children.map(({ value }) => value), ['lattice', 'organic', 'waves', 'dna']);
+  topology.value = 'lattice';
+  topology.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).topology, 'lattice');
+  assert.equal(harness.panel.state.overrides.topology, 'lattice');
+
+  const descendants = (element) => [element, ...element.children.flatMap(descendants)];
+  descendants(harness.field('topology')).find((element) =>
+    element.className === 'visual-field-reset').click();
+  assert.equal(harness.applied.at(-1).topology, 'organic');
+  assert.equal(harness.panel.state.overrides.topology, 'organic');
+
+  topology.value = 'dna';
+  topology.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).topology, 'dna');
+  assert.equal(harness.panel.state.overrides.topology, 'dna');
+
+  let exportedBlob;
+  t.mock.method(URL, 'createObjectURL', (blob) => { exportedBlob = blob; return 'blob:synthetic'; });
+  harness.elements.exportButton.click();
+  const exported = await exportedBlob.text();
+  assert.match(exported, /"topology": "dna"/);
+  assert.match(exported, /"topology": "lattice"/);
+});
+
+for (const topology of ['waves', 'dna']) {
+test(`${topology} selection and wave tuning survive personal presets, reset and a loadable export`, async (t) => {
+  const defaults = await settings();
+  const harness = makePanelHarness({ defaults, overrides: { topology } });
+  const [amplitude] = harness.control('waves.amplitude');
+  amplitude.value = '2.5';
+  amplitude.dispatch('input');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).waves.amplitude, 2.5);
+  harness.elements.presetNameInput.value = 'Travelling waves';
+  harness.elements.saveAsPresetButton.click();
+  const personalId = harness.panel.state.preset;
+  harness.elements.presetSelect.value = 'subtle';
+  harness.elements.presetSelect.dispatch('change');
+  await new Promise(resolve => setImmediate(resolve));
+  harness.elements.presetSelect.value = personalId;
+  harness.elements.presetSelect.dispatch('change');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).topology, topology);
+  assert.equal(harness.applied.at(-1).waves.amplitude, 2.5);
+  let blob;
+  t.mock.method(URL, 'createObjectURL', value => { blob = value; return 'blob:synthetic'; });
+  harness.elements.exportButton.click();
+  const source = await blob.text();
+  const exported = await import(`data:text/javascript,${encodeURIComponent(source.replace(
+    "'./appearance/visual-config.mjs'", JSON.stringify(new URL('../appearance/visual-config.mjs', import.meta.url).href)))}`);
+  assert.deepEqual(exported.VISUAL_ERRORS, []);
+  assert.equal(exported.EFFECTIVE_VISUAL.topology, topology);
+  assert.equal(exported.EFFECTIVE_VISUAL.waves.amplitude, 2.5);
+  harness.elements.resetButton.click();
+  assert.equal(harness.applied.at(-1).topology, topology);
+  assert.deepEqual(harness.applied.at(-1).waves, defaults.waves);
+});
+}
 
 test('repeated node-count drafts defer topology rebuild until one final commit', async () => {
   const defaults = await settings();
@@ -764,7 +1245,7 @@ test('hook scene effects honor per-type strength without duplicate unknown burst
   impulseBuffer.add({ kind: 'activity', eventType: 'hook.end', count: 2 });
   impulseBuffer.add({ kind: 'activity', eventType: 'tool.execution_start', count: 1 });
   const calls = [], feed = [], totals = [];
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, impulseBuffer,
     document: { hidden: false }, performance: { now: () => 1 }, Math, N: 1,
     nodeHot: [0], nodeEnergy: [0],
@@ -861,8 +1342,8 @@ test('all advanced paths appear once and quick controls share the same canonical
     element.attributes.get('data-setting-path') &&
     element.attributes.get('data-quick-projection') === 'false');
   const paths = advanced.map((element) => element.attributes.get('data-setting-path'));
-  assert.equal(paths.length, 172);
-  assert.equal(new Set(paths).size, 172);
+  assert.equal(paths.length, VISUAL_SETTING_DEFINITIONS.length);
+  assert.equal(new Set(paths).size, VISUAL_SETTING_DEFINITIONS.length);
   assert.deepEqual([...paths].sort(),
     VISUAL_SETTING_DEFINITIONS.map(({ path }) => path).sort());
 
@@ -893,7 +1374,7 @@ test('all advanced paths appear once and quick controls share the same canonical
 test('every scalar numeric setting renders a slider with finite valid guidance and steps', async () => {
   const harness = makePanelHarness({ defaults: await settings() });
   const numeric = VISUAL_SETTING_DEFINITIONS.filter(({ type }) => type === 'number');
-  assert.equal(numeric.length, 143);
+  assert.equal(numeric.length, 146);
   for (const { path, constraints } of numeric) {
     const controls = harness.control(path);
     const sliders = controls.filter(({ type }) => type === 'range');
@@ -1206,7 +1687,7 @@ test('effect switches leave synthetic feed, timeline, and page totals unchanged'
       buffer.add(event);
       totals.add(event);
     }
-    const context = vm.createContext({
+    const context = createSceneContext({
       VISUAL, CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, impulseBuffer: buffer, document: { hidden: false },
       timeline: { add: (counts) => timeline.push(Array.from(counts)) },
       performance: { now: () => 100 }, Math, N: 1,
@@ -1459,10 +1940,12 @@ test('exported settings module preserves defaults and layered overrides as a loa
 
   const directory = await mkdtemp(path.join(tmpdir(), 'sentient-visual-export-'));
   try {
-    const currentConfig = new URL('../visual-config.mjs', import.meta.url);
-    await copyFile(currentConfig, path.join(directory, 'visual-config.mjs'));
-    await copyFile(new URL('../activity-colors.mjs', import.meta.url),
-      path.join(directory, 'activity-colors.mjs'));
+    await mkdir(path.join(directory, 'appearance'));
+    await mkdir(path.join(directory, 'activity'));
+    const currentConfig = new URL('../appearance/visual-config.mjs', import.meta.url);
+    await copyFile(currentConfig, path.join(directory, 'appearance/visual-config.mjs'));
+    await copyFile(new URL('../activity/activity-colors.mjs', import.meta.url),
+      path.join(directory, 'activity/activity-colors.mjs'));
     const exportedFile = path.join(directory, 'visual-settings.mjs');
     await writeFile(exportedFile, createVisualSettingsModuleSource({
       defaults, preset: 'subtle', overrides,
@@ -1622,7 +2105,7 @@ test('nondefault running settings drive scene impulses without changing hidden-t
   const VISUAL = await settings();
   Object.assign(VISUAL.running, { pulsesPerSecondPerSession: 20, maxSessions: 2 });
   const calls = [];
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, document: { hidden: false }, Math, N: 1,
     activityState: { connection: 'connected', sourceStatus: 'available', runningSessions: 10 },
     thinkingPulseClock: createThinkingPulseClock(VISUAL.running),
@@ -1644,7 +2127,7 @@ test('nondefault camera settings reach the camera and orbit controls', async () 
     fov: 65, position: [1, 2, 40], target: [3, 4, 5], damping: 0.1,
     minDistance: 12, maxDistance: 80, autoRotate: false, autoRotateSpeed: -0.5,
   });
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, THREE, window: { innerWidth: 800, innerHeight: 400 }, renderer: { domElement: {} },
     OrbitControls: class { constructor() { this.target = new THREE.Vector3(); } },
   });
@@ -1671,18 +2154,19 @@ test('nondefault glow and waiting-marker settings reach scene materials and spri
   });
   Object.assign(VISUAL.waiting, { markerSize: 0.8, markerOpacity: 0.5 });
   const stops = [];
-  const context = vm.createContext({
-    VISUAL, THREE, CATEGORY_HEX, brain: new THREE.Group(),
-    document: { createElement: () => ({
-      getContext: () => ({
-        createRadialGradient: () => ({ addColorStop: (...args) => stops.push(args) }),
-        fillRect() {},
+  const context = makeNetworkHarness(VISUAL, {
+    document: {
+      documentElement: { style: { setProperty() {} } },
+      getElementById: () => ({}),
+      createElement: () => ({
+        getContext: () => ({
+          createRadialGradient: () => ({ addColorStop: (...args) => stops.push(args) }),
+          fillRect() {},
+        }),
       }),
-    }) },
+    },
   });
-  vm.runInContext(main.slice(main.indexOf('function radialTexture(settings = VISUAL)'),
-    main.indexOf('// ---------- pulses ----------')) +
-    '\nglobalThis.result = { coreGlow, haloGlow, waitingMarkerGroups };', context);
+  context.result = context.network();
   const { coreGlow, haloGlow, waitingMarkerGroups } = context.result;
   assert.equal(coreGlow.material.color.getHex(), 0x123456);
   assert.equal(coreGlow.scale.x, 12);
@@ -1700,29 +2184,20 @@ test('dust, floor, and waiting-marker switches hide only their decorative effect
   for (const enabled of [true, false]) {
     const VISUAL = await settings();
     VISUAL.effects.dust = enabled;
-    const dustContext = vm.createContext({
-      VISUAL, THREE, CFG: { dust: 1, radius: 10 }, pixelRatio: 1, scene: new THREE.Scene(),
-    });
-    vm.runInContext(main.slice(main.indexOf('// ---------- dust ----------'),
-      main.indexOf('// ---------- core glow ----------')), dustContext);
+    const dustContext = makeNetworkHarness(VISUAL);
     assert.equal(dustContext.dust.visible, enabled);
 
     VISUAL.effects.floor = enabled;
-    const floorContext = vm.createContext({ VISUAL, THREE, scene: new THREE.Scene() });
-    vm.runInContext(main.slice(main.indexOf('const floorMat ='),
-      main.indexOf('// ---------- HUD ----------')) + '\nglobalThis.result = floor;', floorContext);
+    const floorContext = makeNetworkHarness(VISUAL);
+    floorContext.result = floorContext.floor;
     assert.equal(floorContext.result.visible, enabled);
     assert.equal(floorContext.scene.children.includes(floorContext.result), true,
       'the floor remains available and is controlled by rendering visibility');
 
     VISUAL.effects.waitingMarkers = enabled;
-    const groups = Array.from({ length: 8 }, () => ({
-      visible: false, position: { set() {} },
-    }));
-    const markerContext = vm.createContext({
-      VISUAL, waitingMarkerGroups: groups, nodePos: new Float32Array([1, 2, 3]), N: 1,
-    });
-    vm.runInContext(sceneFunction('renderWaitingMarkers') + "\nrenderWaitingMarkers(['AAAA'])", markerContext);
+    const markerContext = makeNetworkHarness(VISUAL);
+    const groups = markerContext.waitingMarkerGroups;
+    markerContext.renderWaitingMarkers(['AAAA']);
     assert.equal(groups[0].visible, enabled);
     assert.equal(groups.slice(1).some((group) => group.visible), false);
   }
@@ -1735,7 +2210,7 @@ test('node size and idle edge variation tuning leaves generated geometry unchang
   });
   Object.assign(VISUAL.scene, { edgeVariationMin: 0.2, edgeVariationRange: 0.4 });
   const createNodes = () => {
-    const context = vm.createContext({
+    const context = createSceneContext({
       VISUAL, THREE, CFG: { radius: 10, neighbours: 3, maxEdgeLen: 4.5 },
       Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
     });
@@ -1764,7 +2239,7 @@ test('nondefault grouped burst settings control motion, excitation and bounded i
   impulseBuffer.add({ kind: 'step', count: 4 });
   impulseBuffer.add({ kind: 'activity', eventType: 'session.error', count: 2 });
   const calls = [], feed = [];
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, impulseBuffer, document: { hidden: false },
     performance: { now: () => 0 }, Math, N: 1,
     nodeEnergy: [0], nodeHot: [0],
@@ -1795,14 +2270,14 @@ test('nondefault subagent appearance controls growth, lighting and retirement wi
     runningAnchorColor: [0.1, 0.2, 0.3], runningAnchorIntensity: 2,
     failureFlashFraction: 0.2, failureFlashIntensity: 3,
   });
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, THREE, CATEGORY_INDEX, SCENE_RGB: CATEGORY_RGB, Math,
     window: { matchMedia: () => ({ matches: false, addEventListener() {} }) },
     document: { getElementById: () => ({}) }, pixelRatio: 2,
     performance: { now: () => 0 }, brain: new THREE.Group(), nodePos: new Float32Array([1, 0, 0]),
   });
-  vm.runInContext(main.slice(main.indexOf('const MAX_ACTIVE_SUBAGENT_BRANCHES'),
-    main.indexOf('function otherEnd')) + `
+  context.invokeScene('initializeSubagents', []);
+  vm.runInContext(`
     const session = { sid: 'AAAA', anchorIndex: 0, status: 'running' };
     subagentAnchors.push(session);
     subagentAnchorBySid.set(session.sid, session);
@@ -1839,7 +2314,7 @@ test('nondefault subagent appearance controls growth, lighting and retirement wi
 test('disabling subagent transitions keeps current branches but removes growth, flashes, and retirement fades', async () => {
   const VISUAL = await settings();
   VISUAL.effects.subagentTransitions = false;
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, THREE, CATEGORY_INDEX, SCENE_RGB: CATEGORY_RGB, Math,
     pixelRatio: 1,
     window: { matchMedia: () => ({ matches: false, addEventListener() {} }) },
@@ -1848,8 +2323,8 @@ test('disabling subagent transitions keeps current branches but removes growth, 
     activityState: { connection: 'connected', sourceStatus: 'available', coverage: 'unknown' },
     subagentSummary: { textContent: '' },
   });
-  vm.runInContext(main.slice(main.indexOf('const MAX_ACTIVE_SUBAGENT_BRANCHES'),
-    main.indexOf('function otherEnd')) + `
+  context.invokeScene('initializeSubagents', []);
+  vm.runInContext(`
     applySubagentTree({
       reset: false,
       sessions: [{ sid: 'AAAA', status: 'running', subagents: [{ sid: 'BBBB', ageMs: 0 }] }],
@@ -1881,26 +2356,12 @@ test('nondefault node, pulse and floor values reach real material uniforms and s
   const VISUAL = await settings();
   let next = 2;
   for (const group of Object.values(VISUAL)) {
+    if (typeof group !== 'object') continue;
     for (const key of Object.keys(group)) {
       group[key] = Array.isArray(group[key]) ? [next++, next++, next++] : next++;
     }
   }
-  const context = vm.createContext({
-    VISUAL, pixelRatio: 2,
-    THREE: {
-      ShaderMaterial: class { constructor(options) { Object.assign(this, options); } },
-      Vector3: class { constructor(...values) { this.values = values; } },
-    },
-  });
-  for (const name of ['nodeMat', 'pulseMat', 'floorMat', 'dustMat']) {
-    const start = main.indexOf(`${name} = new THREE.ShaderMaterial(`);
-    assert.notEqual(start, -1, `${name} exists`);
-    // Dust is nested in a setup block; the other material declarations are top-level.
-    const closing = name === 'dustMat' ? '\n  });' : '\n});';
-    const end = main.indexOf(closing, start);
-    assert.notEqual(end, -1, `${name} has a closing delimiter`);
-    vm.runInContext(main.slice(start, end + closing.length), context);
-  }
+  const context = makeNetworkHarness(VISUAL, { pixelRatio: 2 });
   const uniformChecks = [
     ['nodeMat', 'uScale', VISUAL.nodes.scale * 2],
     ['nodeMat', 'uSize', VISUAL.nodes.size],
@@ -1949,7 +2410,7 @@ test('nondefault node, pulse and floor values reach real material uniforms and s
     ['floorMat', 'uColor', VISUAL.floor.color],
     ['floorMat', 'uPoolColor', VISUAL.floor.poolColor],
   ]) {
-    assert.deepEqual(context[material].uniforms[uniform].value.values, expected);
+    assert.deepEqual(context[material].uniforms[uniform].value.toArray(), expected);
     const shaders = context[material].vertexShader + context[material].fragmentShader;
     assert.match(shaders, new RegExp(`uniform vec3 ${uniform};`));
     assert.ok(shaders.match(new RegExp(`\\b${uniform}\\b`, 'g')).length >= 2);
@@ -1970,17 +2431,20 @@ test('nondefault pulse speed, head, spacing, brightness and completion controls 
     neighbourSpread: 1, branchChance: 0, seedHeat: 1, nodeEnergy: 0.3, edgeIntensity: 0.4,
   });
   const calls = [];
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, CATEGORY_INDEX, SCENE_RGB: CATEGORY_RGB,
     Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
-    P: 1, T: 2, pCursor: 0, activePulses: 0, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(1),
+    P: 4, T: 2, pCursor: 0, activePulses: 0, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(4),
     pActive: [0], pEdge: [0], pFrom: [0], pT: [0], pSpeed: [0],
     pHops: [0], pKind: [0], pCat: [0],
-    edgeLen: [1], edgeR: [0], edgeG: [0], edgeBColor: [0],
-    nodeEnergy: [0, 0], nodeHot: [0, 0],
-    adjacency: [[0, 1, 2]], otherEnd: () => 1,
+    edgeA: [0, 0, 0, 1, 1], edgeB: [1, 2, 3, 2, 3],
+    edgeLen: [1, 100, 100, 100, 100], edgeR: [0, 0, 0, 0, 0],
+    edgeG: [0, 0, 0, 0, 0], edgeBColor: [0, 0, 0, 0, 0],
+    nodeEnergy: [0, 0, 0, 0], nodeHot: [0, 0, 0, 0],
+    adjacency: [[0, 1, 2], [0, 3, 4], [1, 3], [2, 4]],
+    fireEdges: new Int32Array(3), otherEnd: () => 1,
     fireFrom: (...args) => calls.push(args),
-    nodePos: [0, 0, 0, 1, 0, 0],
+    nodePos: [0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0],
     pulsePos: new Float32Array(6), pulseCol: new Float32Array(6), pulseSize: new Float32Array(2),
     pulseGeo: { attributes: { position: {}, aColor: {}, aSize: {} } },
   });
@@ -2002,15 +2466,25 @@ test('nondefault pulse speed, head, spacing, brightness and completion controls 
   assert.ok(Math.abs(context.pulseSize[1] - 5 * (0.35 + 0.65 * 0.25)) < 1e-6);
   vm.runInContext('updatePulses(0.2)', context);
   assert.equal(context.nodeEnergy[1], 0.3);
-  assert.deepEqual(calls.splice(0), [[1, 2, 2, 0, 1, CATEGORY_INDEX.completion]]);
+  assert.equal(context.activePulses, 1);
+  assert.equal(context.pFrom[1], 1);
+  assert.equal(context.pHops[1], 2);
+  assert.equal(context.pKind[1], 2);
+  assert.equal(context.pCat[1], CATEGORY_INDEX.completion);
   VISUAL.completion.branchChance = 1;
-  context.pActive[0] = 1;
+  const pool = context.invokeScene('initializePulses', []);
+  pool.reset();
+  pool.spawnPulse(0, 0, 3, 2, CATEGORY_INDEX.completion);
   context.pT[0] = 0.9;
-  context.activePulses = 1;
   vm.runInContext('updatePulses(0.2)', context);
-  assert.deepEqual(calls.splice(0), [[1, 2, 2, 0, 2, CATEGORY_INDEX.completion]]);
-  context.pActive[0] = 1;
-  context.pKind[0] = 1;
+  assert.equal(context.activePulses, 2);
+  for (const slot of [1, 2]) {
+    assert.equal(context.pFrom[slot], 1);
+    assert.equal(context.pHops[slot], 2);
+    assert.equal(context.pCat[slot], CATEGORY_INDEX.completion);
+  }
+  pool.reset();
+  pool.spawnPulse(0, 0, 0, 1, CATEGORY_INDEX.tool);
   context.pT[0] = 0.6;
   vm.runInContext('writePulseBuffers()', context);
   assert.equal(context.pulseSize[0], 4);
@@ -2019,12 +2493,11 @@ test('nondefault pulse speed, head, spacing, brightness and completion controls 
 
 test('nondefault scene settings reach edge decay, bloom and load-based ambient paths', async () => {
   const VISUAL = await settings();
-  const ambience = '{\n' + main.slice(main.indexOf('  // ambience'), main.indexOf('  hudTimer -= dt')) + '\n}';
   for (const key of Object.keys(VISUAL.scene)) {
     if (typeof VISUAL.scene[key] === 'string') continue;
     VISUAL.scene[key] = Array.isArray(VISUAL.scene[key]) ? [0.2, 0.2, 0.2] : 0.2;
   }
-  const bloomContext = vm.createContext({
+  const bloomContext = createSceneContext({
     VISUAL, window: { innerWidth: 800, innerHeight: 600 },
     THREE: { Vector2: class {} },
     UnrealBloomPass: class {
@@ -2039,21 +2512,22 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
   assert.equal(bloomContext.pass.strength, 0.2);
   assert.equal(bloomContext.pass.radius, 0.2);
   assert.equal(bloomContext.pass.threshold, 0.2);
-  const context = vm.createContext({
-    VISUAL, Math, E: 1, edgeR: [1], edgeG: [1], edgeBColor: [1],
-    edgeBase: [0], edgeColors: new Float32Array(6), edgeGeo: { attributes: { color: {} } },
-    edgeLines: { visible: true },
-    dt: 0, now: 0, smoothedLoad: 0.5, activePulses: 0, demoFrame: { waiting: false },
-    activityState: { activeSessions: 0, connection: 'connected', sourceStatus: 'available', waitingSessions: 0 },
-    brain: { scale: { setScalar() {} } },
-    coreGlow: { material: { color: { lerpColors() {} } } }, haloGlow: { material: {} },
-    baseCoreColor: {}, waitingCoreColor: {}, bloom: {},
-    dust: { rotation: {} }, nodeMat: { uniforms: { uTime: {} } },
-    dustMat: { uniforms: { uTime: {} } }, floorMat: { uniforms: { uTime: {}, uGlow: {} } },
-  });
-  vm.runInContext(sceneFunction('writeEdgeColors') + '\nwriteEdgeColors(1)', context);
+  VISUAL.nodes.count = 37;
+  const context = makeNetworkHarness(VISUAL);
+  context.dt = 0;
+  context.now = 0;
+  context.activePulseInput = 0;
+  context.demoFrame = { waiting: false };
+  context.activityState = {
+    activeSessions: 0, connection: 'connected', sourceStatus: 'available', waitingSessions: 0,
+  };
+  const updateAmbience = () => context.updateAmbience(context.dt, context.now,
+    context.activePulseInput, context.activityState, context.demoFrame);
+  context.updateAmbience(5, 0, 0.1, context.activityState, context.demoFrame);
+  context.edgeR[0] = 1;
+  context.writeEdgeColors(1);
   assert.ok(Math.abs(context.edgeR[0] - Math.exp(-0.2)) < 1e-6);
-  vm.runInContext(ambience, context);
+  updateAmbience();
   assert.ok(Math.abs(context.bloom.strength - 0.3) < 1e-6);
   assert.ok(Math.abs(context.coreGlow.material.opacity - 0.3) < 1e-6);
   assert.ok(Math.abs(context.haloGlow.material.opacity - 0.3) < 1e-6);
@@ -2067,7 +2541,7 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
   context.coreGlow.material.color.lerpColors = (from, to, value) => { blend = value; };
   context.now = Math.PI / 2;
   context.activityState.waitingSessions = 1;
-  vm.runInContext(ambience, context);
+  updateAmbience();
   assert.ok(Math.abs(blend - 0.6) < 1e-6);
   assert.ok(Math.abs(context.coreGlow.material.opacity - 0.52) < 1e-6);
   assert.ok(Math.abs(scale - (1 + Math.sin(Math.PI / 10) * 0.2)) < 1e-6);
@@ -2075,16 +2549,16 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
   assert.equal(context.dust.rotation.x, 0.4);
   VISUAL.effects.waitingGlow = false;
   VISUAL.effects.latticeBreathing = false;
-  vm.runInContext(ambience, context);
+  updateAmbience();
   assert.equal(blend, 0, 'waiting glow modulation is removed');
   assert.ok(Math.abs(context.coreGlow.material.opacity - 0.3) < 1e-6,
     'baseline core glow remains when waiting glow is disabled');
   assert.equal(scale, 1, 'disabled lattice breathing leaves the lattice unmodulated');
   context.dt = 0.5;
-  context.activePulses = 0.1;
+  context.activePulseInput = 0.1;
   context.activityState.activeSessions = 0.1;
-  vm.runInContext(ambience, context);
-  assert.ok(Math.abs(context.smoothedLoad - 0.55) < 1e-6, 'custom load divisors and smoothing apply');
+  updateAmbience();
+  assert.ok(Math.abs(context.floorMat.uniforms.uGlow.value / VISUAL.scene.floorGlow - 0.55) < 1e-6, 'custom load divisors and smoothing apply');
 });
 
 test('node decay and ordinary arrival/trail settings alter the actual animation buffers', async () => {
@@ -2093,10 +2567,11 @@ test('node decay and ordinary arrival/trail settings alter the actual animation 
   Object.assign(VISUAL.pulses, {
     nodeEnergy: 0.8, stepEdgeIntensity: 0.2, thinkingEdgeIntensity: 0.3, minTrailSize: 0.8,
   });
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, Math, SCENE_RGB: CATEGORY_RGB, P: 1, T: 2, N: 2, dt: 1,
     pActive: [1], pEdge: [0], pFrom: [0], pT: [0.5], pKind: [1], pCat: [CATEGORY_INDEX.tool],
-    pSpeed: [1], pHops: [0], activePulses: 1, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(1), edgeLen: [1],
+    pSpeed: [1], pHops: [0], activePulses: 1, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(1),
+    edgeLen: [1], edgeA: [0], edgeB: [1],
     edgeR: [0], edgeG: [0], edgeBColor: [0],
     nodeEnergy: [1, 0], nodeHot: [1, 0], nodePos: [0, 0, 0, 1, 0, 0],
     nodeGeo: { attributes: { aEnergy: {}, aHot: {} } },
@@ -2114,8 +2589,7 @@ test('node decay and ordinary arrival/trail settings alter the actual animation 
   context.pT[0] = 0;
   vm.runInContext('updatePulses(0.1)', context);
   assert.equal(context.edgeR[0], CATEGORY_RGB[CATEGORY_INDEX.tool * 3] * 0.3);
-  const start = main.indexOf('  const decay = Math.exp(-dt * VISUAL.nodes.decay)');
-  vm.runInContext(main.slice(start, main.indexOf('  writeEdgeColors(dt)', start)), context);
+  context.invokeScene('decayNodes', [1]);
   assert.ok(Math.abs(context.nodeEnergy[0] - Math.exp(-1)) < 1e-6);
   assert.ok(Math.abs(context.nodeHot[0] - Math.exp(-1)) < 1e-6);
 });

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CATEGORIES, CATEGORY_INDEX, HOOK_TYPES } from '../activity-colors.mjs';
-import { createDemoActivity, DEMO_WAITING_IDS } from '../demo-activity.mjs';
+import { CATEGORIES, CATEGORY_INDEX, HOOK_TYPES } from '../activity/activity-colors.mjs';
+import { createDemoActivity, DEMO_WAITING_IDS } from '../activity/demo-activity.mjs';
 
 const SETTINGS = { impact: { minMs: 2000, maxMs: 120000 } };
 
@@ -100,7 +100,7 @@ test('demo waiting markers use fixed synthetic identifiers', () => {
 
 test('per-frame scheduler code does not allocate', async () => {
   const { readFile } = await import('node:fs/promises');
-  const source = await readFile(new URL('../demo-activity.mjs', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../activity/demo-activity.mjs', import.meta.url), 'utf8');
   const start = source.indexOf('  function clearResult(');
   const end = source.indexOf('  return {', start);
   const tickStart = source.indexOf('    tick(dt, settings) {');

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lstat, open, readdir, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { validEventType, validToolName } from '../activity-client.mjs';
+import { validEventType, validToolName } from '../activity/activity-client.mjs';
 
 const MAX_FILES = 512;
 const MAX_DIR_ENTRIES = 8192;

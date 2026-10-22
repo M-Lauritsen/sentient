@@ -6,7 +6,7 @@ import os from 'node:os';
 import { createSentientServer } from '../server.mjs';
 import { createLifecycle, lifecycleHeaders } from '../desktop/lifecycle.mjs';
 import { probeReady } from '../desktop/launch.mjs';
-import { createPwaLifecycle } from '../pwa-lifecycle-client.mjs';
+import { createPwaLifecycle } from '../lifecycle/pwa-lifecycle-client.mjs';
 import { browserClock, browserEvents, flush } from './fixtures/pwa-browser.mjs';
 
 async function ownedServer(t, { clock = browserClock(), port = 0 } = {}) {

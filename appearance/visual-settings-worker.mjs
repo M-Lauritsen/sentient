@@ -1,7 +1,7 @@
 import { resolveVisualSettings } from './visual-config.mjs';
 
 try {
-  const module = await import('./visual-settings.mjs');
+  const module = await import('../visual-settings.mjs');
   const resolved = resolveVisualSettings(
     module.VISUAL, module.VISUAL_PRESET, module.VISUAL_OVERRIDES);
   const errors = Array.isArray(module.VISUAL_ERRORS) && module.VISUAL_ERRORS.length

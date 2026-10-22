@@ -1,3 +1,3 @@
-import { startVisualApplication } from './visual-config.mjs';
+import { startVisualApplication } from './appearance/visual-config.mjs';
 
 await startVisualApplication(document);

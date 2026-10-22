@@ -1,7 +1,7 @@
 import { VISUAL as currentVisualSettings } from '/visual-settings.mjs';
-import { resolveVisualSettings } from '/visual-config.mjs';
-import { createVisualSettingsPanel } from '/visual-settings-ui.mjs';
-import { createNavigationUI } from '/navigation-ui.mjs';
+import { resolveVisualSettings } from '/appearance/visual-config.mjs';
+import { createVisualSettingsPanel } from '/appearance/visual-settings-ui.mjs';
+import { createNavigationUI } from '/ui/navigation-ui.mjs';
 
 const defaults = structuredClone(currentVisualSettings);
 defaults.nodes.count = 40;
@@ -163,7 +163,7 @@ window.appearanceHarness = {
     const numericFields = [...document.querySelectorAll(
       '#visual-settings-fields [data-setting-path][data-quick-projection="false"]',
     )].filter((field) => field.querySelectorAll('input[type="number"]').length === 1);
-    if (numericFields.length !== 143 || numericFields.some((field) =>
+    if (numericFields.length !== 146 || numericFields.some((field) =>
       field.querySelectorAll('input[type="range"]').length !== 1)) {
       throw new Error('Every scalar numeric setting must have one Advanced slider.');
     }

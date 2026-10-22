@@ -1,4 +1,4 @@
-import { CATEGORIES } from './activity-colors.mjs';
+import { CATEGORIES } from '../activity/activity-colors.mjs';
 
 export const WORKSPACE_STORAGE_KEY = 'sentient-os.workspaces.v1';
 export const WORKSPACE_LIMITS = Object.freeze({

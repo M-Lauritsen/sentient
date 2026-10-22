@@ -1,8 +1,10 @@
-import { resolveVisualSettings } from './visual-config.mjs';
-import { HOOK_DEFAULTS } from './activity-colors.mjs';
+import { resolveVisualSettings, WAVE_DEFAULTS } from './appearance/visual-config.mjs';
+import { HOOK_DEFAULTS } from './activity/activity-colors.mjs';
 
 export const VISUAL = {
   "hooks": { ...HOOK_DEFAULTS },
+  "topology": "lattice",
+  "waves": { ...WAVE_DEFAULTS },
   "camera": {
     "fov": 50,
     "position": [
@@ -258,6 +260,7 @@ export const VISUAL = {
 };
 export const VISUAL_PRESET = "balanced";
 export const VISUAL_OVERRIDES = {
+  "topology": "lattice",
   "camera": {
     "fov": 50,
     "position": [
