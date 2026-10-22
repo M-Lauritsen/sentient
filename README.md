@@ -560,8 +560,8 @@ connections or stop travelling pulses, node excitation, or separate subagent
 branches. Active highlights keep their activity-category colours.
 
 Category colors remain in **`activity-colors.mjs`**. Other structural geometry and
-fixed buffer capacities (including pulse/trail counts) remain in `main.js`'s
-`CFG`; they are deliberately not visual settings. Shader-facing settings are
+fixed buffer capacities (including pulse/trail counts) live in
+`scene\structural-config.mjs`; they are deliberately not visual settings. Shader-facing settings are
 passed as uniforms, so tuning these values does not require editing GLSL.
 Topology selection is configurable, but topology generation rules, node/dust
 placement, branch geometry, floor mesh dimensions, renderer resource limits,
@@ -578,8 +578,26 @@ Each design lives in `network-topology-design\`: `lattice.mjs`, `organic.mjs`,
 `waves.mjs` and `dna.mjs`. The explicit registry in `index.mjs` supplies the
 selected design to `scene\network.mjs` and the scene's presentation consumers.
 `scene\network.mjs` owns shared nearest-neighbor connectivity, graph buffers,
-geometry allocation/cleanup and moving-edge synchronization. `main.js` still
-owns graph installation, pulse reset, anchor remapping and the animation loop.
+geometry allocation/cleanup and moving-edge synchronization.
+
+`main.js` composes the owners and keeps the animation loop's ordering explicit:
+
+| Module | Ownership |
+| --- | --- |
+| `scene\network-renderer.mjs` | Node shaders, edge colors, graph installation, node decay and motion phases |
+| `scene\pulses.mjs` | Bounded pulse pool, traversal, trails, excitation and observed/demo pulse counts |
+| `scene\subagents.mjs` | Delegated anchors, branch buffers, growth, retirement and remapping |
+| `scene\ambience.mjs` | Dust, floor, shared glow texture, waiting markers and ambient load |
+| `scene\viewport.mjs` | Resize and Appearance-panel projection framing |
+| `scene\appearance.mjs` | Validate/prepare settings before mutation, then delegate to resource owners |
+| `activity-presentation.mjs` | Accepted activity and scene-only demo effects |
+| `hud-ui.mjs` | Source status, timeline drawing, counters and existing workspace/statistics wiring |
+
+Graph consumers obtain the current network after rebuilds rather than retaining
+old arrays. Successful graph installation resets graph-bound pulses and remaps
+delegated anchors; observed activity, pending impulses, totals and history remain
+with their existing models. Glow sprites share one ambience-owned texture;
+appearance preparation disposes a candidate texture if graph preparation fails.
 
 A design's `createLayout` supplies per-node placement and, when needed, explicit
 connections and final position adjustments. Placement stays interleaved with

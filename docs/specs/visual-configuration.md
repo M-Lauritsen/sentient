@@ -41,10 +41,19 @@ The following behavior is present in the current workspace:
 - Topology algorithms, motion and presentation rules live in individual
   `network-topology-design` modules with an explicit registry. `scene\network.mjs`
   owns shared graph construction, geometry allocation and moving-edge updates.
-  `main.js` retains installation/reset/remapping and settings application.
+  `scene\network-renderer.mjs` installs replacements, with explicit pulse reset
+  and delegated-anchor remapping wired in `main.js`.
+- `scene\appearance.mjs` validates and prepares candidate resources before
+  mutation, then delegates uniforms/materials/speed remapping to the owners in
+  `scene\`. The active settings object retains its identity. Structural
+  capacities live in `scene\structural-config.mjs`, not visual tuning.
+- `activity-presentation.mjs` maps accepted activity and scene-only demos to
+  effects; `hud-ui.mjs` owns source status, timeline drawing and observed counters
+  while reusing the existing activity, workspace and statistics models.
 
 Source references: `visual-settings.mjs`, `main.js`,
-`scene\network.mjs`, `network-topology-design\index.mjs`,
+`scene\network.mjs`, `scene\appearance.mjs`, `scene\structural-config.mjs`,
+`activity-presentation.mjs`, `hud-ui.mjs`, `network-topology-design\index.mjs`,
 `activity-client.mjs`, `server.mjs`, `tests/visual-settings.test.mjs`,
 and README sections "Editing visual settings" and "Privacy and limitations".
 

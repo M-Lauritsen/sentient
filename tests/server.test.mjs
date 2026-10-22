@@ -26,13 +26,16 @@ test('server-side activity projection does not import browser visual settings', 
 	assert.doesNotMatch(client, /from '\.\/visual-settings\.mjs'/);
 });
 
-test('network modules are explicitly served as JavaScript without exposing adjacent files', async (t) => {
+test('scene and presentation modules are explicitly served without exposing adjacent files', async (t) => {
 	const activityRoot = await fixture(t);
 	const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
 	t.after(() => app.stop());
 	const { port } = await app.start();
 	const base = `http://127.0.0.1:${port}`;
-	for (const module of ['scene/network.mjs', 'network-topology-design/index.mjs',
+	for (const module of ['scene/network.mjs', 'scene/structural-config.mjs',
+		'scene/network-renderer.mjs', 'scene/pulses.mjs', 'scene/subagents.mjs',
+		'scene/ambience.mjs', 'scene/viewport.mjs', 'scene/appearance.mjs',
+		'activity-presentation.mjs', 'hud-ui.mjs', 'network-topology-design/index.mjs',
 		'network-topology-design/lattice.mjs', 'network-topology-design/organic.mjs',
 		'network-topology-design/waves.mjs', 'network-topology-design/dna.mjs']) {
 		const response = await fetch(`${base}/${module}`);

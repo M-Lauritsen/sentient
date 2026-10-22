@@ -9,10 +9,20 @@ import { createCategoryBurstPlan, createImpulseBuffer } from '../activity-client
 import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from '../session-stats-ui.mjs';
 import { createVisualSettingsPanel } from '../visual-settings-ui.mjs';
 import { resolveVisualSettings } from '../visual-config.mjs';
-import { createSceneContext } from './scene-test-context.mjs';
+import { createSceneContext, sceneFunction } from './scene-test-context.mjs';
+import { recordObservedActivity } from '../hud-ui.mjs';
+import * as THREE from 'three';
+import { createPulseSystem } from '../scene/pulses.mjs';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
-const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
+
+const sourceFiles = ['main.js', 'scene/structural-config.mjs', 'scene/network-renderer.mjs',
+  'scene/pulses.mjs', 'scene/subagents.mjs', 'scene/ambience.mjs', 'scene/viewport.mjs',
+  'activity-presentation.mjs', 'hud-ui.mjs', 'scene/appearance.mjs'];
+const sources = Object.fromEntries(await Promise.all(sourceFiles.map(async file =>
+  [file, (await readFile(new URL('../' + file, import.meta.url), 'utf8')).replace(/^  /gm, '')])));
+const main = Object.values(sources).join('\n');
+
 const server = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
 const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
 const statsUi = await readFile(new URL('../session-stats-ui.mjs', import.meta.url), 'utf8');
@@ -141,9 +151,8 @@ test('source recovery retains the header, running indicators and workspace while
   };
   for (const name of ['$journals', '$sessions', '$waiting', '$unknown', '$running',
     '$coverage', '$status', '$subtitle']) context[name] = { textContent: '' };
-  vm.createContext(context);
-  vm.runInContext(main.slice(main.indexOf('function renderActivityState(state) {'),
-    main.indexOf('\nconst activityClient =', main.indexOf('function renderActivityState(state) {'))), context);
+  createSceneContext(context);
+  vm.runInContext(sceneFunction('renderActivityState'), context);
   const connected = { connection: 'connected', sourceStatus: 'available', coverage: 'journal-only',
     activeSessions: 1, runningSessions: 1, waitingSessions: 0, waitingSessionIds: [] };
   context.renderActivityState(connected);
@@ -341,10 +350,9 @@ test('page category totals use validated grouped metadata, fixed saturating coun
 });
 
 test('page category accumulation runs on accepted arrival, not frame drain, and excludes hidden/coverage gaps', () => {
-  const callback = main.match(/onActivity: \(activity\) => \{([\s\S]*?)\n  \},/)[1];
   const pageActivityTotals = createPageActivityTotals();
   let refreshes = 0;
-  const context = vm.createContext({
+  const context = createSceneContext({
     document: { hidden: false },
     activityState: { connection: 'connected', sourceStatus: 'available', coverage: 'journal-only' },
     impulseBuffer: { add() {} },
@@ -352,7 +360,9 @@ test('page category accumulation runs on accepted arrival, not frame drain, and 
     sessionStatsDialog: { refreshActivity() { refreshes++; } },
     workspaceUI: { refresh() {} },
   });
-  vm.runInContext(`function receive(activity) { ${callback} }`, context);
+  context.acceptActivity = activity => recordObservedActivity(activity, context.document,
+    context.activityState, pageActivityTotals, context.sessionStatsDialog, context.workspaceUI);
+  vm.runInContext("function receive(activity) { return invokeScene('receiveActivity', [activity]); }", context);
   vm.runInContext("receive({ kind: 'step', count: 37 })", context);
   assert.equal(pageActivityTotals.counts[CATEGORY_INDEX.tool], 37, 'counted before any animation frame');
   assert.equal(refreshes, 1);
@@ -489,7 +499,7 @@ test('category activity and accepted completion preserve ordinary motion and hid
   assert.match(main, /const pCat = new Uint8Array\(P\)/);
   assert.doesNotMatch(main, /celebrateCompletion|spawnShock|updateShocks|shockGeo|reactTimer|\bshake\b|rippleT/);
   assert.match(main, /if \(!document.hidden\) impulseBuffer.add\(activity\)/);
-  assert.match(main, /state.connection !== 'connected'\) impulseBuffer.clear\(\)/);
+  assert.match(main, /state.connection !== 'connected'\) clearImpulses\(\)/);
   assert.match(main, /'visibilitychange', \(\) => \{\s+impulseBuffer.clear\(\)/);
   assert.match(main, /coreGlow\.material\.opacity = VISUAL\.scene\.coreOpacity \+ smoothedLoad \* VISUAL\.scene\.coreLoad/);
   assert.match(main, /bloom\.strength = VISUAL\.scene\.bloomStrength \+ smoothedLoad \* VISUAL\.scene\.bloomLoad/);
@@ -500,7 +510,7 @@ test('category activity and accepted completion preserve ordinary motion and hid
 test('blue running stream follows observed running work and discloses unverified lingering', () => {
   assert.match(html, /RUNNING\s+<b\s+id="running">/);
   assert.match(main, /Math\.min\(activityState\.runningSessions \?\? 0, VISUAL\.running\.maxSessions\)/);
-  assert.match(main, /!\(state\.runningSessions > 0\)\) thinkingPulseClock\.reset\(\)/);
+  assert.match(main, /!\(state\.runningSessions > 0\)\) resetThinking\(\)/);
   assert.match(main, /RUNNING · UNVERIFIED/);
   assert.match(main, /may linger if it ended without a recorded end/);
   assert.match(main, /'visibilitychange'[\s\S]*thinkingPulseClock\.reset\(\)/);
@@ -519,7 +529,7 @@ test('subagent trees use bounded preallocated scene buffers and reset safely', (
   assert.match(main, /MAX_FADING_SUBAGENT_BRANCHES = 64/);
   assert.match(main, /new Float32Array\(MAX_ACTIVE_SUBAGENT_BRANCHES \* 6\)/);
   assert.match(main, /new Float32Array\(MAX_FADING_SUBAGENT_BRANCHES \* 6\)/);
-  assert.match(main, /onTree: applySubagentTree/);
+  assert.match(main, /onTree: subagents\.applySubagentTree/);
   assert.match(main, /if \(tree\.reset \|\| document\.hidden\)/);
   assert.match(main, /reducedMotionQuery\.addEventListener\('change'/);
   assert.match(main, /if \(!item\.subagents\.length\) continue;/);
@@ -529,7 +539,7 @@ test('subagent trees use bounded preallocated scene buffers and reset safely', (
   assert.match(html, /id="subagent-summary"\s+role="status"\s+aria-live="polite"/);
   assert.match(html, /Delegated work status unavailable until connected/);
   assert.match(css, /\.visually-hidden\s*\{[\s\S]*clip-path: inset\(50%\)/);
-  const frame = main.slice(main.indexOf('function frame()'), main.indexOf("window.addEventListener('resize'"));
+  const frame = sources['main.js'].split('function frame()')[1].split('createVisualSettingsPanel({')[0];
   assert.match(frame, /renderSubagentTree/);
   assert.doesNotMatch(frame, /new THREE\./);
 });
@@ -800,18 +810,10 @@ test('waiting counter and scene affordances stay bounded and activity-free', () 
   assert.match(main, /coreGlow\.material\.color\.lerpColors/);
   assert.match(main, /Math\.sin\(now \* VISUAL\.waiting\.breathSpeed\)/);
   assert.match(main, /CATEGORY_HEX\.waiting/);
-  const markerRenderer = main.slice(main.indexOf('function renderWaitingMarkers'), main.indexOf('function tickSessionTimes'));
+  const markerRenderer = sources['scene/ambience.mjs'].split('function renderWaitingMarkers')[1].split('let smoothedLoad')[0];
   assert.doesNotMatch(markerRenderer, /fireFrom|spawnPulse|celebrateCompletion|impulseBuffer\.add/);
 });
 
-function sceneFunction(name) {
-  const start = main.indexOf(`function ${name}(`);
-  assert.notEqual(start, -1);
-  const body = main.slice(start);
-  const end = /\r?\n}\r?\n/.exec(body);
-  assert.ok(end, `${name} has a top-level closing brace`);
-  return body.slice(0, end.index + end[0].length);
-}
 
 test('pulse and RGB edge writers use category channels, preserve kind motion and reuse buffers', () => {
   const SCENE_RGB = Float32Array.from(CATEGORY_RGB, (channel) =>
@@ -827,7 +829,7 @@ test('pulse and RGB edge writers use category channels, preserve kind motion and
     pulsePos: new Float32Array(6), pulseCol: new Float32Array(6), pulseSize: new Float32Array(2),
     edgeR: new Float32Array(1), edgeG: new Float32Array(1), edgeBColor: new Float32Array(1),
     edgeBase: new Float32Array([1]), edgeColors: new Float32Array(6),
-    edgeLen: [10], pSpeed: [1],
+    edgeLen: [10], edgeA: [0], edgeB: [1], pSpeed: [1],
     otherEnd: () => 1,
     pulseGeo: { attributes: { position: {}, aColor: {}, aSize: {} } },
     edgeGeo: { attributes: { color: {} } },
@@ -850,7 +852,7 @@ test('pulse and RGB edge writers use category channels, preserve kind motion and
   for (const name of ['fireFrom', 'updatePulses', 'writePulseBuffers', 'writeEdgeColors',
     'renderSubagentTree', 'renderCompletionCascade', 'renderObservedImpulses', 'renderTimeline',
     'renderDemoActivity', 'observedWaitingIds', 'updateSceneFraming']) {
-    assert.doesNotMatch(sceneFunction(name), /new |\.filter\(|\.slice\(|\.map\(|\.sort\(|=>/,
+    assert.doesNotMatch(main.split('function ' + name + '(')[1].split('\n}\n')[0], /new |\.filter\(|\.slice\(|\.map\(|\.sort\(|=>/,
       `${name} must not introduce per-frame constructors, array copies or callbacks`);
   }
   assert.match(main, /fireFrom\(to, hops - 1, kind, from, branch, pCat\[s\]\)/);
@@ -929,7 +931,7 @@ test(`${activity.eventType} produces one network cascade per frame without explo
   const calls = [];
   const impulseBuffer = createImpulseBuffer();
   impulseBuffer.add(activity);
-  const context = vm.createContext({
+  const context = createSceneContext({
     CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, VISUAL, document: { hidden: false }, performance: { now: () => 1 }, Math, N: 1,
     nodeEnergy: new Float32Array(1), nodeHot: new Float32Array(1),
     adjacency: [[0, 1, 2, 3, 4]],
@@ -961,48 +963,42 @@ test(`${activity.eventType} produces one network cascade per frame without explo
 }
 
 test('completion pulses branch and brighten lattice nodes, edges and trails', () => {
-  const calls = [];
-  const context = createSceneContext({
-    Math: Object.assign(Object.create(Math), { random: () => 0.2 }),
-    SCENE_RGB: CATEGORY_RGB, VISUAL, P: 1, T: 2,
-    pActive: new Uint8Array([1]), pEdge: [0], pFrom: [0], pT: [0],
-    pSpeed: [2], pHops: [7], pKind: [2], pCat: [CATEGORY_INDEX.completion],
-    edgeLen: [1], edgeR: [0], edgeG: [0], edgeBColor: [0],
-    nodeEnergy: [0, 0], activePulses: 1, otherEnd: () => 1,
-    pDemo: new Uint8Array(1), demoSpawn: 0, demoPulses: 0,
-    fireFrom: (...args) => calls.push(args),
-    nodePos: [0, 0, 0, 1, 2, 3],
-    pulsePos: new Float32Array(6), pulseCol: new Float32Array(6), pulseSize: new Float32Array(2),
-    pulseGeo: { attributes: { position: {}, aColor: {}, aSize: {} } },
-  });
-  vm.runInContext([sceneFunction('updatePulses'), sceneFunction('writePulseBuffers')].join('\n'), context);
-  vm.runInContext('updatePulses(0.5)', context);
-  assert.deepEqual(calls, [[1, 6, 2, 0, 2, CATEGORY_INDEX.completion]]);
-  assert.equal(context.nodeEnergy[1], 0.9);
-  assert.equal(context.edgeR[0], CATEGORY_RGB[CATEGORY_INDEX.completion * 3] * VISUAL.completion.edgeIntensity);
-  context.pActive[0] = 1;
-  context.pT[0] = 0.5;
-  vm.runInContext('writePulseBuffers()', context);
-  assert.ok(Math.abs(context.pulseSize[0] - 3.0) < 1e-6);
-  // Impact pulses (kind 3) use their own branching, energy, edge light and head.
-  calls.length = 0;
-  Object.assign(context, { activePulses: 1, edgeR: [0], edgeG: [0], edgeBColor: [0], nodeEnergy: [0, 0] });
-  Object.assign(context.pKind, [3]);
-  context.pCat[0] = CATEGORY_INDEX.subagent;
-  context.pT[0] = 0;
-  vm.runInContext('updatePulses(0.5)', context);
-  assert.deepEqual(calls, [[1, 6, 3, 0, 2, CATEGORY_INDEX.subagent]]);
-  assert.equal(context.nodeEnergy[1], VISUAL.impact.nodeEnergy);
-  assert.ok(Math.abs(context.edgeR[0] - CATEGORY_RGB[CATEGORY_INDEX.subagent * 3] * VISUAL.impact.edgeIntensity) < 1e-6);
-  context.pActive[0] = 1;
-  context.pT[0] = 0.5;
-  vm.runInContext('writePulseBuffers()', context);
-  assert.ok(Math.abs(context.pulseSize[0] - VISUAL.impact.head) < 1e-6);
+  for (const [kind, category, effect, head] of [
+    [2, CATEGORY_INDEX.completion, VISUAL.completion, VISUAL.pulses.completionHead],
+    [3, CATEGORY_INDEX.subagent, VISUAL.impact, VISUAL.impact.head],
+  ]) {
+    const network = {
+      edgeA: [0, 1, 1], edgeB: [1, 2, 3], edgeLen: [1, 100, 100],
+      adjacency: [[0], [0, 1, 2], [1], [2]], fireEdges: new Int32Array(3),
+      edgeR: [0, 0, 0], edgeG: [0, 0, 0], edgeBColor: [0, 0, 0],
+      nodeEnergy: [0, 0, 0, 0], nodePos: [0, 0, 0, 1, 2, 3, 2, 3, 4, 3, 4, 5],
+    };
+    const pulses = createPulseSystem({
+      VISUAL, CFG: { maxPulses: 4, trail: 2, radius: 10 }, SCENE_RGB: CATEGORY_RGB,
+      brain: new THREE.Group(), pixelRatio: 1, getNetwork: () => network, random: () => 0.2,
+    });
+    pulses.spawnPulse(0, 0, 7, kind, category);
+    pulses.updatePulses(0.5);
+    const { pActive, pFrom, pHops, pKind, pCat, pT, pulseSize } = pulses.buffers;
+    const slots = [...pActive.keys()].filter(slot => pActive[slot]);
+    assert.equal(slots.length, 2, 'the arrival creates both forward branches');
+    for (const slot of slots) {
+      assert.equal(pFrom[slot], 1);
+      assert.equal(pHops[slot], 6);
+      assert.equal(pKind[slot], kind);
+      assert.equal(pCat[slot], category);
+      pT[slot] = 0.5;
+    }
+    assert.equal(network.nodeEnergy[1], effect.nodeEnergy);
+    assert.ok(Math.abs(network.edgeR[0] - CATEGORY_RGB[category * 3] * effect.edgeIntensity) < 1e-6);
+    pulses.writePulseBuffers();
+    assert.ok(Math.abs(pulseSize[slots[0] * 2] - head) < 1e-6);
+  }
 });
 
 test('real completion spawning respects pool capacity, reuses slots and ends after bounded hops', () => {
   const P = 1600;
-  const context = vm.createContext({
+  const context = createSceneContext({
     Math: Object.assign(Object.create(Math), { random: () => 0.2 }),
     P, CATEGORY_INDEX, VISUAL, SCENE_RGB: CATEGORY_RGB,
     pCursor: 0, activePulses: 0, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(P),
@@ -1031,7 +1027,7 @@ test('real completion spawning respects pool capacity, reuses slots and ends aft
 
 test('demo-tagged pulses and their branches stay separately counted and are released', () => {
   const P = 64;
-  const context = vm.createContext({
+  const context = createSceneContext({
     Math: Object.assign(Object.create(Math), { random: () => 0.2 }),
     P, CATEGORY_INDEX, VISUAL, SCENE_RGB: CATEGORY_RGB,
     pCursor: 0, activePulses: 0, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(P),
@@ -1070,7 +1066,7 @@ test('appearance demo shares scene bursts but never reaches timeline, feed, stat
     hookCounts: new Uint32Array(HOOK_TYPES.length), entries: [], impacts: [],
   };
   demoFrame.sceneByCategory[CATEGORY_INDEX.edit] = 4;
-  const context = vm.createContext({
+  const context = createSceneContext({
     CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, VISUAL, document: { hidden: false }, performance: { now: () => 1 }, Math, N: 1,
     nodeEnergy: new Float32Array(1), nodeHot: new Float32Array(1),
     adjacency: [[0, 1, 2, 3, 4]], otherEnd: (edge) => edge + 1,
@@ -1089,16 +1085,15 @@ test('appearance demo shares scene bursts but never reaches timeline, feed, stat
   assert.equal(calls[0][5], CATEGORY_INDEX.edit);
   assert.deepEqual(timelineAdds, []);
   assert.deepEqual(feedAdds, []);
-  const demo = sceneFunction('renderDemoActivity');
+  const demo = sources['activity-presentation.mjs'].split('function renderDemoActivity')[1].split('function setDemoRunning')[0];
   assert.match(demo, /renderObservedImpulses\(demoSource, false\)/);
   // Waiting markers (which copy IDs) are re-rendered only on transitions, not every frame.
   assert.match(demo, /if \(demoFrame\.active !== wasActive \|\| demoFrame\.waiting !== wasWaiting \|\|\s*\(demoMarkersDirty && demoFrame\.active\)\) \{/);
-  assert.match(demo, /const badgeVisible = demoFrame\.active \|\| demoPulses > 0;/);
-  assert.match(main, /renderActivityState\(state\);\s*demoMarkersDirty = true;/);
+  assert.match(demo, /const badgeVisible = demoFrame\.active \|\| pulses\.demoPulses > 0;/);
+  assert.match(main, /hud\.renderActivityState\(state\);\s*presentation\.markDemoDirty\(\);/);
   // onState fires synchronously during connect(), so the flag must exist before the client is created.
-  assert.ok(main.indexOf('let demoMarkersDirty = false;') > 0 &&
-    main.indexOf('let demoMarkersDirty = false;') < main.indexOf('\nconst activityClient ='));
-  assert.match(main, /return applyVisualSettings\(candidate\);\s*\} finally \{\s*demoMarkersDirty = true;/);
+  assert.ok(sources['main.js'].indexOf('const presentation = createActivityPresentation') < sources['main.js'].indexOf('const activityClient ='));
+  assert.match(main, /return appearance\.applyVisualSettings\(candidate\);\s*\} finally \{\s*presentation\.markDemoDirty\(\);/);
   assert.doesNotMatch(demo, /impulseBuffer|timeline|pageActivityTotals|sessionStatsDialog|workspaceUI|activityState\s*=/);
   assert.match(main, /\$impulses\.textContent = String\(activePulses - demoPulses\)/);
   assert.match(main, /\$load\.textContent = Math\.round\(smoothedObservedLoad \* 100\)/);
@@ -1108,8 +1103,8 @@ test('appearance demo shares scene bursts but never reaches timeline, feed, stat
 });
 
 test('settings hover focuses the demo and the open panel re-frames the scene without touching camera settings', () => {
-  assert.match(main, /previewMode: \(\) => \(!demoActivity\.isRunning\(\) \? 'off' : reducedMotion \? 'focus' : 'sweep'\)/);
-  assert.match(main, /onPreviewFocus: \(path\) => demoActivity\.setFocus\(demoFocusForPath\(path\)\)/);
+  assert.match(main, /previewMode: \(\) => presentation\.previewMode\(reducedMotion\)/);
+  assert.match(main, /onPreviewFocus: \(path\) => presentation\.setDemoFocus\(demoFocusForPath\(path\)\)/);
   assert.match(main, /framingOpen = open;\s*updateFramingTarget\(\);/);
   assert.match(main, /bloom\.setSize\(w, h\);\s*updateFramingTarget\(\);/);
   assert.match(main, /updateSceneFraming\(dt\);/);
@@ -1120,7 +1115,7 @@ test('settings hover focuses the demo and the open panel re-frames the scene wit
     setViewOffset: (...args) => calls.push(['set', ...args]),
     clearViewOffset: () => calls.push(['clear']),
   };
-  const context = vm.createContext({
+  const context = createSceneContext({
     Math, camera, window: { innerWidth: 1600, innerHeight: 900 },
     visualSettingsDialog: { getBoundingClientRect: () => ({ width: 620 }) },
     FRAMING_MIN_WIDTH: 900, FRAMING_EASE: 6, reducedMotion: false,
@@ -1128,7 +1123,7 @@ test('settings hover focuses the demo and the open panel re-frames the scene wit
   });
   vm.runInContext([sceneFunction('updateFramingTarget'), sceneFunction('updateSceneFraming')].join('\n'), context);
   vm.runInContext('updateFramingTarget()', context);
-  assert.equal(context.framingTarget, 310);
+  assert.equal(calls.length, 0, 'opening waits for the ordered frame update');
   vm.runInContext('updateSceneFraming(0.05)', context);
   assert.equal(calls.at(-1)[0], 'set');
   assert.ok(calls.at(-1)[3] > 0 && calls.at(-1)[3] < 310, 'eases toward the target');
@@ -1155,7 +1150,7 @@ test('real timeline drawing stacks category counts and overlays unknown coverage
     fillRect(...args) { rectangles.push([this.fillStyle, ...args]); },
     lineTo(...args) { lines.push(args); },
   };
-  const context = vm.createContext({
+  const context = createSceneContext({
     Math, CATEGORIES, CATEGORY_HEX, lastTimelineState: '',
     timeline: { read: () => ({ counts, coverage, head: 0, state: 'live' }) },
     timelineContext: canvasContext, timelineCanvas: { width: 960, height: 48 },

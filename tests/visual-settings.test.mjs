@@ -16,9 +16,17 @@ import { loadVisualConfiguration, startVisualApplication, validateVisualSettings
   VISUAL_SETTING_PRESENTATION,
   mergeVisualOverrides, visualConfigurationSignature, createVisualSettingsModuleSource } from '../visual-config.mjs';
 import { createVisualSettingsPanel } from '../visual-settings-ui.mjs';
-import { createSceneContext } from './scene-test-context.mjs';
+import { createSceneContext, sceneFunction } from './scene-test-context.mjs';
+import { installSceneHarness } from './scene-harness.mjs';
 
-const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
+
+const sourceFiles = ['main.js', 'scene/structural-config.mjs', 'scene/network-renderer.mjs',
+  'scene/pulses.mjs', 'scene/subagents.mjs', 'scene/ambience.mjs', 'scene/viewport.mjs',
+  'activity-presentation.mjs', 'hud-ui.mjs', 'scene/appearance.mjs'];
+const sources = Object.fromEntries(await Promise.all(sourceFiles.map(async file =>
+  [file, (await readFile(new URL('../' + file, import.meta.url), 'utf8')).replace(/^  /gm, '')])));
+const main = Object.values(sources).join('\n');
+
 const settings = async () => structuredClone((await import('../visual-settings.mjs')).VISUAL);
 
 class TestElement {
@@ -127,14 +135,8 @@ function makeMemoryStorage(initial = {}) {
   };
 }
 
-function sceneFunction(name) {
-  const body = main.slice(main.indexOf(`function ${name}(`));
-  const end = /\r?\n}\r?\n/.exec(body);
-  assert.ok(end, `${name} is extractable`);
-  return body.slice(0, end.index + end[0].length);
-}
 
-function makeNetworkHarness(VISUAL) {
+function makeNetworkHarness(VISUAL, overrides = {}) {
   const context = createSceneContext({
     VISUAL, THREE, CATEGORY_INDEX, CATEGORY_HEX, CATEGORY_RGB, validateVisualSettings, structuredClone,
     createScenePalette, applyHookColors,
@@ -161,16 +163,8 @@ function makeNetworkHarness(VISUAL) {
       }),
     },
   });
-  vm.runInContext(main.slice(main.indexOf('// ---------- nodes ----------'),
-    main.indexOf('// ---------- HUD ----------')) +
-    sceneFunction('renderWaitingMarkers') + sceneFunction('applyVisualSettings') + `
-    globalThis.network = () => ({
-      N, E, nodePos, nodeRestPos, nodeEnergy, nodeHot, nodeSize, adjacency, edgeA, edgeB, edgeLen,
-      edgeR, edgeG, edgeBColor, nodeGeo, nodePoints, edgeGeo, edgeLines, edgeBase, fireEdges,
-      activePulses, pActive, pFrom, pEdge,
-      pulsePos, pulseCol, pulseSize, pulseGeo, waitingMarkerGroups,
-      subagentAnchors, activeSubagentBranches, fadingSubagentBranches,
-    });`, context);
+  Object.assign(context, overrides);
+  installSceneHarness(context);
   return context;
 }
 
@@ -1251,7 +1245,7 @@ test('hook scene effects honor per-type strength without duplicate unknown burst
   impulseBuffer.add({ kind: 'activity', eventType: 'hook.end', count: 2 });
   impulseBuffer.add({ kind: 'activity', eventType: 'tool.execution_start', count: 1 });
   const calls = [], feed = [], totals = [];
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, impulseBuffer,
     document: { hidden: false }, performance: { now: () => 1 }, Math, N: 1,
     nodeHot: [0], nodeEnergy: [0],
@@ -1693,7 +1687,7 @@ test('effect switches leave synthetic feed, timeline, and page totals unchanged'
       buffer.add(event);
       totals.add(event);
     }
-    const context = vm.createContext({
+    const context = createSceneContext({
       VISUAL, CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, impulseBuffer: buffer, document: { hidden: false },
       timeline: { add: (counts) => timeline.push(Array.from(counts)) },
       performance: { now: () => 100 }, Math, N: 1,
@@ -2109,7 +2103,7 @@ test('nondefault running settings drive scene impulses without changing hidden-t
   const VISUAL = await settings();
   Object.assign(VISUAL.running, { pulsesPerSecondPerSession: 20, maxSessions: 2 });
   const calls = [];
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, document: { hidden: false }, Math, N: 1,
     activityState: { connection: 'connected', sourceStatus: 'available', runningSessions: 10 },
     thinkingPulseClock: createThinkingPulseClock(VISUAL.running),
@@ -2158,18 +2152,19 @@ test('nondefault glow and waiting-marker settings reach scene materials and spri
   });
   Object.assign(VISUAL.waiting, { markerSize: 0.8, markerOpacity: 0.5 });
   const stops = [];
-  const context = vm.createContext({
-    VISUAL, THREE, CATEGORY_HEX, brain: new THREE.Group(),
-    document: { createElement: () => ({
-      getContext: () => ({
-        createRadialGradient: () => ({ addColorStop: (...args) => stops.push(args) }),
-        fillRect() {},
+  const context = makeNetworkHarness(VISUAL, {
+    document: {
+      documentElement: { style: { setProperty() {} } },
+      getElementById: () => ({}),
+      createElement: () => ({
+        getContext: () => ({
+          createRadialGradient: () => ({ addColorStop: (...args) => stops.push(args) }),
+          fillRect() {},
+        }),
       }),
-    }) },
+    },
   });
-  vm.runInContext(main.slice(main.indexOf('function radialTexture(settings = VISUAL)'),
-    main.indexOf('// ---------- pulses ----------')) +
-    '\nglobalThis.result = { coreGlow, haloGlow, waitingMarkerGroups };', context);
+  context.result = context.network();
   const { coreGlow, haloGlow, waitingMarkerGroups } = context.result;
   assert.equal(coreGlow.material.color.getHex(), 0x123456);
   assert.equal(coreGlow.scale.x, 12);
@@ -2187,29 +2182,20 @@ test('dust, floor, and waiting-marker switches hide only their decorative effect
   for (const enabled of [true, false]) {
     const VISUAL = await settings();
     VISUAL.effects.dust = enabled;
-    const dustContext = vm.createContext({
-      VISUAL, THREE, CFG: { dust: 1, radius: 10 }, pixelRatio: 1, scene: new THREE.Scene(),
-    });
-    vm.runInContext(main.slice(main.indexOf('// ---------- dust ----------'),
-      main.indexOf('// ---------- core glow ----------')), dustContext);
+    const dustContext = makeNetworkHarness(VISUAL);
     assert.equal(dustContext.dust.visible, enabled);
 
     VISUAL.effects.floor = enabled;
-    const floorContext = vm.createContext({ VISUAL, THREE, scene: new THREE.Scene() });
-    vm.runInContext(main.slice(main.indexOf('const floorMat ='),
-      main.indexOf('// ---------- HUD ----------')) + '\nglobalThis.result = floor;', floorContext);
+    const floorContext = makeNetworkHarness(VISUAL);
+    floorContext.result = floorContext.floor;
     assert.equal(floorContext.result.visible, enabled);
     assert.equal(floorContext.scene.children.includes(floorContext.result), true,
       'the floor remains available and is controlled by rendering visibility');
 
     VISUAL.effects.waitingMarkers = enabled;
-    const groups = Array.from({ length: 8 }, () => ({
-      visible: false, userData: {}, position: { set() {} },
-    }));
-    const markerContext = vm.createContext({
-      VISUAL, waitingMarkerGroups: groups, nodePos: new Float32Array([1, 2, 3]), N: 1,
-    });
-    vm.runInContext(sceneFunction('renderWaitingMarkers') + "\nrenderWaitingMarkers(['AAAA'])", markerContext);
+    const markerContext = makeNetworkHarness(VISUAL);
+    const groups = markerContext.waitingMarkerGroups;
+    markerContext.renderWaitingMarkers(['AAAA']);
     assert.equal(groups[0].visible, enabled);
     assert.equal(groups.slice(1).some((group) => group.visible), false);
   }
@@ -2251,7 +2237,7 @@ test('nondefault grouped burst settings control motion, excitation and bounded i
   impulseBuffer.add({ kind: 'step', count: 4 });
   impulseBuffer.add({ kind: 'activity', eventType: 'session.error', count: 2 });
   const calls = [], feed = [];
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, CATEGORY_INDEX, HOOK_TYPES, CATEGORIES, impulseBuffer, document: { hidden: false },
     performance: { now: () => 0 }, Math, N: 1,
     nodeEnergy: [0], nodeHot: [0],
@@ -2282,14 +2268,14 @@ test('nondefault subagent appearance controls growth, lighting and retirement wi
     runningAnchorColor: [0.1, 0.2, 0.3], runningAnchorIntensity: 2,
     failureFlashFraction: 0.2, failureFlashIntensity: 3,
   });
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, THREE, CATEGORY_INDEX, SCENE_RGB: CATEGORY_RGB, Math,
     window: { matchMedia: () => ({ matches: false, addEventListener() {} }) },
     document: { getElementById: () => ({}) }, pixelRatio: 2,
     performance: { now: () => 0 }, brain: new THREE.Group(), nodePos: new Float32Array([1, 0, 0]),
   });
-  vm.runInContext(main.slice(main.indexOf('const MAX_ACTIVE_SUBAGENT_BRANCHES'),
-    main.indexOf('function otherEnd')) + `
+  context.invokeScene('initializeSubagents', []);
+  vm.runInContext(`
     const session = { sid: 'AAAA', anchorIndex: 0, status: 'running' };
     subagentAnchors.push(session);
     subagentAnchorBySid.set(session.sid, session);
@@ -2326,7 +2312,7 @@ test('nondefault subagent appearance controls growth, lighting and retirement wi
 test('disabling subagent transitions keeps current branches but removes growth, flashes, and retirement fades', async () => {
   const VISUAL = await settings();
   VISUAL.effects.subagentTransitions = false;
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, THREE, CATEGORY_INDEX, SCENE_RGB: CATEGORY_RGB, Math,
     pixelRatio: 1,
     window: { matchMedia: () => ({ matches: false, addEventListener() {} }) },
@@ -2335,8 +2321,8 @@ test('disabling subagent transitions keeps current branches but removes growth, 
     activityState: { connection: 'connected', sourceStatus: 'available', coverage: 'unknown' },
     subagentSummary: { textContent: '' },
   });
-  vm.runInContext(main.slice(main.indexOf('const MAX_ACTIVE_SUBAGENT_BRANCHES'),
-    main.indexOf('function otherEnd')) + `
+  context.invokeScene('initializeSubagents', []);
+  vm.runInContext(`
     applySubagentTree({
       reset: false,
       sessions: [{ sid: 'AAAA', status: 'running', subagents: [{ sid: 'BBBB', ageMs: 0 }] }],
@@ -2373,22 +2359,7 @@ test('nondefault node, pulse and floor values reach real material uniforms and s
       group[key] = Array.isArray(group[key]) ? [next++, next++, next++] : next++;
     }
   }
-  const context = createSceneContext({
-    VISUAL, pixelRatio: 2, CFG: { radius: 10 },
-    THREE: {
-      ShaderMaterial: class { constructor(options) { Object.assign(this, options); } },
-      Vector3: class { constructor(...values) { this.values = values; } },
-    },
-  });
-  for (const name of ['nodeMat', 'pulseMat', 'floorMat', 'dustMat']) {
-    const start = main.indexOf(`${name} = new THREE.ShaderMaterial(`);
-    assert.notEqual(start, -1, `${name} exists`);
-    // Dust is nested in a setup block; the other material declarations are top-level.
-    const closing = name === 'dustMat' ? '\n  });' : '\n});';
-    const end = main.indexOf(closing, start);
-    assert.notEqual(end, -1, `${name} has a closing delimiter`);
-    vm.runInContext(main.slice(start, end + closing.length), context);
-  }
+  const context = makeNetworkHarness(VISUAL, { pixelRatio: 2 });
   const uniformChecks = [
     ['nodeMat', 'uScale', VISUAL.nodes.scale * 2],
     ['nodeMat', 'uSize', VISUAL.nodes.size],
@@ -2437,7 +2408,7 @@ test('nondefault node, pulse and floor values reach real material uniforms and s
     ['floorMat', 'uColor', VISUAL.floor.color],
     ['floorMat', 'uPoolColor', VISUAL.floor.poolColor],
   ]) {
-    assert.deepEqual(context[material].uniforms[uniform].value.values, expected);
+    assert.deepEqual(context[material].uniforms[uniform].value.toArray(), expected);
     const shaders = context[material].vertexShader + context[material].fragmentShader;
     assert.match(shaders, new RegExp(`uniform vec3 ${uniform};`));
     assert.ok(shaders.match(new RegExp(`\\b${uniform}\\b`, 'g')).length >= 2);
@@ -2461,14 +2432,17 @@ test('nondefault pulse speed, head, spacing, brightness and completion controls 
   const context = createSceneContext({
     VISUAL, CATEGORY_INDEX, SCENE_RGB: CATEGORY_RGB,
     Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
-    P: 1, T: 2, pCursor: 0, activePulses: 0, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(1),
+    P: 4, T: 2, pCursor: 0, activePulses: 0, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(4),
     pActive: [0], pEdge: [0], pFrom: [0], pT: [0], pSpeed: [0],
     pHops: [0], pKind: [0], pCat: [0],
-    edgeLen: [1], edgeR: [0], edgeG: [0], edgeBColor: [0],
-    nodeEnergy: [0, 0], nodeHot: [0, 0],
-    adjacency: [[0, 1, 2]], otherEnd: () => 1,
+    edgeA: [0, 0, 0, 1, 1], edgeB: [1, 2, 3, 2, 3],
+    edgeLen: [1, 100, 100, 100, 100], edgeR: [0, 0, 0, 0, 0],
+    edgeG: [0, 0, 0, 0, 0], edgeBColor: [0, 0, 0, 0, 0],
+    nodeEnergy: [0, 0, 0, 0], nodeHot: [0, 0, 0, 0],
+    adjacency: [[0, 1, 2], [0, 3, 4], [1, 3], [2, 4]],
+    fireEdges: new Int32Array(3), otherEnd: () => 1,
     fireFrom: (...args) => calls.push(args),
-    nodePos: [0, 0, 0, 1, 0, 0],
+    nodePos: [0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0],
     pulsePos: new Float32Array(6), pulseCol: new Float32Array(6), pulseSize: new Float32Array(2),
     pulseGeo: { attributes: { position: {}, aColor: {}, aSize: {} } },
   });
@@ -2490,15 +2464,25 @@ test('nondefault pulse speed, head, spacing, brightness and completion controls 
   assert.ok(Math.abs(context.pulseSize[1] - 5 * (0.35 + 0.65 * 0.25)) < 1e-6);
   vm.runInContext('updatePulses(0.2)', context);
   assert.equal(context.nodeEnergy[1], 0.3);
-  assert.deepEqual(calls.splice(0), [[1, 2, 2, 0, 1, CATEGORY_INDEX.completion]]);
+  assert.equal(context.activePulses, 1);
+  assert.equal(context.pFrom[1], 1);
+  assert.equal(context.pHops[1], 2);
+  assert.equal(context.pKind[1], 2);
+  assert.equal(context.pCat[1], CATEGORY_INDEX.completion);
   VISUAL.completion.branchChance = 1;
-  context.pActive[0] = 1;
+  const pool = context.invokeScene('initializePulses', []);
+  pool.reset();
+  pool.spawnPulse(0, 0, 3, 2, CATEGORY_INDEX.completion);
   context.pT[0] = 0.9;
-  context.activePulses = 1;
   vm.runInContext('updatePulses(0.2)', context);
-  assert.deepEqual(calls.splice(0), [[1, 2, 2, 0, 2, CATEGORY_INDEX.completion]]);
-  context.pActive[0] = 1;
-  context.pKind[0] = 1;
+  assert.equal(context.activePulses, 2);
+  for (const slot of [1, 2]) {
+    assert.equal(context.pFrom[slot], 1);
+    assert.equal(context.pHops[slot], 2);
+    assert.equal(context.pCat[slot], CATEGORY_INDEX.completion);
+  }
+  pool.reset();
+  pool.spawnPulse(0, 0, 0, 1, CATEGORY_INDEX.tool);
   context.pT[0] = 0.6;
   vm.runInContext('writePulseBuffers()', context);
   assert.equal(context.pulseSize[0], 4);
@@ -2507,12 +2491,11 @@ test('nondefault pulse speed, head, spacing, brightness and completion controls 
 
 test('nondefault scene settings reach edge decay, bloom and load-based ambient paths', async () => {
   const VISUAL = await settings();
-  const ambience = '{\n' + main.slice(main.indexOf('  // ambience'), main.indexOf('  hudTimer -= dt')) + '\n}';
   for (const key of Object.keys(VISUAL.scene)) {
     if (typeof VISUAL.scene[key] === 'string') continue;
     VISUAL.scene[key] = Array.isArray(VISUAL.scene[key]) ? [0.2, 0.2, 0.2] : 0.2;
   }
-  const bloomContext = vm.createContext({
+  const bloomContext = createSceneContext({
     VISUAL, window: { innerWidth: 800, innerHeight: 600 },
     THREE: { Vector2: class {} },
     UnrealBloomPass: class {
@@ -2527,21 +2510,22 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
   assert.equal(bloomContext.pass.strength, 0.2);
   assert.equal(bloomContext.pass.radius, 0.2);
   assert.equal(bloomContext.pass.threshold, 0.2);
-  const context = createSceneContext({
-    VISUAL, Math, E: 1, edgeR: [1], edgeG: [1], edgeBColor: [1],
-    edgeBase: [0], edgeColors: new Float32Array(6), edgeGeo: { attributes: { color: {} } },
-    edgeLines: { visible: true },
-    dt: 0, now: 0, smoothedLoad: 0.5, activePulses: 0, demoFrame: { waiting: false },
-    activityState: { activeSessions: 0, connection: 'connected', sourceStatus: 'available', waitingSessions: 0 },
-    brain: { scale: { setScalar() {} } },
-    coreGlow: { material: { color: { lerpColors() {} } } }, haloGlow: { material: {} },
-    baseCoreColor: {}, waitingCoreColor: {}, bloom: {},
-    dust: { rotation: {} }, nodeMat: { uniforms: { uTime: {} } },
-    dustMat: { uniforms: { uTime: {} } }, floorMat: { uniforms: { uTime: {}, uGlow: {} } },
-  });
-  vm.runInContext(sceneFunction('writeEdgeColors') + '\nwriteEdgeColors(1)', context);
+  VISUAL.nodes.count = 37;
+  const context = makeNetworkHarness(VISUAL);
+  context.dt = 0;
+  context.now = 0;
+  context.activePulseInput = 0;
+  context.demoFrame = { waiting: false };
+  context.activityState = {
+    activeSessions: 0, connection: 'connected', sourceStatus: 'available', waitingSessions: 0,
+  };
+  const updateAmbience = () => context.updateAmbience(context.dt, context.now,
+    context.activePulseInput, context.activityState, context.demoFrame);
+  context.updateAmbience(5, 0, 0.1, context.activityState, context.demoFrame);
+  context.edgeR[0] = 1;
+  context.writeEdgeColors(1);
   assert.ok(Math.abs(context.edgeR[0] - Math.exp(-0.2)) < 1e-6);
-  vm.runInContext(ambience, context);
+  updateAmbience();
   assert.ok(Math.abs(context.bloom.strength - 0.3) < 1e-6);
   assert.ok(Math.abs(context.coreGlow.material.opacity - 0.3) < 1e-6);
   assert.ok(Math.abs(context.haloGlow.material.opacity - 0.3) < 1e-6);
@@ -2555,7 +2539,7 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
   context.coreGlow.material.color.lerpColors = (from, to, value) => { blend = value; };
   context.now = Math.PI / 2;
   context.activityState.waitingSessions = 1;
-  vm.runInContext(ambience, context);
+  updateAmbience();
   assert.ok(Math.abs(blend - 0.6) < 1e-6);
   assert.ok(Math.abs(context.coreGlow.material.opacity - 0.52) < 1e-6);
   assert.ok(Math.abs(scale - (1 + Math.sin(Math.PI / 10) * 0.2)) < 1e-6);
@@ -2563,16 +2547,16 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
   assert.equal(context.dust.rotation.x, 0.4);
   VISUAL.effects.waitingGlow = false;
   VISUAL.effects.latticeBreathing = false;
-  vm.runInContext(ambience, context);
+  updateAmbience();
   assert.equal(blend, 0, 'waiting glow modulation is removed');
   assert.ok(Math.abs(context.coreGlow.material.opacity - 0.3) < 1e-6,
     'baseline core glow remains when waiting glow is disabled');
   assert.equal(scale, 1, 'disabled lattice breathing leaves the lattice unmodulated');
   context.dt = 0.5;
-  context.activePulses = 0.1;
+  context.activePulseInput = 0.1;
   context.activityState.activeSessions = 0.1;
-  vm.runInContext(ambience, context);
-  assert.ok(Math.abs(context.smoothedLoad - 0.55) < 1e-6, 'custom load divisors and smoothing apply');
+  updateAmbience();
+  assert.ok(Math.abs(context.floorMat.uniforms.uGlow.value / VISUAL.scene.floorGlow - 0.55) < 1e-6, 'custom load divisors and smoothing apply');
 });
 
 test('node decay and ordinary arrival/trail settings alter the actual animation buffers', async () => {
@@ -2584,7 +2568,8 @@ test('node decay and ordinary arrival/trail settings alter the actual animation 
   const context = createSceneContext({
     VISUAL, Math, SCENE_RGB: CATEGORY_RGB, P: 1, T: 2, N: 2, dt: 1,
     pActive: [1], pEdge: [0], pFrom: [0], pT: [0.5], pKind: [1], pCat: [CATEGORY_INDEX.tool],
-    pSpeed: [1], pHops: [0], activePulses: 1, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(1), edgeLen: [1],
+    pSpeed: [1], pHops: [0], activePulses: 1, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(1),
+    edgeLen: [1], edgeA: [0], edgeB: [1],
     edgeR: [0], edgeG: [0], edgeBColor: [0],
     nodeEnergy: [1, 0], nodeHot: [1, 0], nodePos: [0, 0, 0, 1, 0, 0],
     nodeGeo: { attributes: { aEnergy: {}, aHot: {} } },
@@ -2602,8 +2587,7 @@ test('node decay and ordinary arrival/trail settings alter the actual animation 
   context.pT[0] = 0;
   vm.runInContext('updatePulses(0.1)', context);
   assert.equal(context.edgeR[0], CATEGORY_RGB[CATEGORY_INDEX.tool * 3] * 0.3);
-  const start = main.indexOf('  const decay = Math.exp(-dt * VISUAL.nodes.decay)');
-  vm.runInContext(main.slice(start, main.indexOf('  writeEdgeColors(dt)', start)), context);
+  context.invokeScene('decayNodes', [1]);
   assert.ok(Math.abs(context.nodeEnergy[0] - Math.exp(-1)) < 1e-6);
   assert.ok(Math.abs(context.nodeHot[0] - Math.exp(-1)) < 1e-6);
 });
