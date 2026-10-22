@@ -164,8 +164,9 @@ function makeNetworkHarness(VISUAL) {
     main.indexOf('// ---------- HUD ----------')) +
     sceneFunction('renderWaitingMarkers') + sceneFunction('applyVisualSettings') + `
     globalThis.network = () => ({
-      N, E, nodePos, nodeEnergy, nodeHot, nodeSize, adjacency, edgeA, edgeB, edgeLen,
-      nodeGeo, nodePoints, edgeGeo, edgeLines, edgeBase, fireEdges, activePulses, pActive, pFrom, pEdge,
+      N, E, nodePos, nodeRestPos, nodeEnergy, nodeHot, nodeSize, adjacency, edgeA, edgeB, edgeLen,
+      edgeR, edgeG, edgeBColor, nodeGeo, nodePoints, edgeGeo, edgeLines, edgeBase, fireEdges,
+      activePulses, pActive, pFrom, pEdge,
       pulsePos, pulseCol, pulseSize, pulseGeo, waitingMarkerGroups,
       subagentAnchors, activeSubagentBranches, fadingSubagentBranches,
     });`, context);
@@ -177,6 +178,8 @@ test('visual settings characterize the latest tuned defaults, not structural cap
   const configModule = await import('../visual-settings.mjs');
   assert.deepEqual(visual, {
     hooks: { ...HOOK_DEFAULTS },
+    topology: 'lattice',
+    waves: { amplitude: 1.6, wavelength: 10, speed: 0.8 },
     camera: {
       fov: 50, position: [0, 4, 31], target: [0, 0, 0], damping: 0.06,
       minDistance: 14, maxDistance: 60, autoRotate: true, autoRotateSpeed: 0.35,
@@ -270,7 +273,9 @@ test('visual settings validate all known paths and reject malformed values witho
   const defaults = await settings();
   assert.deepEqual(validateVisualSettings(defaults), []);
   const expectedPaths = Object.entries(defaults).flatMap(([group, values]) =>
-    Object.keys(values).map((name) => `${group}.${name}`)).sort();
+    typeof values === 'object'
+      ? Object.keys(values).map((name) => `${group}.${name}`)
+      : [group]).sort();
   assert.deepEqual(VISUAL_SETTING_DEFINITIONS.map(({ path }) => path).sort(), expectedPaths);
 
   const cases = [
@@ -280,6 +285,7 @@ test('visual settings validate all known paths and reject malformed values witho
     ['scene.edgeBaseColor[0]', (value) => { value.scene.edgeBaseColor = [-0.1, 0.2, 0.3]; }],
     ['scene.background', (value) => { value.scene.background = 0x1000000; }],
     ['effects.floor', (value) => { value.effects.floor = 1; }],
+    ['topology', (value) => { value.topology = 'grid'; }],
     ['scene.bloomRadius', (value) => { value.scene.bloomRadius = 1.1; }],
     ['scene.breathAmplitude', (value) => { value.scene.breathAmplitude = -0.1; }],
     ['floor.fineSpacing', (value) => { value.floor.fineSpacing = 0; }],
@@ -303,6 +309,22 @@ test('visual settings validate all known paths and reject malformed values witho
 test('network count and line modes validate exact boundaries without mutating defaults', async () => {
   const defaults = await settings();
   defaults.nodes.count = 1200;
+  const legacyDefaults = structuredClone(defaults);
+  delete legacyDefaults.topology;
+  delete legacyDefaults.waves;
+  assert.deepEqual(validateVisualSettings(legacyDefaults), []);
+  assert.equal(resolveVisualSettings(legacyDefaults).settings.topology, 'lattice');
+  assert.deepEqual(resolveVisualSettings(legacyDefaults).settings.waves,
+    { amplitude: 1.6, wavelength: 10, speed: 0.8 });
+  const legacyPanel = makePanelHarness({ defaults: legacyDefaults });
+  assert.equal(legacyPanel.control('waves.amplitude')[0].value, '1.6');
+  const [legacyTopology] = legacyPanel.control('topology');
+  legacyTopology.value = 'waves';
+  legacyTopology.dispatch('change');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(legacyPanel.applied.at(-1).topology, 'waves');
+  legacyPanel.elements.resetButton.click();
+  assert.equal(legacyPanel.applied.at(-1).topology, 'lattice');
   assert.equal(defaults.nodes.count, 1200);
   assert.equal(defaults.scene.edgeVisibility, 'always');
   for (const count of [2, 4000]) {
@@ -325,12 +347,22 @@ test('network count and line modes validate exact boundaries without mutating de
     assert.equal(result.settings, null);
     assert.ok(result.errors.some(({ path }) => path.endsWith('scene.edgeVisibility')));
   }
+  for (const topology of ['lattice', 'organic', 'waves', 'dna']) {
+    const result = resolveVisualSettings(defaults, 'balanced', { topology });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.settings.topology, topology);
+  }
+  const invalidTopology = resolveVisualSettings(defaults, 'balanced', { topology: 'grid' });
+  assert.equal(invalidTopology.settings, null);
+  assert.ok(invalidTopology.errors.some(({ path }) => path === 'topology'));
   assert.equal(defaults.nodes.count, 1200);
 });
 
 test('startup topology uses the requested count and produces valid connected endpoints', async () => {
-  for (const count of [2, 37, 4000]) {
+  for (const [topology, count] of ['lattice', 'waves', 'dna'].flatMap(topology =>
+    [2, 3, 4, 37, 4000].map(count => [topology, count]))) {
     const VISUAL = await settings();
+    VISUAL.topology = topology;
     VISUAL.nodes.count = count;
     const context = vm.createContext({
       VISUAL, THREE, CFG: { radius: 10, neighbours: 3, maxEdgeLen: 4.5 },
@@ -348,6 +380,7 @@ test('startup topology uses the requested count and produces valid connected end
       const a = result.edgeA[edge], b = result.edgeB[edge];
       assert.ok(a >= 0 && a < count && b >= 0 && b < count && a !== b);
       assert.ok(result.adjacency[a].includes(edge) && result.adjacency[b].includes(edge));
+      assert.ok(Number.isFinite(result.edgeLen[edge]) && result.edgeLen[edge] > 0);
     }
   }
 });
@@ -437,7 +470,84 @@ test('live network rebuild changes actual topology, disposes old geometry, and p
     'pending observed activity is not discarded with visual pulses');
 });
 
-test('failed or invalid network rebuild keeps the previous network and settings intact', async () => {
+for (const topology of ['organic', 'waves', 'dna']) {
+test(`${topology} topology rebuilds the graph and preserves observed activity state`, async () => {
+  const VISUAL = await settings();
+  VISUAL.nodes.count = 37;
+  const context = makeNetworkHarness(VISUAL);
+  let randomState = 123456789;
+  context.Math = Object.assign(Object.create(Math), {
+    random() {
+      randomState = (randomState * 1664525 + 1013904223) >>> 0;
+      return randomState / 0x100000000;
+    },
+  });
+  context.pageActivityTotals = createPageActivityTotals();
+  context.pageActivityTotals.add({ kind: 'step', count: 3 });
+  context.timeline = createActivityTimeline(0);
+  context.timeline.setCoverage(true, 0);
+  context.timeline.add(context.pageActivityTotals.counts, 1000);
+  const originalTimeline = structuredClone(context.timeline.read(1000));
+  const originalTotals = Array.from(context.pageActivityTotals.counts);
+  context.impulseBuffer = createImpulseBuffer();
+  context.impulseBuffer.add({ kind: 'step', count: 3 });
+  vm.runInContext(`
+    const session = { sid: 'AAAA', status: 'running', anchorIndex: N - 1 };
+    subagentAnchors.push(session);
+    subagentAnchorBySid.set(session.sid, session);
+    addSubagentBranch(session, { sid: 'BBBB', ageMs: 5000 }, false);
+    fireFrom(N - 1, 2, 0);
+    writePulseBuffers();
+  `, context);
+  const before = context.network();
+  before.nodeEnergy[0] = 1;
+  before.edgeR[0] = 1;
+  assert.equal(before.nodeEnergy[0], 1);
+  assert.equal(before.edgeR[0], 1);
+  let oldNodeDisposed = 0, oldEdgeDisposed = 0;
+  before.nodeGeo.addEventListener('dispose', () => oldNodeDisposed++);
+  before.edgeGeo.addEventListener('dispose', () => oldEdgeDisposed++);
+  context.candidate = structuredClone(VISUAL);
+  context.candidate.topology = topology;
+
+  vm.runInContext('applyVisualSettings(candidate)', context);
+
+  const next = context.network();
+  assert.equal(VISUAL.topology, topology);
+  assert.notEqual(next.nodeGeo, before.nodeGeo);
+  assert.notEqual(next.edgeGeo, before.edgeGeo);
+  assert.notDeepEqual(Array.from(next.nodePos), Array.from(before.nodePos));
+  assert.equal(oldNodeDisposed, 1);
+  assert.equal(oldEdgeDisposed, 1);
+  assert.equal(next.N, 37);
+  assert.equal(next.activePulses, 0);
+  assert.ok(next.nodeEnergy.every((energy) => energy === 0));
+  assert.ok(next.edgeR.every((energy) => energy === 0));
+  assert.ok(next.edgeG.every((energy) => energy === 0));
+  assert.ok(next.edgeBColor.every((energy) => energy === 0));
+  assert.ok([...next.nodePos, ...next.edgeLen].every(Number.isFinite));
+  assert.ok(next.edgeLen.every((length) => length > 0));
+  assert.ok(next.adjacency.every((edges) => edges.length > 0));
+  for (let edge = 0; edge < next.E; edge++) {
+    assert.ok(next.edgeA[edge] >= 0 && next.edgeA[edge] < next.N);
+    assert.ok(next.edgeB[edge] >= 0 && next.edgeB[edge] < next.N);
+    assert.ok(next.adjacency[next.edgeA[edge]].includes(edge));
+    assert.ok(next.adjacency[next.edgeB[edge]].includes(edge));
+  }
+  assert.equal(next.subagentAnchors.length, 1);
+  assert.equal(next.activeSubagentBranches.length, 1);
+  assert.equal(context.activityState.connection, 'connected');
+  assert.deepEqual(context.timeline.read(1000), originalTimeline);
+  assert.deepEqual(Array.from(context.pageActivityTotals.counts), originalTotals);
+  assert.equal(context.impulseBuffer.drain().byCategory[CATEGORY_INDEX.tool], 3);
+
+  vm.runInContext('fireFrom(N - 1, 2, 0)', context);
+  assert.ok(context.network().activePulses > 0, 'subsequent activity traverses the new graph');
+});
+}
+
+for (const topology of ['organic', 'waves', 'dna']) {
+test(`${topology} failed or invalid rebuild keeps the previous network and settings intact`, async () => {
   const VISUAL = await settings();
   VISUAL.nodes.count = 37;
   const context = makeNetworkHarness(VISUAL);
@@ -448,7 +558,8 @@ test('failed or invalid network rebuild keeps the previous network and settings 
   assert.equal(context.network().nodeGeo, before.nodeGeo);
   assert.equal(VISUAL.nodes.count, 37);
 
-  context.candidate.nodes.count = 60;
+  context.candidate.nodes.count = 37;
+  context.candidate.topology = topology;
   let discardedGeometries = 0;
   context.THREE = {
     ...THREE,
@@ -462,7 +573,316 @@ test('failed or invalid network rebuild keeps the previous network and settings 
   assert.equal(context.network().edgeGeo, before.edgeGeo);
   assert.equal(context.network().N, 37);
   assert.equal(VISUAL.nodes.count, 37);
+  assert.equal(VISUAL.topology, 'lattice');
   assert.equal(discardedGeometries, 1, 'partially built geometry is disposed');
+});
+}
+
+test('waves move a flat triangular sheet while edges, pulses, waiting markers and delegates follow', async () => {
+  const VISUAL = await settings();
+  VISUAL.nodes.count = 100;
+  VISUAL.topology = 'waves';
+  const context = makeNetworkHarness(VISUAL);
+  const network = context.network();
+  const rest = Array.from(network.nodeRestPos);
+  assert.ok(rest.filter((_, i) => i % 3 === 1).every(y => y === 0),
+    'every node starts on one flat plane, not a sphere');
+  assert.equal(network.E, 261, '10 by 10 sheet has horizontal, vertical and diagonal edges');
+  const reachable = new Set([0]);
+  const pending = [0];
+  while (pending.length) {
+    const node = pending.pop();
+    for (const e of network.adjacency[node]) {
+      const other = network.edgeA[e] === node ? network.edgeB[e] : network.edgeA[e];
+      if (!reachable.has(other)) { reachable.add(other); pending.push(other); }
+    }
+  }
+  assert.equal(reachable.size, network.N, 'impulses can traverse the complete sheet');
+  vm.runInContext(`
+    renderWaitingMarkers(['AAAA']);
+    const session = { sid: 'AAAA', status: 'running', anchorIndex: 3 };
+    subagentAnchors.push(session);
+    subagentAnchorBySid.set(session.sid, session);
+    addSubagentBranch(session, { sid: 'BBBB', ageMs: 5000 }, false);
+    fireFrom(3, 2, 0);
+    updateNetworkMotion(0);
+  `, context);
+  const first = Array.from(network.nodePos);
+  assert.notDeepEqual(first, rest, 'spatial crests exist without activity');
+  vm.runInContext('updateNetworkMotion(1); renderSubagentTree(1); writePulseBuffers()', context);
+  const moving = Array.from(network.nodePos);
+  assert.notDeepEqual(moving, first, 'crests travel without an impulse');
+  const offsets = moving.filter((_, i) => i % 3 === 1).map((y, i) => y - rest[i * 3 + 1]);
+  assert.ok(Math.max(...offsets) - Math.min(...offsets) > 1,
+    'motion is spatially varying, not a rigid bob or global scale');
+  for (let i = 0; i < network.N; i++) {
+    assert.equal(moving[i * 3], rest[i * 3]);
+    assert.equal(moving[i * 3 + 2], rest[i * 3 + 2]);
+    assert.ok(Math.abs(offsets[i]) <= VISUAL.waves.amplitude * 1.35 + 1e-6);
+  }
+  assert.ok(Math.max(...moving.filter((_, i) => i % 3 === 1)) -
+    Math.min(...moving.filter((_, i) => i % 3 === 1)) <= VISUAL.waves.amplitude * 2.7,
+    'sheet thickness comes only from wave displacement');
+  for (let e = 0; e < network.E; e++) {
+    const a = network.edgeA[e] * 3, b = network.edgeB[e] * 3;
+    assert.deepEqual(Array.from(network.edgeGeo.attributes.position.array.slice(e * 6, e * 6 + 6)),
+      [...moving.slice(a, a + 3), ...moving.slice(b, b + 3)]);
+    assert.ok(network.edgeLen[e] > 0 && Number.isFinite(network.edgeLen[e]));
+    assert.ok(Math.abs(network.edgeLen[e] -
+      Math.hypot(...moving.slice(a, a + 3).map((v, i) => v - moving[b + i]))) < 1e-6);
+    assert.ok(network.adjacency[a / 3].includes(e) && network.adjacency[b / 3].includes(e));
+  }
+  assert.ok(vm.runInContext(`
+    Array.from(anchorPositions.slice(0, 3)).every((v, i) => v === nodePos[9 + i]) &&
+    Array.from(branchLinePositions.slice(0, 3)).every((v, i) => v === nodePos[9 + i])
+  `, context), 'delegate anchors and branch roots track moving nodes');
+  const marker = network.waitingMarkerGroups[0];
+  assert.deepEqual(marker.position.toArray(),
+    moving.slice(marker.userData.anchorIndex * 3, marker.userData.anchorIndex * 3 + 3));
+  assert.ok(context.network().activePulses > 0, 'motion does not clear pulses');
+  assert.ok(vm.runInContext(`
+    const slot = pActive.findIndex(Boolean), edge = pEdge[slot];
+    const from = pFrom[slot] * 3, to = otherEnd(edge, pFrom[slot]) * 3;
+    pT[slot] = 0.25;
+    writePulseBuffers();
+    const onEdge = [0, 1, 2].every(c => Math.abs(pulsePos[slot * T * 3 + c] -
+      (nodePos[from + c] + (nodePos[to + c] - nodePos[from + c]) * 0.25)) < 1e-6);
+    updatePulses(10);
+    onEdge && nodeEnergy.some(value => value > 0);
+  `, context), 'pulses interpolate current endpoints and excite neighbours on arrival');
+  vm.runInContext('reducedMotion = true; updateNetworkMotion(10)', context);
+  assert.deepEqual(Array.from(network.nodePos), moving, 'reduced motion freezes crests');
+  vm.runInContext('reducedMotion = false', context);
+  VISUAL.waves.speed = 0;
+  vm.runInContext('updateNetworkMotion(10)', context);
+  assert.deepEqual(Array.from(network.nodePos), moving, 'zero speed freezes crests');
+  VISUAL.waves.amplitude = 0;
+  vm.runInContext('updateNetworkMotion(0)', context);
+  assert.deepEqual(Array.from(network.nodePos), rest, 'zero amplitude restores rest positions without drift');
+});
+
+test('DNA twists connected strands and rungs while pulses and anchors follow without a camera orbit', async () => {
+  const VISUAL = await settings();
+  VISUAL.topology = 'dna';
+  VISUAL.nodes.count = 4000;
+  const cameraContext = vm.createContext({
+    VISUAL, THREE, window: { innerWidth: 800, innerHeight: 400 }, renderer: { domElement: {} },
+    OrbitControls: class { constructor() { this.target = new THREE.Vector3(); } },
+  });
+  vm.runInContext(main.slice(main.indexOf('const camera ='), main.indexOf('const composer =')) +
+    '\nglobalThis.automaticOrbit = controls.autoRotate;', cameraContext);
+  assert.equal(cameraContext.automaticOrbit, false, 'DNA suppresses camera auto-orbit at startup too');
+  const context = makeNetworkHarness(VISUAL);
+  const network = context.network();
+  const rest = Array.from(network.nodeRestPos);
+  const reached = new Set([0]), pending = [0];
+  while (pending.length) {
+    const node = pending.pop();
+    for (const e of network.adjacency[node]) {
+      const other = network.edgeA[e] === node ? network.edgeB[e] : network.edgeA[e];
+      if (!reached.has(other)) { reached.add(other); pending.push(other); }
+    }
+  }
+  assert.equal(reached.size, 4000, 'both strands and every rung form one traversable graph');
+  assert.equal(network.E, 4034, 'dense backbone samples join through 36 spaced, subdivided rungs');
+  for (let sample = 0; sample < 1600; sample++) {
+    const a = sample * 6, b = a + 3;
+    if (Math.abs(rest[a + 1]) <= 11 * 0.72) {
+      assert.ok(Math.abs(rest[a] + rest[b]) < 1e-6);
+      assert.ok(Math.abs(rest[a + 2] + rest[b + 2]) < 1e-6);
+      assert.ok(Math.abs(Math.hypot(rest[a], rest[a + 2]) - 2.6) < 1e-6);
+    }
+    assert.equal(rest[a + 1], rest[b + 1]);
+  }
+  assert.equal(rest[1], -11);
+  assert.equal(rest[1599 * 6 + 1], 11);
+  vm.runInContext(`
+    applyVisualSettings(structuredClone(VISUAL));
+    renderWaitingMarkers(['AAAA']);
+    const session = { sid: 'AAAA', status: 'running', anchorIndex: 3 };
+    subagentAnchors.push(session);
+    subagentAnchorBySid.set(session.sid, session);
+    addSubagentBranch(session, { sid: 'BBBB', ageMs: 5000 }, false);
+    updateNetworkMotion(1);
+    renderSubagentTree(1);
+  `, context);
+  assert.equal(context.controls.autoRotate, false);
+  const moving = Array.from(network.nodePos);
+  assert.notDeepEqual(moving, rest);
+  assert.equal(network.activePulses, 0, 'decorative twisting does not create activity');
+  const twistAt = (node) => {
+    const i = node * 3;
+    return Math.atan2(rest[i] * moving[i + 2] - rest[i + 2] * moving[i],
+      rest[i] * moving[i] + rest[i + 2] * moving[i + 2]);
+  };
+  assert.ok(Math.abs(twistAt(0) - twistAt(1600)) > 0.01,
+    'torsion varies along the length, rather than just rigidly spinning the whole object');
+  for (let i = 0; i < network.N; i++) {
+    const offset = i * 3;
+    assert.equal(moving[offset + 1], rest[offset + 1], 'axial positions do not orbit or bob');
+    assert.ok(Math.abs(Math.hypot(moving[offset], moving[offset + 2]) -
+      Math.hypot(rest[offset], rest[offset + 2])) < 1e-6, 'twisting preserves the radial profile');
+    assert.ok(Math.hypot(...moving.slice(offset, offset + 3)) < network.nodeGeo.boundingSphere.radius);
+  }
+  assert.ok(vm.runInContext(`
+    Array.from(anchorPositions.slice(0, 3)).every((v, i) => v === nodePos[9 + i]) &&
+    Array.from(branchLinePositions.slice(0, 3)).every((v, i) => v === nodePos[9 + i])
+  `, context), 'delegated-work roots track the twisting strand');
+  const marker = network.waitingMarkerGroups[0];
+  assert.deepEqual(marker.position.toArray(),
+    moving.slice(marker.userData.anchorIndex * 3, marker.userData.anchorIndex * 3 + 3));
+  for (let e = 0; e < network.E; e++) {
+    const a = network.edgeA[e] * 3, b = network.edgeB[e] * 3;
+    assert.deepEqual(Array.from(network.edgeGeo.attributes.position.array.slice(e * 6, e * 6 + 6)),
+      [...moving.slice(a, a + 3), ...moving.slice(b, b + 3)]);
+    assert.ok(Number.isFinite(network.edgeLen[e]) && network.edgeLen[e] > 0);
+    assert.ok(Math.abs(network.edgeLen[e] -
+      Math.hypot(...moving.slice(a, a + 3).map((v, i) => v - moving[b + i]))) < 1e-6);
+  }
+  // Exercise both tips, both strands and rung interiors, not just the helix center.
+  for (const node of [0, 1, 1600, 1601, 3198, 3199, 3200, 3600, 3999]) {
+    context.seed = node;
+    assert.ok(vm.runInContext(`(() => {
+      pActive.fill(0);
+      fireFrom(seed, 2, 0);
+      const slot = pActive.findIndex(Boolean);
+      pT[slot] = 0.25;
+      writePulseBuffers();
+      const from = pFrom[slot] * 3, to = otherEnd(pEdge[slot], pFrom[slot]) * 3;
+      return [0, 1, 2].every(c => Math.abs(pulsePos[slot * T * 3 + c] -
+        (nodePos[from + c] * 0.75 + nodePos[to + c] * 0.25)) < 1e-6);
+    })()`, context));
+  }
+  vm.runInContext('updatePulses(10); writeEdgeColors(0.1)', context);
+  assert.ok(network.nodeEnergy.some(value => value > 0), 'arrivals excite the DNA graph');
+  assert.ok(network.edgeGeo.attributes.color.array.some(value => value > 0));
+  vm.runInContext('reducedMotion = true; updateNetworkMotion(10)', context);
+  assert.deepEqual(Array.from(network.nodePos), moving, 'reduced motion freezes twist');
+  vm.runInContext('reducedMotion = false', context);
+  VISUAL.camera.autoRotate = false;
+  vm.runInContext('updateNetworkMotion(10)', context);
+  assert.deepEqual(Array.from(network.nodePos), moving, 'rotation switch freezes twist');
+  VISUAL.camera.autoRotate = true;
+  VISUAL.camera.autoRotateSpeed = 0;
+  vm.runInContext('updateNetworkMotion(10)', context);
+  assert.deepEqual(Array.from(network.nodePos), moving, 'zero speed freezes twist');
+  VISUAL.camera.autoRotateSpeed = -0.35;
+  vm.runInContext('updateNetworkMotion(1)', context);
+  assert.deepEqual(Array.from(network.nodePos), rest, 'reversed speed unwinds without drift');
+  context.candidate = structuredClone(VISUAL);
+  context.candidate.topology = 'lattice';
+  vm.runInContext('applyVisualSettings(candidate)', context);
+  assert.equal(context.controls.autoRotate, true, 'leaving DNA restores configured camera orbit');
+});
+
+test('DNA dissolves only at both tips and softens activity without changing the central helix', async () => {
+  const VISUAL = await settings();
+  VISUAL.topology = 'dna';
+  VISUAL.nodes.count = 4000;
+  VISUAL.scene.edgeVisibility = 'always';
+  const context = makeNetworkHarness(VISUAL);
+  const network = context.network();
+  const spread = [[], []];
+  for (let sample = 0; sample < 1600; sample++) {
+    const t = sample / 1599;
+    for (let strand = 0; strand < 2; strand++) {
+      const i = sample * 2 + strand, offset = i * 3;
+      const angle = t * Math.PI * 5 + strand * Math.PI;
+      const x = Math.fround(Math.cos(angle) * 2.6), z = Math.fround(Math.sin(angle) * 2.6);
+      assert.equal(network.nodePos[offset + 1], Math.fround((t - 0.5) * 22));
+      if (t >= 0.14 && t <= 0.86) {
+        assert.equal(network.nodePos[offset], x, 'middle 72% retains its exact strand placement');
+        assert.equal(network.nodePos[offset + 2], z);
+      } else if (t < 0.05 || t > 0.95) {
+        spread[t < 0.05 ? 0 : 1].push(Math.hypot(network.nodePos[offset] - x,
+          network.nodePos[offset + 2] - z));
+      }
+    }
+  }
+  for (const offsets of spread) {
+    assert.ok(offsets.reduce((sum, n) => sum + n, 0) / offsets.length > 1.5,
+      'each tip fans into particles rather than terminating in a clean strand');
+    assert.ok(Math.max(...offsets) - Math.min(...offsets) > 1,
+      'tip scatter varies per particle instead of moving the whole end together');
+  }
+  vm.runInContext('writeEdgeColors(0)', context);
+  for (const e of [0, 1, 3196, 3197]) {
+    assert.equal(network.edgeGeo.attributes.color.array[e * 6], 0,
+      'idle tip connections dissolve completely instead of drawing a tangled net');
+    network.edgeR[e] = 0.75;
+  }
+  const middleEdge = 1598;
+  const idleColor = VISUAL.scene.edgeBaseColor[0] * network.edgeBase[middleEdge];
+  assert.ok(Math.abs(network.edgeGeo.attributes.color.array[middleEdge * 6] - idleColor) < 1e-6,
+    'central connecting-line brightness is unchanged');
+  vm.runInContext('writeEdgeColors(0)', context);
+  for (const e of [0, 1, 3196, 3197]) {
+    assert.equal(network.edgeGeo.attributes.color.array[e * 6], 0,
+      'activity does not reveal zigzag connections between dissolved particles');
+    assert.equal(network.edgeR[e], 0.75, 'visual fading preserves excitation state');
+  }
+  VISUAL.scene.edgeVisibility = 'active';
+  for (const e of [100, 250, 450, middleEdge]) network.edgeR[e] = 0.75;
+  vm.runInContext('writeEdgeColors(0)', context);
+  const highlights = [100, 250, 450, middleEdge].map(e =>
+    network.edgeGeo.attributes.color.array[e * 6]);
+  assert.ok(highlights[0] > 0 && highlights[0] < highlights[1] &&
+    highlights[1] < highlights[2], 'active lines fade progressively toward the tip');
+  assert.equal(highlights[3], 0.75, 'central activity lines retain full brightness');
+  assert.ok(vm.runInContext(`(() => {
+    const samples = [0, 1, 1598, 1599];
+    for (const node of samples) {
+      pActive.fill(0);
+      fireFrom(node, 2, 0);
+      const slot = pActive.findIndex(Boolean);
+      pT[slot] = 0.5;
+      writePulseBuffers();
+      const base = slot * T;
+      const central = node > 1;
+      const head = pulseCol[base * 3 + 2];
+      const trail = pulseCol[(base + 1) * 3 + 2];
+      const expected = SCENE_RGB[pCat[slot] * 3 + 2] * VISUAL.pulses.headBrightness;
+      if (central ? Math.abs(head - expected) > 1e-6 : !(head > 0 && head < expected * 0.16 && trail < 1e-6)) {
+        return false;
+      }
+      if (!pActive[slot] || pulseSize[base] <= 0) return false;
+    }
+    return true;
+  })()`, context), 'both tip heads become soft glints without trails; central pulses stay full brightness');
+  assert.equal(vm.runInContext('nodeMat.uniforms.uDnaHalfLength.value', context), 11);
+  assert.match(vm.runInContext('nodeMat.fragmentShader', context), /uActiveBrightness\), vDissolve/);
+  context.candidate = structuredClone(VISUAL);
+  context.candidate.nodes.baseSizeMin += 0.1;
+  context.candidate.scene.edgeVariationMin += 0.1;
+  vm.runInContext('applyVisualSettings(candidate); writeEdgeColors(0)', context);
+  assert.equal(context.network().nodeGeo, network.nodeGeo, 'live tuning does not rebuild or undo the tips');
+  context.candidate = structuredClone(VISUAL);
+  context.candidate.topology = 'lattice';
+  vm.runInContext('applyVisualSettings(candidate)', context);
+  assert.equal(vm.runInContext('nodeMat.uniforms.uDnaHalfLength.value', context), 0,
+    'other styles do not acquire a dissolve fade');
+});
+
+test('wave settings validate bounded motion and preview without reallocating the graph', async () => {
+  const VISUAL = await settings();
+  for (const [key, invalid] of [['amplitude', 3.1], ['amplitude', -1],
+    ['wavelength', 0], ['wavelength', 41], ['speed', -1], ['speed', Infinity]]) {
+    const result = resolveVisualSettings(VISUAL, 'balanced', { waves: { [key]: invalid } });
+    assert.equal(result.settings, null);
+    assert.ok(result.errors.some(({ path }) => path.endsWith(`waves.${key}`)));
+  }
+  for (const topology of ['lattice', 'organic', 'waves']) {
+    VISUAL.topology = topology;
+    VISUAL.nodes.count = 37;
+    const context = makeNetworkHarness(VISUAL);
+    const before = context.network();
+    context.candidate = structuredClone(VISUAL);
+    context.candidate.waves.amplitude = 2;
+    vm.runInContext('applyVisualSettings(candidate); updateNetworkMotion(1)', context);
+    const next = context.network();
+    assert.equal(next.nodeGeo, before.nodeGeo, 'motion tuning does not rebuild');
+    if (topology !== 'waves') assert.equal(next.nodeRestPos, null, 'existing styles remain static');
+  }
 });
 
 test('line modes change rendered edges only and preserve decaying activity', async () => {
@@ -527,6 +947,72 @@ test('count preview, reload, reset and export apply count live without a page re
   assert.equal(harness.applied.at(-1).nodes.count, 800);
   assert.doesNotMatch(harness.elements.status.textContent, /refresh/i);
 });
+
+test('topology selector previews, resets root-level settings and exports the selection', async (t) => {
+  const defaults = await settings();
+  const harness = makePanelHarness({ defaults, overrides: { topology: 'organic' } });
+  const [topology] = harness.control('topology');
+  assert.deepEqual(topology.children.map(({ value }) => value), ['lattice', 'organic', 'waves', 'dna']);
+  topology.value = 'lattice';
+  topology.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).topology, 'lattice');
+  assert.equal(harness.panel.state.overrides.topology, 'lattice');
+
+  const descendants = (element) => [element, ...element.children.flatMap(descendants)];
+  descendants(harness.field('topology')).find((element) =>
+    element.className === 'visual-field-reset').click();
+  assert.equal(harness.applied.at(-1).topology, 'organic');
+  assert.equal(harness.panel.state.overrides.topology, 'organic');
+
+  topology.value = 'dna';
+  topology.dispatch('change');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).topology, 'dna');
+  assert.equal(harness.panel.state.overrides.topology, 'dna');
+
+  let exportedBlob;
+  t.mock.method(URL, 'createObjectURL', (blob) => { exportedBlob = blob; return 'blob:synthetic'; });
+  harness.elements.exportButton.click();
+  const exported = await exportedBlob.text();
+  assert.match(exported, /"topology": "dna"/);
+  assert.match(exported, /"topology": "lattice"/);
+});
+
+for (const topology of ['waves', 'dna']) {
+test(`${topology} selection and wave tuning survive personal presets, reset and a loadable export`, async (t) => {
+  const defaults = await settings();
+  const harness = makePanelHarness({ defaults, overrides: { topology } });
+  const [amplitude] = harness.control('waves.amplitude');
+  amplitude.value = '2.5';
+  amplitude.dispatch('input');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).waves.amplitude, 2.5);
+  harness.elements.presetNameInput.value = 'Travelling waves';
+  harness.elements.saveAsPresetButton.click();
+  const personalId = harness.panel.state.preset;
+  harness.elements.presetSelect.value = 'subtle';
+  harness.elements.presetSelect.dispatch('change');
+  await new Promise(resolve => setImmediate(resolve));
+  harness.elements.presetSelect.value = personalId;
+  harness.elements.presetSelect.dispatch('change');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.applied.at(-1).topology, topology);
+  assert.equal(harness.applied.at(-1).waves.amplitude, 2.5);
+  let blob;
+  t.mock.method(URL, 'createObjectURL', value => { blob = value; return 'blob:synthetic'; });
+  harness.elements.exportButton.click();
+  const source = await blob.text();
+  const exported = await import(`data:text/javascript,${encodeURIComponent(source.replace(
+    "'./visual-config.mjs'", JSON.stringify(new URL('../visual-config.mjs', import.meta.url).href)))}`);
+  assert.deepEqual(exported.VISUAL_ERRORS, []);
+  assert.equal(exported.EFFECTIVE_VISUAL.topology, topology);
+  assert.equal(exported.EFFECTIVE_VISUAL.waves.amplitude, 2.5);
+  harness.elements.resetButton.click();
+  assert.equal(harness.applied.at(-1).topology, topology);
+  assert.deepEqual(harness.applied.at(-1).waves, defaults.waves);
+});
+}
 
 test('repeated node-count drafts defer topology rebuild until one final commit', async () => {
   const defaults = await settings();
@@ -861,8 +1347,8 @@ test('all advanced paths appear once and quick controls share the same canonical
     element.attributes.get('data-setting-path') &&
     element.attributes.get('data-quick-projection') === 'false');
   const paths = advanced.map((element) => element.attributes.get('data-setting-path'));
-  assert.equal(paths.length, 172);
-  assert.equal(new Set(paths).size, 172);
+  assert.equal(paths.length, VISUAL_SETTING_DEFINITIONS.length);
+  assert.equal(new Set(paths).size, VISUAL_SETTING_DEFINITIONS.length);
   assert.deepEqual([...paths].sort(),
     VISUAL_SETTING_DEFINITIONS.map(({ path }) => path).sort());
 
@@ -893,7 +1379,7 @@ test('all advanced paths appear once and quick controls share the same canonical
 test('every scalar numeric setting renders a slider with finite valid guidance and steps', async () => {
   const harness = makePanelHarness({ defaults: await settings() });
   const numeric = VISUAL_SETTING_DEFINITIONS.filter(({ type }) => type === 'number');
-  assert.equal(numeric.length, 143);
+  assert.equal(numeric.length, 146);
   for (const { path, constraints } of numeric) {
     const controls = harness.control(path);
     const sliders = controls.filter(({ type }) => type === 'range');
@@ -1717,7 +2203,7 @@ test('dust, floor, and waiting-marker switches hide only their decorative effect
 
     VISUAL.effects.waitingMarkers = enabled;
     const groups = Array.from({ length: 8 }, () => ({
-      visible: false, position: { set() {} },
+      visible: false, userData: {}, position: { set() {} },
     }));
     const markerContext = vm.createContext({
       VISUAL, waitingMarkerGroups: groups, nodePos: new Float32Array([1, 2, 3]), N: 1,
@@ -1881,6 +2367,7 @@ test('nondefault node, pulse and floor values reach real material uniforms and s
   const VISUAL = await settings();
   let next = 2;
   for (const group of Object.values(VISUAL)) {
+    if (typeof group !== 'object') continue;
     for (const key of Object.keys(group)) {
       group[key] = Array.isArray(group[key]) ? [next++, next++, next++] : next++;
     }

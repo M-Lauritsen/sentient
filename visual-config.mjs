@@ -1,6 +1,11 @@
 import { HOOK_DEFAULTS } from './activity-colors.mjs';
 
+export const WAVE_DEFAULTS = Object.freeze({ amplitude: 1.6, wavelength: 10, speed: 0.8 });
+
 const SHAPE = {
+  waves: {
+    number: 'amplitude wavelength speed',
+  },
   hooks: {
     hex: 'startColor endColor otherColor',
     number: 'startImpact endImpact otherImpact',
@@ -94,6 +99,8 @@ const STRICT_UNIT_PATHS = new Set(['scene.glowKnee']);
 const MAX_ONE_EXCLUSIVE_PATHS = new Set(['scene.breathAmplitude']);
 
 function unitFor(path) {
+  if (path === 'waves.amplitude' || path === 'waves.wavelength') return 'world units';
+  if (path === 'waves.speed') return 'radians/second';
   if (path === 'nodes.count') return 'nodes';
   if (path === 'camera.fov') return 'degrees';
   if (path === 'camera.position' || path === 'camera.target' ||
@@ -129,6 +136,9 @@ export const VISUAL_SETTING_DEFINITIONS = Object.freeze(
           ...(path === 'activity.maxIntensity' ? { minimum: 1 } : {}),
           ...(group === 'hooks' && type === 'number' ? { minimum: 0, maximum: 4 } : {}),
           ...(path === 'nodes.count' ? { minimum: 2, maximum: 4000 } : {}),
+          ...(path === 'waves.amplitude' ? { minimum: 0, maximum: 3 } : {}),
+          ...(path === 'waves.wavelength' ? { minimum: 4, maximum: 40 } : {}),
+          ...(path === 'waves.speed' ? { minimum: 0, maximum: 3 } : {}),
           ...(STRICT_UNIT_PATHS.has(path) ? { exclusiveMinimum: 0, exclusiveMaximum: 1 } : {}),
           ...(MAX_ONE_EXCLUSIVE_PATHS.has(path) ? { exclusiveMaximum: 1 } : {}),
         };
@@ -137,9 +147,21 @@ export const VISUAL_SETTING_DEFINITIONS = Object.freeze(
           ...(type === 'enum' ? { options: Object.freeze(['always', 'active', 'hidden']) } : {}),
         });
       })))
+    .concat([
+      Object.freeze({
+        path: 'topology',
+        type: 'enum',
+        label: 'topology',
+        unit: 'unitless',
+        editor: 'select',
+        constraints: Object.freeze({}),
+        options: Object.freeze(['lattice', 'organic', 'waves', 'dna']),
+      }),
+    ])
 );
 
 const GROUP_LABELS = Object.freeze({
+  waves: 'Waves',
   hooks: 'Hooks',
   camera: 'Camera',
   nodes: 'Nodes',
@@ -157,6 +179,7 @@ const GROUP_LABELS = Object.freeze({
 });
 
 const FRIENDLY_LABELS = Object.freeze({
+  topology: 'Network topology',
   'hooks.startColor': 'hook.start color',
   'hooks.endColor': 'hook.end color',
   'hooks.otherColor': 'Other hook events color',
@@ -310,6 +333,10 @@ function friendlySettingLabel(path) {
 }
 
 const SETTING_DESCRIPTIONS = Object.freeze({
+  topology: 'Selects the network style. Lattice keeps the current layout; Organic uses a random spherical distribution; Waves is a flat triangular mesh with travelling crests; DNA is a double helix with connecting rungs that twists around its own length instead of orbiting the camera. Activity still travels the connecting edges throughout each style.',
+  'waves.amplitude': 'Vertical wave displacement in world units, only for Waves. Zero stops displacement. Reduced motion freezes the wave.',
+  'waves.wavelength': 'Distance between travelling crests in world units, only for Waves.',
+  'waves.speed': 'Wave phase speed in radians/second, only for Waves. Zero freezes the wave.',
   'hooks.startColor': 'Colors hook.start text in the activity feed and its scene pulses.',
   'hooks.endColor': 'Colors hook.end text in the activity feed and its scene pulses.',
   'hooks.otherColor': 'Colors other hook.* events in the activity feed and their scene pulses.',
@@ -322,8 +349,8 @@ const SETTING_DESCRIPTIONS = Object.freeze({
   'camera.damping': 'Controls how quickly camera motion settles after dragging. Higher values settle sooner; lower values retain more glide.',
   'camera.minDistance': 'Sets how close you can zoom toward the orbit center. Higher values keep the camera farther from the network.',
   'camera.maxDistance': 'Sets how far you can zoom away from the orbit center. Higher values allow a more distant view.',
-  'camera.autoRotate': 'Orbits the camera automatically around the network. Turn off to keep rotation under manual control.',
-  'camera.autoRotateSpeed': 'Controls how fast the camera orbits when automatic rotation is enabled. 0 stops rotation; use Direction to reverse it.',
+  'camera.autoRotate': 'Orbits the camera automatically around the network, or twists the strands in DNA mode without orbiting the camera. Turn off to stop automatic motion and keep camera rotation under manual control.',
+  'camera.autoRotateSpeed': 'Controls camera orbit speed, or strand twist speed in DNA mode, when automatic rotation is enabled. 0 stops rotation; use Direction to reverse it.',
   'nodes.count': 'Sets the number of points in the network, not the number of sessions. Committing a change rebuilds the network and its connections.',
   'nodes.scale': 'Scales how large network points appear on screen without moving them or changing the network shape.',
   'nodes.size': 'Multiplies the size of every network point. Higher values make points larger without changing their positions.',
@@ -514,13 +541,14 @@ function settingInputGuidance(definition) {
 }
 
 function sectionForSetting(path) {
+  if (path === 'topology') return 'network';
   const [group, name] = path.split('.');
   if (group === 'camera') return 'camera';
   if (group === 'nodes' || path === 'scene.edgeVisibility' || path === 'scene.edgeBaseColor' ||
       path === 'scene.edgeVariationMin' || path === 'scene.edgeVariationRange' || path === 'scene.edgeFade') {
     return 'network';
   }
-  if (group === 'pulses' || group === 'running') return 'motion';
+  if (group === 'pulses' || group === 'running' || group === 'waves') return 'motion';
   if (['activity', 'hooks', 'subagents', 'waiting', 'completion', 'impact'].includes(group) ||
       group === 'effects' && !['dust', 'floor', 'latticeBreathing'].includes(name)) {
     return 'event-effects';
@@ -575,9 +603,14 @@ export const VISUAL_SETTING_PRESENTATION = Object.freeze(Object.fromEntries(
 const definitionsByGroup = new Map();
 for (const definition of VISUAL_SETTING_DEFINITIONS) {
   const [group, name] = definition.path.split('.');
+  if (!name) continue;
   if (!definitionsByGroup.has(group)) definitionsByGroup.set(group, new Map());
   definitionsByGroup.get(group).set(name, definition);
 }
+const rootSettingDefinitions = new Map(
+  VISUAL_SETTING_DEFINITIONS.filter(({ path }) => !path.includes('.'))
+    .map((definition) => [definition.path, definition]));
+const topLevelSettingKeys = new Set([...definitionsByGroup.keys(), ...rootSettingDefinitions.keys()]);
 
 function freezeTree(value) {
   for (const child of Object.values(value)) {
@@ -748,9 +781,13 @@ function applyOverrides(candidate, overrides, layerName) {
   if (!isPlainRecord(overrides)) {
     return [{ path: layerName, message: 'Overrides must be a plain object.' }];
   }
-  addUnknownKeyIssues(overrides, definitionsByGroup, layerName, errors);
+  addUnknownKeyIssues(overrides, topLevelSettingKeys, layerName, errors);
   for (const group of Reflect.ownKeys(overrides)) {
     const settings = overrides[group];
+    if (rootSettingDefinitions.has(group)) {
+      candidate[group] = cloneValue(settings);
+      continue;
+    }
     const groupDefinitions = definitionsByGroup.get(group);
     if (!groupDefinitions) continue;
     if (!isPlainRecord(settings)) {
@@ -773,6 +810,8 @@ export function resolveVisualSettings(defaults, presetName = 'balanced', fileOve
   }
 
   const settings = cloneValue({ ...defaults, hooks: defaults.hooks ?? HOOK_DEFAULTS });
+  settings.waves ??= cloneValue(WAVE_DEFAULTS);
+  if (!Object.hasOwn(settings, 'topology')) settings.topology = 'lattice';
   for (const [layerName, overrides] of [
     ['fileOverrides', fileOverrides],
     [`preset:${presetName}`, VISUAL_PRESETS[presetName]],
@@ -810,11 +849,11 @@ export function validateVisualSettings(settings) {
     return [{ path: 'VISUAL', message: 'Must be a plain configuration object.' }];
   }
 
-  addUnknownKeyIssues(settings, definitionsByGroup, 'VISUAL', errors);
+  addUnknownKeyIssues(settings, topLevelSettingKeys, 'VISUAL', errors);
   for (const [group, definitions] of definitionsByGroup) {
     const values = settings[group];
     if (!Object.hasOwn(settings, group)) {
-      if (group === 'hooks') continue;
+      if (group === 'hooks' || group === 'waves') continue;
       errors.push({ path: group, message: 'Required settings group is missing.' });
       continue;
     }
@@ -864,6 +903,14 @@ export function validateVisualSettings(settings) {
         }
       }
     }
+  }
+
+  if (Object.hasOwn(settings, 'topology') &&
+      !rootSettingDefinitions.get('topology').options.includes(settings.topology)) {
+    errors.push({
+      path: 'topology',
+      message: `Must be one of: ${rootSettingDefinitions.get('topology').options.join(', ')}.`,
+    });
   }
 
   const number = (path) => {

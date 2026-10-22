@@ -56,7 +56,9 @@ and README sections "Editing visual settings" and "Privacy and limitations".
 
 ### Excluded
 
-- Editing topology, placement algorithms, geometry dimensions or buffer limits.
+- Editing placement algorithms, geometry dimensions or buffer limits in this
+  original scope. The later added topology selector with flat triangular wave mesh and twisting DNA helix
+  without raising node capacities.
 - Moving the category palette or general HUD/CSS styling into visual settings.
 - Changing journal reading, event categorization, counts, session status,
   coverage rules, completion eligibility or hidden-tab discard.

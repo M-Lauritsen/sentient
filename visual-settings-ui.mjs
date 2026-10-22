@@ -87,6 +87,11 @@ function valueAt(settings, path) {
   return path.split('.').reduce((value, key) => value?.[key], settings);
 }
 
+function settingPatch(path, value) {
+  const parts = path.split('.');
+  return parts.length === 1 ? { [parts[0]]: value } : { [parts[0]]: { [parts[1]]: value } };
+}
+
 function pickerValue(definition, value) {
   return `#${definition.type === 'rgb'
     ? new Color().setRGB(...value, LinearSRGBColorSpace).getHexString(SRGBColorSpace)
@@ -334,7 +339,10 @@ export function createVisualSettingsPanel({
       const input = createElement(document, 'select');
       input.id = `visual-input-${idSuffix}`;
       input.setAttribute('aria-label', presentation.label);
-      const labels = { always: 'Always visible', active: 'Activity only', hidden: 'Hidden' };
+      const labels = {
+        always: 'Always visible', active: 'Activity only', hidden: 'Hidden',
+        lattice: 'Lattice (current)', organic: 'Organic', waves: 'Waves', dna: 'DNA',
+      };
       for (const value of definition.options) {
         const option = createElement(document, 'option', '', labels[value]);
         option.value = value;
@@ -678,8 +686,7 @@ export function createVisualSettingsPanel({
     } else if (definition.path === 'pulses.speedRange') {
       patch = { pulses: { speedRange: value - current.pulses.speedMin } };
     } else {
-      const [group, name] = definition.path.split('.');
-      patch = { [group]: { [name]: value } };
+      patch = settingPatch(definition.path, value);
     }
     stagedOverrides = mergeVisualOverrides(stagedOverrides, patch);
     fieldErrors.delete(definition.path);
@@ -716,10 +723,7 @@ export function createVisualSettingsPanel({
     }
     let patch = {};
     for (const path of paths) {
-      const [group, name] = path.split('.');
-      patch = mergeVisualOverrides(patch, {
-        [group]: { [name]: clone(valueAt(fileConfiguration.settings, path)) },
-      });
+      patch = mergeVisualOverrides(patch, settingPatch(path, clone(valueAt(fileConfiguration.settings, path))));
       fieldErrors.delete(path);
     }
     stagedOverrides = mergeVisualOverrides(stagedOverrides, patch);
