@@ -47,6 +47,10 @@ helper build; Library support must not be inferred from activity availability.
 Open <http://127.0.0.1:43187/>. Stop with Ctrl+C. If the port is already in use,
 the server fails closed; it does not choose another port or bind to the network.
 `npm test` runs the synthetic source, HTTP/SSE, client, and UI-contract tests.
+Test files run serially to avoid cross-file CPU contention consuming the Library
+renderer tests' 250 ms wall-clock budget, which includes worker startup. This
+keeps the production deadline and test assertions unchanged at the cost of a
+longer full-suite run.
 Library integration tests compile disposable helpers on supported x64 Windows
 with the existing .NET Framework compiler; they do not require or replace the
 application's `native/bin/LibraryHelper.exe`.
