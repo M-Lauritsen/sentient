@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
 import vm from 'node:vm';
-import { createLibraryDialog, createLibraryApi } from '../copilot-library-ui.mjs';
+import { createLibraryDialog, createLibraryApi } from '../library/copilot-library-ui.mjs';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const tick = async () => { for (let i = 0; i < 8; i++) await new Promise(setImmediate); };
@@ -436,7 +436,7 @@ test('refresh during a delayed detail read aborts it and discards both late succ
 
 test('UI integration is local, scoped and leaves activity/settings/timeline channels independent', async () => {
   const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
-  const source = await readFile(new URL('../copilot-library-ui.mjs', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../library/copilot-library-ui.mjs', import.meta.url), 'utf8');
   const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
   const server = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
   assert.match(main, /createLibraryDialog\(\{\s*document,/);
@@ -444,7 +444,7 @@ test('UI integration is local, scoped and leaves activity/settings/timeline chan
   assert.match(main, /controls.enabled = controlsEnabledBeforeLibrary/);
   assert.match(main, /if \(!libraryModalOpen\) controls.update\(\)/);
   assert.doesNotMatch(source, /localStorage|sessionStorage|EventSource|\/events|console\.|innerHTML|outerHTML|insertAdjacentHTML/);
-  assert.match(server, /\['\/copilot-library-ui.mjs', \['copilot-library-ui.mjs'/);
+  assert.match(server, /\['\/library\/copilot-library-ui\.mjs', \['library\/copilot-library-ui\.mjs'/);
   assert.match(css, /@media \(max-width: 700px\)/);
   assert.match(css, /font: 1rem\/1.5/);
   assert.match(css, /forced-colors: active/);

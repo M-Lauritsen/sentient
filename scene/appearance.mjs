@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { validateVisualSettings } from '../visual-config.mjs';
-import { createScenePalette, applyHookColors } from '../activity-colors.mjs';
+import { validateVisualSettings } from '../appearance/visual-config.mjs';
+import { createScenePalette, applyHookColors } from '../activity/activity-colors.mjs';
 import { getTopologyDesign } from '../network-topology-design/index.mjs';
 
 export function createAppearanceController({ VISUAL, SCENE_RGB, document, scene, camera, controls, bloom, networkRenderer, pulses, subagents, ambience, getNetwork, getActivityState, isLibraryOpen, random = Math.random }) {

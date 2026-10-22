@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { CATEGORY_INDEX } from '../activity-colors.mjs';
-import { summarizeSubagents } from '../activity-client.mjs';
+import { CATEGORY_INDEX } from '../activity/activity-colors.mjs';
+import { summarizeSubagents } from '../activity/activity-client.mjs';
 import { MAX_ACTIVE_SUBAGENT_BRANCHES, MAX_FADING_SUBAGENT_BRANCHES, MAX_SUBAGENT_ANCHORS } from './structural-config.mjs';
 
 export function createSubagentRenderer({ VISUAL, SCENE_RGB, brain, pixelRatio, getNetwork, getActivityState, getReducedMotion, document, performance }) {

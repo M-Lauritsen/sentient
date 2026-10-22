@@ -22,7 +22,7 @@ The following behavior is present in the current workspace:
 
 - `visual-settings.mjs` exports complete defaults, a selected preset, file
   overrides and a resolved effective configuration.
-- `visual-config.mjs` owns setting metadata, validation, preset resolution and
+- `appearance\visual-config.mjs` owns setting metadata, validation, preset resolution and
   startup error handling. Invalid startup configuration prevents scene startup.
 - The HUD's Visual settings dialog previews all in-scope settings and the
   `balanced`, `subtle`, `intense`, `aurora`, `ember` and `monochrome` presets
@@ -30,7 +30,7 @@ The following behavior is present in the current workspace:
 - Export downloads a complete, loadable `visual-settings.mjs`; it does not write
   the repository file. Manual reload and opt-in five-second polling use a
   short-lived same-origin module worker.
-- `activity-client.mjs` no longer imports visual settings, keeping server-side
+- `activity\activity-client.mjs` no longer imports visual settings, keeping server-side
   activity projection independent of browser configuration parsing.
 - Preview and file reload preserve page-local activity totals, timeline history
   and session/subagent state. A full document refresh still resets page memory.
@@ -47,14 +47,14 @@ The following behavior is present in the current workspace:
   mutation, then delegates uniforms/materials/speed remapping to the owners in
   `scene\`. The active settings object retains its identity. Structural
   capacities live in `scene\structural-config.mjs`, not visual tuning.
-- `activity-presentation.mjs` maps accepted activity and scene-only demos to
-  effects; `hud-ui.mjs` owns source status, timeline drawing and observed counters
+- `activity\activity-presentation.mjs` maps accepted activity and scene-only demos to
+  effects; `ui\hud-ui.mjs` owns source status, timeline drawing and observed counters
   while reusing the existing activity, workspace and statistics models.
 
 Source references: `visual-settings.mjs`, `main.js`,
 `scene\network.mjs`, `scene\appearance.mjs`, `scene\structural-config.mjs`,
-`activity-presentation.mjs`, `hud-ui.mjs`, `network-topology-design\index.mjs`,
-`activity-client.mjs`, `server.mjs`, `tests/visual-settings.test.mjs`,
+`activity\activity-presentation.mjs`, `ui\hud-ui.mjs`, `network-topology-design\index.mjs`,
+`activity\activity-client.mjs`, `server.mjs`, `tests/visual-settings.test.mjs`,
 and README sections "Editing visual settings" and "Privacy and limitations".
 
 ## 3. Scope and protected behavior
@@ -348,7 +348,7 @@ Use the existing Node test runner and browser runtime:
   not provide a physical Escape keypress. VM extraction and shader-string
   assertions alone are not proof of successful WebGL rendering.
 - `npm test` passed: 163 tests, 0 failures. `node --check` passed for
-  `visual-config.mjs`, `visual-settings-ui.mjs`, `visual-settings-worker.mjs`
+  `appearance\visual-config.mjs`, `appearance\visual-settings-ui.mjs`, `appearance\visual-settings-worker.mjs`
   and `main.js`; `git diff --check` passed.
 - In-browser manual reload observed an unchanged configuration; changed-file
   and conflict transitions are covered by focused UI behavior tests using

@@ -1,5 +1,5 @@
 import { Color, LinearSRGBColorSpace, SRGBColorSpace } from 'three';
-import { HOOK_DEFAULTS } from './activity-colors.mjs';
+import { HOOK_DEFAULTS } from '../activity/activity-colors.mjs';
 import {
   VISUAL_PRESETS,
   VISUAL_SETTING_DEFINITIONS,

@@ -5,9 +5,9 @@ import {
   WorkspaceValidationError,
   WORKSPACE_MODULES,
 } from './workspace-model.mjs';
-import { CATEGORIES, CATEGORY_GLYPH, CATEGORY_HEX } from './activity-colors.mjs';
-import { renderPageActivityTotals, renderSessionRows, clearSessionStats } from './session-stats-ui.mjs';
-import { projectActiveHudSessions } from './activity-client.mjs';
+import { CATEGORIES, CATEGORY_GLYPH, CATEGORY_HEX } from '../activity/activity-colors.mjs';
+import { renderPageActivityTotals, renderSessionRows, clearSessionStats } from '../ui/session-stats-ui.mjs';
+import { projectActiveHudSessions } from '../activity/activity-client.mjs';
 
 const DOCKS = ['left', 'right', 'bottom-left', 'bottom'];
 const SIZE_LABELS = { compact: 'Compact', standard: 'Standard', large: 'Large' };

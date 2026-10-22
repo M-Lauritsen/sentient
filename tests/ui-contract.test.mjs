@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { JSDOM } from 'jsdom';
-import { CATEGORIES, CATEGORY_HEX, CATEGORY_RGB, CATEGORY_INDEX, HOOK_TYPES } from '../activity-colors.mjs';
+import { CATEGORIES, CATEGORY_HEX, CATEGORY_RGB, CATEGORY_INDEX, HOOK_TYPES } from '../activity/activity-colors.mjs';
 import { VISUAL } from '../visual-settings.mjs';
-import { createCategoryBurstPlan, createImpulseBuffer } from '../activity-client.mjs';
-import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from '../session-stats-ui.mjs';
-import { createVisualSettingsPanel } from '../visual-settings-ui.mjs';
-import { resolveVisualSettings } from '../visual-config.mjs';
+import { createCategoryBurstPlan, createImpulseBuffer } from '../activity/activity-client.mjs';
+import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from '../ui/session-stats-ui.mjs';
+import { createVisualSettingsPanel } from '../appearance/visual-settings-ui.mjs';
+import { resolveVisualSettings } from '../appearance/visual-config.mjs';
 import { createSceneContext, sceneFunction } from './scene-test-context.mjs';
-import { recordObservedActivity } from '../hud-ui.mjs';
+import { recordObservedActivity } from '../ui/hud-ui.mjs';
 import * as THREE from 'three';
 import { createPulseSystem } from '../scene/pulses.mjs';
 
@@ -18,17 +18,17 @@ const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 
 const sourceFiles = ['main.js', 'scene/structural-config.mjs', 'scene/network-renderer.mjs',
   'scene/pulses.mjs', 'scene/subagents.mjs', 'scene/ambience.mjs', 'scene/viewport.mjs',
-  'activity-presentation.mjs', 'hud-ui.mjs', 'scene/appearance.mjs'];
+  'activity/activity-presentation.mjs', 'ui/hud-ui.mjs', 'scene/appearance.mjs'];
 const sources = Object.fromEntries(await Promise.all(sourceFiles.map(async file =>
   [file, (await readFile(new URL('../' + file, import.meta.url), 'utf8')).replace(/^  /gm, '')])));
 const main = Object.values(sources).join('\n');
 
 const server = await readFile(new URL('../server.mjs', import.meta.url), 'utf8');
 const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
-const statsUi = await readFile(new URL('../session-stats-ui.mjs', import.meta.url), 'utf8');
-const workspaceUi = await readFile(new URL('../workspace-ui.mjs', import.meta.url), 'utf8');
-const navigationUi = await readFile(new URL('../navigation-ui.mjs', import.meta.url), 'utf8');
-const visualSettingsUi = await readFile(new URL('../visual-settings-ui.mjs', import.meta.url), 'utf8');
+const statsUi = await readFile(new URL('../ui/session-stats-ui.mjs', import.meta.url), 'utf8');
+const workspaceUi = await readFile(new URL('../workspace/workspace-ui.mjs', import.meta.url), 'utf8');
+const navigationUi = await readFile(new URL('../ui/navigation-ui.mjs', import.meta.url), 'utf8');
+const visualSettingsUi = await readFile(new URL('../appearance/visual-settings-ui.mjs', import.meta.url), 'utf8');
 
 test('Appearance search visibly filters settings and empty groups, then restores them on clear', () => {
   const dom = new JSDOM(html);
@@ -1085,7 +1085,7 @@ test('appearance demo shares scene bursts but never reaches timeline, feed, stat
   assert.equal(calls[0][5], CATEGORY_INDEX.edit);
   assert.deepEqual(timelineAdds, []);
   assert.deepEqual(feedAdds, []);
-  const demo = sources['activity-presentation.mjs'].split('function renderDemoActivity')[1].split('function setDemoRunning')[0];
+  const demo = sources['activity/activity-presentation.mjs'].split('function renderDemoActivity')[1].split('function setDemoRunning')[0];
   assert.match(demo, /renderObservedImpulses\(demoSource, false\)/);
   // Waiting markers (which copy IDs) are re-rendered only on transitions, not every frame.
   assert.match(demo, /if \(demoFrame\.active !== wasActive \|\| demoFrame\.waiting !== wasWaiting \|\|\s*\(demoMarkersDirty && demoFrame\.active\)\) \{/);
@@ -1108,7 +1108,7 @@ test('settings hover focuses the demo and the open panel re-frames the scene wit
   assert.match(main, /framingOpen = open;\s*updateFramingTarget\(\);/);
   assert.match(main, /bloom\.setSize\(w, h\);\s*updateFramingTarget\(\);/);
   assert.match(main, /updateSceneFraming\(dt\);/);
-  assert.match(server, /\['\/visual-settings-preview\.mjs', \['visual-settings-preview\.mjs'/);
+  assert.match(server, /\['\/appearance\/visual-settings-preview\.mjs', \['appearance\/visual-settings-preview\.mjs'/);
 
   const calls = [];
   const camera = {

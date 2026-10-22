@@ -1,8 +1,8 @@
-import { createImpulseFeed, createActivityTimeline } from './activity-client.mjs';
-import { CATEGORIES, CATEGORY_HEX } from './activity-colors.mjs';
+import { createImpulseFeed, createActivityTimeline } from '../activity/activity-client.mjs';
+import { CATEGORIES, CATEGORY_HEX } from '../activity/activity-colors.mjs';
 import { createPageActivityTotals, createSessionStatsDialog, createTimelineDialog } from './session-stats-ui.mjs';
-import { createWorkspaceStore } from './workspace-model.mjs';
-import { createWorkspaceUI } from './workspace-ui.mjs';
+import { createWorkspaceStore } from '../workspace/workspace-model.mjs';
+import { createWorkspaceUI } from '../workspace/workspace-ui.mjs';
 
 export function createHud({ VISUAL, document, window, performance, invalidateObserved, resetThinking, clearImpulses, updateSubagentSummary, renderWaitingMarkers }) {
   // ---------- HUD ----------

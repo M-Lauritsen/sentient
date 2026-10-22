@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CATEGORY_HEX } from '../activity-colors.mjs';
+import { CATEGORY_HEX } from '../activity/activity-colors.mjs';
 
 export function createAmbience({ VISUAL, CFG, brain, scene, bloom, pixelRatio, getNetwork, document, random = Math.random }) {
   // ---------- dust ----------

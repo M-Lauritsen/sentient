@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createActivityClient, createImpulseFeed, createImpulseBuffer, activityColor,
   diffSubagents, impulseIntensity, projectActivity, summarizeSubagents,
-  projectActiveHudSessions, createThinkingPulseClock } from '../activity-client.mjs';
-import { CATEGORIES, CATEGORY_GLYPH } from '../activity-colors.mjs';
-import * as activityUi from '../activity-client.mjs';
+  projectActiveHudSessions, createThinkingPulseClock } from '../activity/activity-client.mjs';
+import { CATEGORIES, CATEGORY_GLYPH } from '../activity/activity-colors.mjs';
+import * as activityUi from '../activity/activity-client.mjs';
 
 test('idle uses the completion cascade while retaining lifecycle feed categorization', () => {
   const buffer = createImpulseBuffer();

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPwaLifecycle } from '../pwa-lifecycle-client.mjs';
+import { createPwaLifecycle } from '../lifecycle/pwa-lifecycle-client.mjs';
 import { browserClock, browserEvents, boot, json, success, flush } from './fixtures/pwa-browser.mjs';
 
 function setup(t, fetchImpl) {

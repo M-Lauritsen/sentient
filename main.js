@@ -1,5 +1,5 @@
-import { createHud } from './hud-ui.mjs';
-import { createActivityPresentation } from './activity-presentation.mjs';
+import { createHud } from './ui/hud-ui.mjs';
+import { createActivityPresentation } from './activity/activity-presentation.mjs';
 import { createAppearanceController } from './scene/appearance.mjs';
 import { CFG } from './scene/structural-config.mjs';
 import { createNetworkRenderer } from './scene/network-renderer.mjs';
@@ -13,15 +13,15 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { createActivityClient } from './activity-client.mjs';
-import { createScenePalette, applyHookColors } from './activity-colors.mjs';
+import { createActivityClient } from './activity/activity-client.mjs';
+import { createScenePalette, applyHookColors } from './activity/activity-colors.mjs';
 import { VISUAL as VISUAL_DEFAULTS, VISUAL_PRESET, VISUAL_OVERRIDES,
   EFFECTIVE_VISUAL as VISUAL } from './visual-settings.mjs';
-import { createVisualSettingsPanel } from './visual-settings-ui.mjs';
-import { createLibraryDialog } from './copilot-library-ui.mjs';
-import { createNavigationUI } from './navigation-ui.mjs';
-import { demoFocusForPath } from './visual-settings-preview.mjs';
-import { createPwaLifecycle } from './pwa-lifecycle-client.mjs';
+import { createVisualSettingsPanel } from './appearance/visual-settings-ui.mjs';
+import { createLibraryDialog } from './library/copilot-library-ui.mjs';
+import { createNavigationUI } from './ui/navigation-ui.mjs';
+import { demoFocusForPath } from './appearance/visual-settings-preview.mjs';
+import { createPwaLifecycle } from './lifecycle/pwa-lifecycle-client.mjs';
 import { getTopologyDesign } from './network-topology-design/index.mjs';
 
 const SCENE_RGB = createScenePalette(VISUAL);

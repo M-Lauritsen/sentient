@@ -1,5 +1,5 @@
-import { resolveVisualSettings, WAVE_DEFAULTS } from './visual-config.mjs';
-import { HOOK_DEFAULTS } from './activity-colors.mjs';
+import { resolveVisualSettings, WAVE_DEFAULTS } from './appearance/visual-config.mjs';
+import { HOOK_DEFAULTS } from './activity/activity-colors.mjs';
 
 export const VISUAL = {
   "hooks": { ...HOOK_DEFAULTS },

@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
-import { createImpulseFeed } from '../activity-client.mjs';
-import { createPageActivityTotals } from '../session-stats-ui.mjs';
-import { createWorkspaceStore } from '../workspace-model.mjs';
-import { createWorkspaceUI } from '../workspace-ui.mjs';
+import { createImpulseFeed } from '../activity/activity-client.mjs';
+import { createPageActivityTotals } from '../ui/session-stats-ui.mjs';
+import { createWorkspaceStore } from '../workspace/workspace-model.mjs';
+import { createWorkspaceUI } from '../workspace/workspace-ui.mjs';
 
 class MemoryStorage {
   values = new Map();

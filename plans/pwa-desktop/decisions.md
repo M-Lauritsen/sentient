@@ -1,14 +1,14 @@
 # PWA desktop decisions and implementation contracts
 
 Checkpoint ①: APPROVED; Gate A: PASS. Checkpoint ②: pending approval of tickets.
-This record preserves confirmed choices, not a new questionnaire. Only planning files are being written.
+This record preserves confirmed choices and separately attributed implementation evidence, not a new questionnaire.
 Major: yes (Windows launcher/server ownership and browser install/client lifecycle).
 
 ## Confirmed decision map
 - D1 · deliverable · specifications before implementation | implement now · specifications only · depends_on: [] · decided (approved).
 - D2 · entry point · companion launcher starts backend | browser shortcut only · companion launcher plus true PWA · depends_on: [D1] · decided.
 - D3 · backend lifecycle · stop after windows close | keep running · automatic best-effort delayed stop · depends_on: [D2] · decided.
-- D4 · closure reliability · true browser PWA with suspension risk | managed native window · true browser-managed Edge/Chrome PWA, accepted best-effort shutdown · depends_on: [D3] · decided.
+- D4 · closure reliability · true browser PWA with suspension risk | managed native window · true browser-managed PWA, accepted best-effort shutdown; original Edge/Chrome launcher scope amended to Brave-only/default by the user on 2026-10-21 · depends_on: [D3] · decided.
 - D5 · distribution · existing checkout/Node.js 22+ | self-contained installer · checkout/Node.js 22+ first · depends_on: [D2] · decided.
 - D6 · privacy/scope · loopback, no cached activity/Library | network/offline expansion · preserve restrictions; no offline data caching · depends_on: [D4] · decided.
 - D7 · shortcut semantics · launcher cold start | browser-installed shortcut cold start · launcher is supported backend bootstrap; browser shortcut cannot start Node · depends_on: [D2,D4] · decided.
@@ -22,10 +22,10 @@ Major: yes (Windows launcher/server ownership and browser install/client lifecyc
 - Do not change ignore/publication rules or resurrect plans; whether these new planning files are tracked does not authorize publication or commits.
 - Official platform reference, retrieved 2026-10-20: [MDN: Making PWAs installable](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable). Chromium manifest requirements include name/short_name, 192/512 icons, start_url and display; loopback is eligible; a service worker is not an installation prerequisite.
 - Browser installation/promotion UI is browser-controlled. A manifest test does not prove installation, activation, profile selection, last-window behavior or shortcut operation.
-- No implementation commands or tests were run for these planning artifacts. All implementation and manual evidence remains pending.
+- Initial planning ran no implementation commands. Subsequent implementation/test/manual evidence is recorded in tickets 01/02 and the I1 section below.
 
 ## D8 · Launcher ownership and entry contract · decided design
-- Proposed entry: `node desktop/launch.mjs --browser edge|chrome`; no argument selects Edge; invalid arguments exit 2 with usage. Windows only; verify Node >=22 and required checkout/dependencies, but never install/build automatically.
+- Entry: `node desktop/launch.mjs [--browser brave]`; no argument selects Brave; invalid arguments exit 2 with usage. Edge/Google Chrome selection explicitly fails without fallback. This user-approved 2026-10-21 amendment supersedes the original Edge-default/two-browser launcher scope. Windows only; verify Node >=22 and required checkout/dependencies, but never install/build automatically.
 - The launch shortcut must target this checkout with absolute, correctly quoted paths; invoking it from another working directory must work. It must not require elevation, execution-policy changes, a packaged runtime or a browser extension.
 - Browser/profile activation configuration, if needed, is local and explicit with a minimal schema established by I1. It contains no activity or lifecycle secrets; no arbitrary shell command field. No silent switch to another browser/profile.
 - Use an owned Node child and private IPC to establish protocol version and random per-boot instance identity; lifecycle mode is enabled only via this launcher-owned creation path, not default CLI startup.
@@ -78,13 +78,20 @@ Major: yes (Windows launcher/server ownership and browser install/client lifecyc
 - No user uninstall interception; closing/uninstalling is handled by lease expiry. Installation promotion and menu placement vary by browser/version/policy; no guarantee of an always-visible install icon.
 
 ## I1 · Browser activation mechanics · investigation prerequisite, not a reopened user choice
-- Status: pending; owner Lead, ticket 01. Blocks launch integration in 02, not manifest work.
-- Budget: at most one working day; use current stable Windows Edge AND Chrome, a disposable local profile for each, and a checkout path with spaces. Record OS/browser versions and browser policy restrictions.
+- Status: Brave strategy selected and actual OS dispatch observed; owner Lead, tickets 01/02. Full browser-window/lease E2E remains ticket 03. Original Edge AND Google Chrome investigation is deferred by explicit user direction on 2026-10-21, not inferred from filename compatibility.
+- Original budget: at most one working day using disposable profiles and a checkout path with spaces. Actual read-only discovery/dispatch used the user's already-installed Brave app with permission; automated tests use synthetic shortcut/profile data. No disposable browser-profile or browser-policy matrix has been observed.
 - Establish installation using actual browser UI, then determine a repeatable explicit browser/profile/app activation method for the launcher. Test browser initially closed and already running; verify the intended installed app (not just an arbitrary `--app` URL window or another profile).
 - Read official browser documentation for any assumed command/shortcut contract. If app IDs/shortcuts are profile-specific, document discovery, validation, supported configuration and failure behavior; never guess IDs or parse/run arbitrary shortcut command text.
 - Demonstrate safe argument arrays/shortcut quoting, fixed secret-free origin, absence of shell interpolation, and missing-browser/profile/install handling. A browser process may dispatch and exit; this is not closure evidence.
 - Deliver measured evidence and selected bounded strategy/config in this decision record. Tests must cover the selection/validation contract using synthetic inputs; real activation evidence is separate.
-- Exit acceptance: both browsers have a reproducible supported activation/setup path with explicit profile requirements and no native window ownership. No dependency may assume a universal CLI feature.
+- Scoped strategy: read only browser-created `SENTIENT OS*.lnk` files in standard Desktop and `Brave Apps` Start-menu locations; allow only standard Brave `chrome_proxy.exe` targets and strict profile/app-ID fields; reject extra command text and ambiguous installations; verify the selected profile and `_crx_<app-id>` app directory. Reconstruct argv and use `spawn` with `shell:false`. No persistent activation configuration or shell wrapper is needed.
+- Correction: the previously inspected `chrome_proxy.exe` belongs to **Brave**, not Google Chrome. The earlier filename-only identification was incorrect. The user then explicitly selected the installed Brave app instead of Google Chrome. Historical Edge/Chrome installation/shortcut reports remain user reports, not inspected activation proof.
+- Observed environment: Windows 10.0.26200.0; installed Brave proxy 155.1.97.59. The full executable path contains spaces. Read-only discovery validated one app/profile after deduplicating shortcuts. Profile/app IDs and absolute user paths are not published here.
+- Official contract grounding: [Chromium Windows PWA integration](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/docs/windows_pwa_integration.md), retrieved 2026-10-21, describes generated `chrome_proxy.exe` shortcuts with app/profile arguments. This is not claimed as a universal stable API across browsers.
+- Actual 2026-10-21 synthetic smoke: after user confirmed the manual server was stopped, the launcher verified matching owned IPC and HTTP readiness at the canonical origin, then dispatched the validated installed Brave app. Injected 6s no-first-window grace produced expected `NO_PARTICIPATING_WINDOW`; child and listener were gone after 7291ms including discovery/startup. Only empty temporary activity/Library/settings roots were used and removed. Successful OS dispatch is not visible-window or page-participation evidence.
+- After that smoke the user confirmed: **“Yes, it opened as a standalone Brave app.”** This supplies user-reported visible-app evidence, not agent-observed browser/profile-policy or real page-lease proof.
+- Ticket 03 continuation adds real page leases and records separate actual Brave registration/minimization/multiple-document/suspension/restart observations. See ticket 03's evidence table for measured child results, operator reports and remaining nonempty-state/shortcut matrix gaps. Its implementation/full-suite success does not mean the browser acceptance matrix or parent delivery is complete.
+- Exit acceptance for this amended launcher: reproducible validated Brave shortcut selection, safe explicit argv, actual owned-readiness-before-dispatch, and synthetic missing-browser/profile/install/ambiguity failures. No universal browser CLI is assumed. Fresh review/current-suite evidence is recorded in 02.
 - If unsupported at the budget limit, mark 02 blocked with evidence and a concrete limitation/options report. Do not silently downgrade to Electron, invent a universal switch, or require an installer; only a genuinely blocking scope change returns to the user.
 
 ## DoD and implementation sequencing
@@ -93,12 +100,12 @@ Major: yes (Windows launcher/server ownership and browser install/client lifecyc
 | BUILD / LINT / TYPECHECK | N/A for this JS/asset/launcher change: no applicable general scripts. Existing optional Library build scripts are not general validation substitutes. |
 | TEST | Ticket-scoped `node --test ...` and `npm test`, exact exit/output at implementation HEAD; synthetic fixtures only. Record pre-existing failures separately; never waive new failures based on profile history. |
 | LIFECYCLE | Deterministic timer/ownership/adversarial HTTP tests in 02; browser registration/recovery and end-to-end tests in 03. |
-| BROWSER | Actual Windows stable Edge AND Chrome manual install/activation in 01 and full matrix in 03; record versions, setup, observed timing and outcomes separately from automated output. |
+| BROWSER | Scoped Brave activation evidence in I1/02; real page/window E2E in 03. Original Edge/Chrome launcher matrix deferred by explicit user direction. Record actual environment and limitations separately from user reports and automated output. |
 | SECURITY | No foreign listener/process termination; no credentials in URLs/activity/storage/logs; same-origin/capability/body/time/resource limits; no offline activity/Library cache. |
 | REVIEW | Fresh reviewer verdict pending; no fabricated review/test evidence. |
 
 1. 01 is independently ready after checkpoint ②: manifest/asset tests plus bounded activation investigation; no launcher implementation.
-2. 02 starts only after 01 merges and I1 passes: owned-server launcher/lifecycle, executable/testable with synthetic windows; browser lease integration intentionally comes in 03.
-3. 03 starts after 01 and 02 merge: actual browser participation, stale-state recovery, shortcut guidance and full manual matrix. Each ticket verifies against its merged prerequisites, not unfinished work.
+2. 02 starts after 01 is verified in the current checkout and I1 passes: owned-server launcher/lifecycle, executable/testable with synthetic windows; browser lease integration intentionally comes in 03. Amendment approved by the user on 2026-10-21: continue in place against the verified, uncommitted 01 changes instead of requiring 01 to merge first. No commit, push or merge is authorized; I1 remains required.
+3. 03 proceeds on the same branch against the current checkout, explicitly requested by the user on 2026-10-21 after 02 closed; a prerequisite merge is not required for this continuation. Actual browser participation, stale-state recovery, shortcut guidance and the Brave-only manual matrix remain required. HEAD at continuation was `c6602b0`; no commit/push/branch change is authorized.
 4. Suggested per-ticket branches are metadata only. Preserve the user-owned dirty branch/worktree; no branch creation/switch, commits, pushes or implementation during planning.
 5. Rollback after implementation: stop only the launcher's child, remove additive PWA/lifecycle integration, keep manual server behavior; browser uninstall/shortcut removal is explicit user action. No persisted lifecycle state or migration to undo.

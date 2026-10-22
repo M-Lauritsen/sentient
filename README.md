@@ -55,6 +55,29 @@ Library integration tests compile disposable helpers on supported x64 Windows
 with the existing .NET Framework compiler; they do not require or replace the
 application's `native/bin/LibraryHelper.exe`.
 
+## Code navigation
+
+Root `bootstrap.mjs`, `main.js` and `server.mjs` are the startup/composition
+entry points. Root `visual-settings.mjs` remains the editable tuning file.
+
+| Folder | Responsibility |
+| --- | --- |
+| `activity\` | Activity projection/client, palette, presentation and synthetic demo |
+| `appearance\` | Settings validation, presets, UI, preview and reload worker |
+| `ui\` | HUD, navigation and session statistics |
+| `workspace\` | Workspace model and UI |
+| `library\` | Browser Library dialog |
+| `lifecycle\` | Browser/backend lifecycle client |
+| `scene\` | Rendering resources, graph construction and appearance application |
+| `network-topology-design\` | Individual topology algorithms and explicit registry |
+| `copilot\` | Journal source and existing Library internals |
+
+The server explicitly maps folder-based module URLs and retains the previous
+root module URLs as compatibility aliases. It does not serve folders wholesale.
+Exported settings use `appearance\visual-config.mjs`; reload still reads the
+root settings file. `visual-settings_copy.mjs` is not loaded or served and has
+been left untouched.
+
 ## Install in a browser
 
 Browser installation is optional and remains controlled by the browser; the
@@ -563,7 +586,7 @@ the existing **Activity only** and **Hidden** choices remain respected.
 connections or stop travelling pulses, node excitation, or separate subagent
 branches. Active highlights keep their activity-category colours.
 
-Category colors remain in **`activity-colors.mjs`**. Other structural geometry and
+Category colors remain in **`activity\activity-colors.mjs`**. Other structural geometry and
 fixed buffer capacities (including pulse/trail counts) live in
 `scene\structural-config.mjs`; they are deliberately not visual settings. Shader-facing settings are
 passed as uniforms, so tuning these values does not require editing GLSL.
@@ -594,8 +617,8 @@ geometry allocation/cleanup and moving-edge synchronization.
 | `scene\ambience.mjs` | Dust, floor, shared glow texture, waiting markers and ambient load |
 | `scene\viewport.mjs` | Resize and Appearance-panel projection framing |
 | `scene\appearance.mjs` | Validate/prepare settings before mutation, then delegate to resource owners |
-| `activity-presentation.mjs` | Accepted activity and scene-only demo effects |
-| `hud-ui.mjs` | Source status, timeline drawing, counters and existing workspace/statistics wiring |
+| `activity\activity-presentation.mjs` | Accepted activity and scene-only demo effects |
+| `ui\hud-ui.mjs` | Source status, timeline drawing, counters and existing workspace/statistics wiring |
 
 Graph consumers obtain the current network after rebuilds rather than retaining
 old arrays. Successful graph installation resets graph-bound pulses and remaps
@@ -613,7 +636,7 @@ and edge/pulse brightness. Shared renderers retain their buffers and shaders.
 To add a design, create its module and register it in
 `network-topology-design\index.mjs`, add its explicit `STATIC_FILES` mapping in
 `server.mjs`, then extend the existing topology options/help in
-`visual-config.mjs`, tests and documentation. No filesystem discovery or plugin
+`appearance\visual-config.mjs`, tests and documentation. No filesystem discovery or plugin
 loader is used. Settings validation still owns accepted configuration values;
 the registry does not change defaults, presets or exported settings.
 

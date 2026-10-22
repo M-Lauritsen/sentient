@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CATEGORY_INDEX } from '../activity-colors.mjs';
+import { CATEGORY_INDEX } from '../activity/activity-colors.mjs';
 import { getTopologyDesign } from '../network-topology-design/index.mjs';
 
 export function createPulseSystem({ VISUAL, CFG, SCENE_RGB, brain, pixelRatio, getNetwork, random = Math.random }) {

@@ -1,8 +1,8 @@
-import { createImpulseFeed } from '/activity-client.mjs';
-import { createPageActivityTotals, createTimelineDialog } from '/session-stats-ui.mjs';
-import { createWorkspaceStore } from '/workspace-model.mjs';
-import { createWorkspaceUI } from '/workspace-ui.mjs';
-import { createNavigationUI } from '/navigation-ui.mjs';
+import { createImpulseFeed } from '/activity/activity-client.mjs';
+import { createPageActivityTotals, createTimelineDialog } from '/ui/session-stats-ui.mjs';
+import { createWorkspaceStore } from '/workspace/workspace-model.mjs';
+import { createWorkspaceUI } from '/workspace/workspace-ui.mjs';
+import { createNavigationUI } from '/ui/navigation-ui.mjs';
 
 const document = window.document;
 const navigationUI = createNavigationUI({ document });

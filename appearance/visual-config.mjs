@@ -1,4 +1,4 @@
-import { HOOK_DEFAULTS } from './activity-colors.mjs';
+import { HOOK_DEFAULTS } from '../activity/activity-colors.mjs';
 
 export const WAVE_DEFAULTS = Object.freeze({ amplitude: 1.6, wavelength: 10, speed: 0.8 });
 
@@ -758,7 +758,7 @@ export function visualConfigurationSignature(configuration) {
 
 export function createVisualSettingsModuleSource({ defaults, preset, overrides }) {
   return [
-    "import { resolveVisualSettings } from './visual-config.mjs';",
+    "import { resolveVisualSettings } from './appearance/visual-config.mjs';",
     '',
     `export const VISUAL = ${JSON.stringify(defaults, null, 2)};`,
     `export const VISUAL_PRESET = ${JSON.stringify(preset)};`,
@@ -957,7 +957,7 @@ export function showVisualConfigurationError(element, errors) {
 export async function startVisualApplication(
   document,
   loadConfiguration = loadVisualConfiguration,
-  startScene = () => import('./main.js')
+  startScene = () => import('../main.js')
 ) {
   const { errors } = await loadConfiguration();
   if (errors.length) {
@@ -968,7 +968,7 @@ export async function startVisualApplication(
   return true;
 }
 
-export async function loadVisualConfiguration(loadModule = () => import('./visual-settings.mjs')) {
+export async function loadVisualConfiguration(loadModule = () => import('../visual-settings.mjs')) {
   let module;
   try {
     module = await loadModule();

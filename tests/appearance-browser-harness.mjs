@@ -1,7 +1,7 @@
 import { VISUAL as currentVisualSettings } from '/visual-settings.mjs';
-import { resolveVisualSettings } from '/visual-config.mjs';
-import { createVisualSettingsPanel } from '/visual-settings-ui.mjs';
-import { createNavigationUI } from '/navigation-ui.mjs';
+import { resolveVisualSettings } from '/appearance/visual-config.mjs';
+import { createVisualSettingsPanel } from '/appearance/visual-settings-ui.mjs';
+import { createNavigationUI } from '/ui/navigation-ui.mjs';
 
 const defaults = structuredClone(currentVisualSettings);
 defaults.nodes.count = 40;

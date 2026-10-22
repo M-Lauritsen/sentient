@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { VISUAL as defaults } from '../visual-settings.mjs';
 import { CFG } from '../scene/structural-config.mjs';
-import { createScenePalette, CATEGORY_INDEX } from '../activity-colors.mjs';
+import { createScenePalette, CATEGORY_INDEX } from '../activity/activity-colors.mjs';
 import { installSceneHarness } from './scene-harness.mjs';
 
 function fixture() {

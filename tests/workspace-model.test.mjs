@@ -5,7 +5,7 @@ import {
   createWorkspaceStore,
   validateWorkspaceEnvelope,
   WORKSPACE_STORAGE_KEY,
-} from '../workspace-model.mjs';
+} from '../workspace/workspace-model.mjs';
 
 class MemoryStorage {
   values = new Map();

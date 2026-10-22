@@ -2,7 +2,7 @@
 id: "01"
 title: "Make the browser app installable and validate installed-app activation"
 owner: Lead
-status: todo
+status: in_progress
 depends_on: []
 parallel: yes
 branch: feature/pwa-desktop-01
@@ -63,7 +63,7 @@ These use the project profile's node:test command pattern; the new named test fi
 | Row | This ticket's completion requirement |
 | --- | --- |
 | TEST | Scoped and full commands recorded at implementation HEAD; classify pre-existing failures with current evidence. |
-| BROWSER | Actual Edge + Chrome installation and I1 activation evidence; I1 pass required before 02 starts. |
+| BROWSER | Original Edge + Chrome installation reports retained below; technical launcher I1 amended to Brave-only/default by explicit user direction. See decisions.md and ticket 02 for current scoped evidence. |
 | SECURITY | Explicit allowlist/CSP/loopback/privacy retained; no external fetch or sensitive cache. |
 | REVIEW | Fresh review verdict recorded after fixes. |
 | BUILD / LINT / TYPECHECK | N/A: repository lacks applicable general scripts; no new build pipeline. |
@@ -73,6 +73,12 @@ These use the project profile's node:test command pattern; the new named test fi
 - Branch is suggested metadata, not permission to manipulate the existing dirty user worktree.
 
 ## Evidence (filled by Lead)
-- Automated command · exit code · last lines · implementation HEAD: pending
-- Manual Edge/Chrome versions · setup · observed results · I1 verdict: pending
-- Reviewer verdict: pending
+- Automated · candidate worktree based on HEAD `7da9d45f73c20e1824737ae72c57b68e0f86def2`, uncommitted:
+  - `node --test tests/pwa-installability.test.mjs tests/server.test.mjs tests/ui-contract.test.mjs` · exit 0 · 47 passed, 0 failed.
+  - `npm test` · exit 0 · 362 passed, 0 failed. The first full run had one transient `EPERM` renaming an unrelated synthetic activity-source fixture; that test passed in isolation and the subsequent full run passed.
+- Manual installation · 2026-10-21 · user confirmed installation in both Edge and Chrome after restarting the server to load the new asset routes. Browser versions, policy/profile setup, standalone/name/icon and network/cache observations have not been recorded separately.
+- Manual shortcut activation · 2026-10-21 · user confirmed the requested checks in Edge and Chrome: with the manually started server running, browser-created desktop shortcuts reopen SENTIENT OS in a standalone window with the browser closed and already running. This is user-reported evidence, not agent-observed execution.
+- Shortcut inspection · 2026-10-21 · agent read the SENTIENT desktop shortcut using Windows Script Host's shortcut reader without executing it. It targets an existing `chrome_proxy.exe`, explicitly selects profile `Default`, and supplies a 32-character app ID via `--app-id`; no `--app=` URL or `--user-data-dir` argument was detected. Only one matching desktop shortcut was found; Edge's shortcut invocation has not been inspected.
+- Correction and I1 amendment · 2026-10-21 · full target-path inspection established that this `chrome_proxy.exe` is **Brave's**, not Google Chrome's. The earlier filename-based Chrome inference was incorrect; historical browser reports above are not agent-verified Chrome activation evidence. The user explicitly selected Brave-only/default for the launcher and deferred Edge/Google Chrome.
+- Current I1 strategy: validated browser-created Brave shortcut, explicit profile/app-ID argv, no shell interpolation or URL-app fallback. Read-only discovery, synthetic failure tests and actual owned-server-readiness-before-Brave-dispatch are recorded in `../decisions.md` and ticket 02. The user explicitly approved continuing against these uncommitted changes in the current checkout; ticket 02 is no longer blocked on the old browser/merge prerequisites. Real page registration remains 03.
+- Reviewer verdict: Lead review after the final change · Proceed with conditions · no code findings; browser installation and I1 evidence remain outstanding.

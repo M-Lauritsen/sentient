@@ -1,28 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import * as THREE from 'three';
 import { CATEGORY_INDEX, CATEGORY_RGB, CATEGORY_HEX, HOOK_DEFAULTS, HOOK_TYPES, CATEGORIES,
-  createScenePalette, applyHookColors } from '../activity-colors.mjs';
+  createScenePalette, applyHookColors } from '../activity/activity-colors.mjs';
 import { createThinkingPulseClock, createImpulseBuffer, createCategoryBurstPlan,
-  createActivityTimeline, impulseIntensity } from '../activity-client.mjs';
-import { createPageActivityTotals } from '../session-stats-ui.mjs';
+  createActivityTimeline, impulseIntensity } from '../activity/activity-client.mjs';
+import { createPageActivityTotals } from '../ui/session-stats-ui.mjs';
 import { loadVisualConfiguration, startVisualApplication, validateVisualSettings,
   resolveVisualSettings, VISUAL_PRESETS, VISUAL_SETTING_DEFINITIONS,
   VISUAL_SETTING_PRESENTATION,
-  mergeVisualOverrides, visualConfigurationSignature, createVisualSettingsModuleSource } from '../visual-config.mjs';
-import { createVisualSettingsPanel } from '../visual-settings-ui.mjs';
+  mergeVisualOverrides, visualConfigurationSignature, createVisualSettingsModuleSource } from '../appearance/visual-config.mjs';
+import { createVisualSettingsPanel } from '../appearance/visual-settings-ui.mjs';
 import { createSceneContext, sceneFunction } from './scene-test-context.mjs';
 import { installSceneHarness } from './scene-harness.mjs';
 
 
 const sourceFiles = ['main.js', 'scene/structural-config.mjs', 'scene/network-renderer.mjs',
   'scene/pulses.mjs', 'scene/subagents.mjs', 'scene/ambience.mjs', 'scene/viewport.mjs',
-  'activity-presentation.mjs', 'hud-ui.mjs', 'scene/appearance.mjs'];
+  'activity/activity-presentation.mjs', 'ui/hud-ui.mjs', 'scene/appearance.mjs'];
 const sources = Object.fromEntries(await Promise.all(sourceFiles.map(async file =>
   [file, (await readFile(new URL('../' + file, import.meta.url), 'utf8')).replace(/^  /gm, '')])));
 const main = Object.values(sources).join('\n');
@@ -999,7 +999,7 @@ test(`${topology} selection and wave tuning survive personal presets, reset and 
   harness.elements.exportButton.click();
   const source = await blob.text();
   const exported = await import(`data:text/javascript,${encodeURIComponent(source.replace(
-    "'./visual-config.mjs'", JSON.stringify(new URL('../visual-config.mjs', import.meta.url).href)))}`);
+    "'./appearance/visual-config.mjs'", JSON.stringify(new URL('../appearance/visual-config.mjs', import.meta.url).href)))}`);
   assert.deepEqual(exported.VISUAL_ERRORS, []);
   assert.equal(exported.EFFECTIVE_VISUAL.topology, topology);
   assert.equal(exported.EFFECTIVE_VISUAL.waves.amplitude, 2.5);
@@ -1940,10 +1940,12 @@ test('exported settings module preserves defaults and layered overrides as a loa
 
   const directory = await mkdtemp(path.join(tmpdir(), 'sentient-visual-export-'));
   try {
-    const currentConfig = new URL('../visual-config.mjs', import.meta.url);
-    await copyFile(currentConfig, path.join(directory, 'visual-config.mjs'));
-    await copyFile(new URL('../activity-colors.mjs', import.meta.url),
-      path.join(directory, 'activity-colors.mjs'));
+    await mkdir(path.join(directory, 'appearance'));
+    await mkdir(path.join(directory, 'activity'));
+    const currentConfig = new URL('../appearance/visual-config.mjs', import.meta.url);
+    await copyFile(currentConfig, path.join(directory, 'appearance/visual-config.mjs'));
+    await copyFile(new URL('../activity/activity-colors.mjs', import.meta.url),
+      path.join(directory, 'activity/activity-colors.mjs'));
     const exportedFile = path.join(directory, 'visual-settings.mjs');
     await writeFile(exportedFile, createVisualSettingsModuleSource({
       defaults, preset: 'subtle', overrides,

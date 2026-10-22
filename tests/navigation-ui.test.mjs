@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { JSDOM } from 'jsdom';
-import { createNavigationUI } from '../navigation-ui.mjs';
+import { createNavigationUI } from '../ui/navigation-ui.mjs';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));

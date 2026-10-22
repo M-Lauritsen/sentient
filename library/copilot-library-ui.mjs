@@ -1,4 +1,4 @@
-import { createLibraryMarkdownRenderer } from './copilot/library-markdown.mjs';
+import { createLibraryMarkdownRenderer } from '../copilot/library-markdown.mjs';
 
 // Never display server/OS exception text or retain token/path in browser storage.
 const MESSAGES = {

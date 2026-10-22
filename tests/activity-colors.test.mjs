@@ -5,11 +5,11 @@ import { JSDOM } from 'jsdom';
 import {
   CATEGORIES, CATEGORY_GLYPH, CATEGORY_HEX, CATEGORY_INDEX, CATEGORY_RGB, activityCategory,
   HOOK_DEFAULTS, hookType, createScenePalette, applyHookColors,
-} from '../activity-colors.mjs';
-import { createImpulseFeed } from '../activity-client.mjs';
-import { createPageActivityTotals } from '../session-stats-ui.mjs';
-import { createWorkspaceStore } from '../workspace-model.mjs';
-import { createWorkspaceUI } from '../workspace-ui.mjs';
+} from '../activity/activity-colors.mjs';
+import { createImpulseFeed } from '../activity/activity-client.mjs';
+import { createPageActivityTotals } from '../ui/session-stats-ui.mjs';
+import { createWorkspaceStore } from '../workspace/workspace-model.mjs';
+import { createWorkspaceUI } from '../workspace/workspace-ui.mjs';
 
 const root = new URL('../', import.meta.url);
 

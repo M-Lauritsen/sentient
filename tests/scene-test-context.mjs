@@ -3,14 +3,14 @@ import { buildNetwork as buildNetworkGraph, updateNetworkGeometry } from '../sce
 import { getTopologyDesign, createTopologyMotionState } from '../network-topology-design/index.mjs';
 import * as THREE from 'three';
 import { CFG } from '../scene/structural-config.mjs';
-import { createScenePalette } from '../activity-colors.mjs';
+import { createScenePalette } from '../activity/activity-colors.mjs';
 import { createPulseSystem } from '../scene/pulses.mjs';
 import { createSubagentRenderer } from '../scene/subagents.mjs';
-import { createActivityPresentation } from '../activity-presentation.mjs';
+import { createActivityPresentation } from '../activity/activity-presentation.mjs';
 import { createNetworkRenderer } from '../scene/network-renderer.mjs';
 import { createAmbience } from '../scene/ambience.mjs';
 import { createViewport } from '../scene/viewport.mjs';
-import { createActivityStateRenderer, createTimelineRenderer } from '../hud-ui.mjs';
+import { createActivityStateRenderer, createTimelineRenderer } from '../ui/hud-ui.mjs';
 import { VISUAL } from '../visual-settings.mjs';
 
 export function createSceneContext(values) {
