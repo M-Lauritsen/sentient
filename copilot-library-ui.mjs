@@ -24,12 +24,15 @@ const messageFor = (error) => MESSAGES[error?.code] ??
 
 export function createLibraryApi(fetchImpl = globalThis.fetch.bind(globalThis)) {
   let tokenPromise;
+  let generation = 0;
   const request = async (route, { method = 'GET', body, signal, bootstrap = false } = {}) => {
+    const current = generation;
     const token = bootstrap ? null : await (tokenPromise ??= request('/api/library/bootstrap', { bootstrap: true })
       .then((value) => {
         if (typeof value.token !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/u.test(value.token)) throw new Error('Invalid bootstrap');
         return value.token;
-      }).catch((error) => { tokenPromise = null; throw error; }));
+      }).catch((error) => { if (current === generation) tokenPromise = null; throw error; }));
+    if (current !== generation) throw Object.assign(new Error('Library instance changed'), { code: 'FORBIDDEN' });
     const response = await fetchImpl(route, {
       mode: 'same-origin', credentials: 'same-origin', cache: 'no-store', redirect: 'error',
       method, signal,
@@ -40,14 +43,16 @@ export function createLibraryApi(fetchImpl = globalThis.fetch.bind(globalThis)) 
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
     const value = await response.json();
+    if (current !== generation) throw Object.assign(new Error('Library instance changed'), { code: 'FORBIDDEN' });
     if (!response.ok) {
-      if (response.status === 403) tokenPromise = null;
+      if (response.status === 403 && current === generation) tokenPromise = null;
       const code = Object.hasOwn(MESSAGES, value?.error?.code) ? value.error.code : 'INTERNAL_ERROR';
       throw Object.assign(new Error(messageFor({ code })), { code });
     }
     return value;
   };
   return {
+    reset() { generation++; tokenPromise = null; },
     list: (signal) => request('/api/library', { signal }),
     detail: (id, signal) => request(`/api/library/files/${encodeURIComponent(id)}`, { signal }),
     refresh: (body) => request('/api/library/refresh', { method: 'POST', body }),
@@ -379,7 +384,13 @@ export function createLibraryDialog({
       event.preventDefault(); first?.focus();
     }
   });
-  return { open, close };
+  return {
+    open, close,
+    invalidate() {
+      api.reset?.();
+      close();
+    },
+  };
 }
 
 function ancestors(node, boundary) {

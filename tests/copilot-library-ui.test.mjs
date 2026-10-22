@@ -90,6 +90,49 @@ test('open is lazy, labeled, read-only, no document autoselection; browse source
   assert.match(s.get('files').textContent, /No matching/);
 });
 
+test('lifecycle invalidation closes and clears selected Library detail; old reads cannot repopulate', async (t) => {
+  const pending = deferred();
+  let resets = 0;
+  const s = setup(t, { detail: () => pending.promise, reset() { resets++; } });
+  s.click('open'); await tick();
+  s.file('a').click(); await tick();
+  s.ui.invalidate();
+  assert.equal(resets, 1);
+  assert.equal(s.get('dialog').open, false);
+  assert.equal(s.get('content').textContent, '');
+  assert.equal(s.get('files').children.length, 0);
+  pending.resolve(detail('a'));
+  await tick();
+  assert.equal(s.get('content').textContent, '');
+  s.click('open'); await tick();
+  assert.equal(s.get('dialog').open, true);
+  assert.equal(s.get('content').textContent, '');
+});
+
+test('Library reset fences old bootstrap/read promises and requests a new independent capability', async () => {
+  const old = deferred();
+  let bootstraps = 0;
+  const headers = [];
+  const api = createLibraryApi(async (url, options) => {
+    if (url.endsWith('/bootstrap')) {
+      if (++bootstraps === 1) return old.promise;
+      return { ok: true, json: async () => ({ token: 'new-library-token' }) };
+    }
+    headers.push(options.headers);
+    return { ok: true, json: async () => snapshot('new-instance') };
+  });
+  const stale = api.list();
+  api.reset();
+  const fresh = await api.list();
+  assert.equal(fresh.generation, 'new-instance');
+  old.resolve({ ok: true, json: async () => ({ token: 'old-library-token' }) });
+  await assert.rejects(stale, { code: 'FORBIDDEN' });
+  await api.list();
+  assert.equal(bootstraps, 2);
+  assert.deepEqual(headers.map((value) => value['X-Sentient-Library-Token']),
+    ['new-library-token', 'new-library-token']);
+});
+
 test('latest selection wins; stale detail and renderer link callbacks cannot navigate', async (t) => {
   const a = deferred(), b = deferred();
   const s = setup(t, { detail: (id) => id === 'a' ? a.promise : b.promise });
@@ -409,7 +452,7 @@ test('UI integration is local, scoped and leaves activity/settings/timeline chan
 
 test('actual main modal callback suspends/restores scene input without changing camera or preview values', async () => {
   const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
-  const block = main.slice(main.lastIndexOf('createLibraryDialog({'), main.lastIndexOf('frame();'));
+  const block = main.slice(main.lastIndexOf('createLibraryDialog({'), main.indexOf('\nconst lifecycleStatus ='));
   for (const initiallyEnabled of [true, false]) {
     const controls = { enabled: initiallyEnabled, autoRotate: true, target: [1, 2, 3] };
     let callback;

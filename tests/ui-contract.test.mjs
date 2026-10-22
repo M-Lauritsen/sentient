@@ -163,6 +163,19 @@ test('source recovery retains the header, running indicators and workspace while
   assert.equal(context.$running.textContent, '0');
   context.renderActivityState(connected);
   assert.equal(context.$status.textContent, 'RUNNING');
+  context.P = 3;
+  context.T = 2;
+  context.pActive = new Uint8Array([1, 1, 1]);
+  context.pDemo = new Uint8Array([0, 1, 0]);
+  context.activePulses = 3;
+  context.pulseSize = new Float32Array(6).fill(1);
+  context.renderActivityState({ connection: 'unknown', lifecycleInvalid: true, coverage: 'unknown',
+    activeSessions: 0, runningSessions: 0, sessions: [], treeSessions: [] });
+  assert.deepEqual([...context.pActive], [0, 1, 0], 'lifecycle loss removes observed motion but not Appearance demo');
+  assert.equal(context.activePulses, 1);
+  assert.deepEqual([...context.pulseSize], [0, 0, 1, 1, 0, 0]);
+  assert.equal(context.$running.textContent, '0');
+  assert.equal(context.covered, false);
 });
 
 class TestElement {

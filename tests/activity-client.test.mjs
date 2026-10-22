@@ -293,6 +293,43 @@ class FakeEventSource {
   emit(name, data) { this.listeners.get(name)?.({ data: JSON.stringify(data) }); }
 }
 
+  test('lifecycle invalidation fences queued old streams, drops deltas until a fresh snapshot and stops running pulses', () => {
+    FakeEventSource.instances = [];
+    const activities = [], states = [];
+    const client = createActivityClient({
+      EventSourceImpl: FakeEventSource, onState: (state) => states.push(state),
+      onActivity: (activity) => activities.push(activity),
+    });
+    const snapshot = { sourceStatus: 'available', coverage: 'journal-only', journalFiles: 1,
+      source: 'local-activity-files', unknownSessions: 0, backlogFiles: 0, unverifiedRunningSessions: 0,
+      activeSessions: 1, thinkingSessions: 1, runningSessions: 1, sessions: [], treeSessions: [], steps: 0 };
+    const message = (sequence, epoch = 'a'.repeat(24)) => ({ sequence, epoch, snapshot });
+    client.connect();
+    const old = FakeEventSource.instances[0];
+    old.emit('snapshot', message(0));
+    assert.equal(client.getState().connection, 'connected');
+    const pulseClock = createThinkingPulseClock({ pulsesPerSecondPerSession: 20, maxSessions: 32 });
+    assert.equal(pulseClock.tick(0.05, client.getState(), false), 1);
+    client.suspend();
+    assert.equal(old.closed, true);
+    assert.equal(client.getState().runningSessions, 0);
+    assert.equal(client.getState().coverage, 'unknown');
+    assert.equal(pulseClock.tick(1, client.getState(), false), 0);
+    old.emit('snapshot', message(50));
+    old.emit('activity', { ...message(51), kind: 'step' });
+    old.onerror();
+    assert.equal(client.getState().connection, 'unknown');
+    client.resume();
+    const fresh = FakeEventSource.instances[1];
+    fresh.emit('activity', { ...message(1, 'b'.repeat(24)), kind: 'step' });
+    assert.equal(activities.length, 0, 'unbaselined deltas cannot count or animate');
+    fresh.emit('snapshot', message(0, 'b'.repeat(24)));
+    old.emit('snapshot', message(100));
+    fresh.emit('activity', { ...message(1, 'b'.repeat(24)), kind: 'step' });
+    assert.equal(activities.length, 1);
+    assert.equal(states.at(-1).connection, 'connected');
+    client.disconnect();
+  });
 test('subagent snapshot diffs classify live additions and all retirement outcomes', () => {
   const previous = [{
     sid: 'AAAA', status: 'running', subagents: [{ sid: 'AB22', ageMs: 10 }, { sid: 'CD33', ageMs: 20 }],

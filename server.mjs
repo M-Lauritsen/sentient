@@ -47,6 +47,9 @@ const VENDOR_FILES = new Map([
 const STATIC_FILES = new Map([
 	['/', ['index.html', 'text/html; charset=utf-8']],
 	['/index.html', ['index.html', 'text/html; charset=utf-8']],
+	['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json; charset=utf-8']],
+	['/icons/pwa-192.png', ['icons/pwa-192.png', 'image/png']],
+	['/icons/pwa-512.png', ['icons/pwa-512.png', 'image/png']],
 	['/favicon.jpg', ['favicon.jpg', 'image/jpeg']],
 	['/main.js', ['main.js', 'text/javascript; charset=utf-8']],
 	['/bootstrap.mjs', ['bootstrap.mjs', 'text/javascript; charset=utf-8']],
@@ -54,6 +57,7 @@ const STATIC_FILES = new Map([
 	['/visual-settings-ui.mjs', ['visual-settings-ui.mjs', 'text/javascript; charset=utf-8']],
 	['/visual-settings-worker.mjs', ['visual-settings-worker.mjs', 'text/javascript; charset=utf-8']],
 	['/activity-client.mjs', ['activity-client.mjs', 'text/javascript; charset=utf-8']],
+	['/pwa-lifecycle-client.mjs', ['pwa-lifecycle-client.mjs', 'text/javascript; charset=utf-8']],
 	['/activity-colors.mjs', ['activity-colors.mjs', 'text/javascript; charset=utf-8']],
 	['/demo-activity.mjs', ['demo-activity.mjs', 'text/javascript; charset=utf-8']],
 	['/visual-settings-preview.mjs', ['visual-settings-preview.mjs', 'text/javascript; charset=utf-8']],
@@ -266,6 +270,7 @@ export function createSentientServer({
 	libraryRoot,
 	librarySettingsPath,
 	librarySourceFactory = (options) => createLibrarySource(options),
+	lifecycle,
 } = {}) {
 	if (host !== '127.0.0.1') throw new Error('SENTIENT OS binds to IPv4 loopback only');
 	const source = new LocalActivitySource({ ...(activityRoot ? { root: activityRoot } : {}), pollIntervalMs });
@@ -298,6 +303,7 @@ export function createSentientServer({
 	let expectedHost;
 	let origin;
 	let started = false;
+	let stopping;
 	const libraryToken = randomBytes(32).toString('base64url');
 	let librarySource;
 	const getLibrarySource = () => {
@@ -513,6 +519,10 @@ export function createSentientServer({
 		const rawUrl = String(request.url || '');
 		const rawPath = rawUrl.split('?')[0];
 		const libraryRequest = rawPath.startsWith('/api/library');
+		if (lifecycle && rawPath.startsWith('/api/app-lifecycle')) {
+			await lifecycle.handle(request, response, { host: expectedHost, origin });
+			return;
+		}
 		if (request.headers.host !== expectedHost) {
 			if (libraryRequest) return writeLibraryError(response, 'FORBIDDEN');
 			writeJson(response, 403, { error: 'forbidden' });
@@ -613,38 +623,57 @@ export function createSentientServer({
 		source,
 		async start() {
 			if (started) return server.address();
-			await source.start();
-			server = createServer((request, response) => {
-				handler(request, response).catch(() => {
-					if (!response.headersSent) writeJson(response, 500, { error: 'internal_error' });
-					else response.destroy();
+			try {
+				await source.start();
+				server = createServer((request, response) => {
+					handler(request, response).catch(() => {
+						if (!response.headersSent) writeJson(response, 500, { error: 'internal_error' });
+						else response.destroy();
+					});
 				});
-			});
-			await new Promise((resolve, reject) => {
-				server.once('error', reject);
-				server.listen(port, host, () => {
-					server.removeListener('error', reject);
-					resolve();
+				await new Promise((resolve, reject) => {
+					server.once('error', reject);
+					server.listen(port, host, () => {
+						server.removeListener('error', reject);
+						resolve();
+					});
 				});
-			});
-			const address = server.address();
-			expectedHost = `127.0.0.1:${address.port}`;
-			origin = `http://${expectedHost}`;
-			started = true;
-			return address;
-		},
-		async stop() {
-			if (!started) {
-				await Promise.all([source.stop(), librarySource?.close()]);
-				return;
+				const address = server.address();
+				expectedHost = `127.0.0.1:${address.port}`;
+				origin = `http://${expectedHost}`;
+				started = true;
+				return address;
+			} catch (error) {
+				try {
+					await this.stop();
+				} catch (cleanupError) {
+					throw Object.assign(new AggregateError([error, cleanupError], 'Server startup cleanup failed'), {
+						code: 'CLEANUP_FAILED',
+					});
+				}
+				throw error;
 			}
-			for (const response of clients) response.destroy();
-			clients.clear();
-			const closed = new Promise((resolve) => server.close(() => resolve()));
-			server.closeAllConnections?.();
-			await closed;
-			await Promise.all([source.stop(), librarySource?.close()]);
-			started = false;
+		},
+		stop() {
+			stopping ??= (async () => {
+				lifecycle?.close();
+				for (const response of clients) response.destroy();
+				clients.clear();
+				let closed;
+				if (server?.listening) {
+					closed = new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+					server.closeAllConnections?.();
+				}
+				const results = await Promise.allSettled([
+					closed,
+					Promise.resolve().then(() => source.stop()),
+					Promise.resolve().then(() => librarySource?.close()),
+				]);
+				started = false;
+				const errors = results.filter(({ status }) => status === 'rejected').map(({ reason }) => reason);
+				if (errors.length) throw new AggregateError(errors, 'Server resource cleanup failed');
+			})();
+			return stopping;
 		},
 	};
 }
