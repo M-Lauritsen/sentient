@@ -20,6 +20,8 @@ import { createNavigationUI } from './navigation-ui.mjs';
 import { createDemoActivity, DEMO_WAITING_IDS } from './demo-activity.mjs';
 import { demoFocusForPath } from './visual-settings-preview.mjs';
 import { createPwaLifecycle } from './pwa-lifecycle-client.mjs';
+import { buildNetwork as buildNetworkGraph, updateNetworkGeometry } from './scene/network.mjs';
+import { getTopologyDesign, createTopologyMotionState } from './network-topology-design/index.mjs';
 
 // Structural geometry and fixed buffer capacities; node count can rebuild the network.
 const CFG = {
@@ -64,7 +66,7 @@ controls.dampingFactor = VISUAL.camera.damping;
 controls.enablePan = false;
 controls.minDistance = VISUAL.camera.minDistance;
 controls.maxDistance = VISUAL.camera.maxDistance;
-controls.autoRotate = VISUAL.camera.autoRotate && VISUAL.topology !== 'dna';
+controls.autoRotate = VISUAL.camera.autoRotate && getTopologyDesign(VISUAL.topology).presentation.autoOrbit;
 controls.autoRotateSpeed = VISUAL.camera.autoRotateSpeed;
 controls.target.set(...VISUAL.camera.target);
 
@@ -83,198 +85,14 @@ scene.add(brain);
 
 // ---------- nodes ----------
 function buildNetwork(settings) {
-  const N = settings.nodes.count;
-  const nodePos = new Float32Array(N * 3);
-  const nodeEnergy = new Float32Array(N);
-  const nodeHot = new Float32Array(N);
-  const nodeSize = new Float32Array(N);
-  const golden = Math.PI * (3 - Math.sqrt(5));
-  const dir = new THREE.Vector3();
-  const topology = settings.topology ?? 'lattice';
-  const waveColumns = Math.ceil(Math.sqrt(N));
-  const waveRows = Math.ceil(N / waveColumns);
-  const waveSpacing = CFG.radius * 2 / Math.max(1, waveColumns - 1);
-  const dnaSamples = Math.max(1, Math.floor(N * 0.4));
-  const dnaInterior = N - dnaSamples * 2;
-  const dnaRungs = Math.min(36, dnaSamples, dnaInterior);
-  for (let i = 0; i < N; i++) {
-    if (topology === 'dna') {
-      if (i < dnaSamples * 2) {
-        const t = dnaSamples === 1 ? 0.5 : Math.floor(i / 2) / (dnaSamples - 1);
-        const angle = t * Math.PI * 5 + (i % 2) * Math.PI;
-        nodePos[i * 3] = Math.cos(angle) * CFG.radius * 0.26;
-        nodePos[i * 3 + 1] = (t - 0.5) * CFG.radius * 2.2;
-        nodePos[i * 3 + 2] = Math.sin(angle) * CFG.radius * 0.26;
-      }
-    } else if (topology === 'waves') {
-      nodePos[i * 3] = (i % waveColumns - (waveColumns - 1) / 2) * waveSpacing;
-      nodePos[i * 3 + 2] = (Math.floor(i / waveColumns) - (waveRows - 1) / 2) * waveSpacing;
-    } else if (topology === 'organic') {
-      const y = Math.random() * 2 - 1;
-      const angle = Math.random() * Math.PI * 2;
-      const radial = Math.sqrt(1 - y * y);
-      const shell = CFG.radius * (0.3 + 0.7 * Math.cbrt(Math.random()));
-      dir.set(Math.cos(angle) * radial, y, Math.sin(angle) * radial)
-        .multiplyScalar(shell).toArray(nodePos, i * 3);
-    } else {
-      const y = 1 - ((i + 0.5) / N) * 2;
-      const r = Math.sqrt(1 - y * y);
-      const th = golden * i;
-      dir.set(Math.cos(th) * r, y, Math.sin(th) * r);
-      dir.x += (Math.random() - 0.5) * 0.12;
-      dir.y += (Math.random() - 0.5) * 0.12;
-      dir.z += (Math.random() - 0.5) * 0.12;
-      dir.normalize();
-      const shell = CFG.radius * (0.3 + 0.7 * Math.pow(Math.random(), 0.28));
-      dir.multiplyScalar(shell).toArray(nodePos, i * 3);
-    }
-    nodeSize[i] = Math.random() < settings.nodes.largeChance
-      ? settings.nodes.largeSizeMin + Math.random() * settings.nodes.largeSizeRange
-      : settings.nodes.baseSizeMin + Math.random() * settings.nodes.baseSizeRange;
-  }
-
-  // Moving styles use explicit graphs rather than spatial shortcuts across folds.
-  const edgeA = [];
-  const edgeB = [];
-  const edgeLen = [];
-  const adjacency = Array.from({ length: N }, () => []);
-  const seen = new Set();
-  function addEdge(a, b) {
-    const e = edgeA.length;
-    edgeA.push(a);
-    edgeB.push(b);
-    edgeLen.push(Math.hypot(nodePos[a * 3] - nodePos[b * 3],
-      nodePos[a * 3 + 1] - nodePos[b * 3 + 1], nodePos[a * 3 + 2] - nodePos[b * 3 + 2]));
-    adjacency[a].push(e);
-    adjacency[b].push(e);
-  }
-  if (topology === 'dna') {
-    for (let i = 2; i < dnaSamples * 2; i++) addEdge(i - 2, i);
-    let next = dnaSamples * 2;
-    if (!dnaInterior) addEdge(0, 1);
-    for (let rung = 0; rung < dnaRungs; rung++) {
-      const sample = dnaRungs === 1 ? Math.floor((dnaSamples - 1) / 2)
-        : Math.round(rung * (dnaSamples - 1) / (dnaRungs - 1));
-      const a = sample * 2, b = a + 1;
-      const count = Math.floor(dnaInterior / dnaRungs) + (rung < dnaInterior % dnaRungs ? 1 : 0);
-      let previous = a;
-      for (let j = 1; j <= count; j++) {
-        const node = next++;
-        const t = j / (count + 1);
-        for (let c = 0; c < 3; c++) {
-          nodePos[node * 3 + c] = nodePos[a * 3 + c] * (1 - t) + nodePos[b * 3 + c] * t;
-        }
-        addEdge(previous, node);
-        previous = node;
-      }
-      addEdge(previous, b);
-    }
-  } else if (topology === 'waves') {
-    for (let i = 0; i < N; i++) {
-      const column = i % waveColumns;
-      if (column + 1 < waveColumns && i + 1 < N) addEdge(i, i + 1);
-      if (i + waveColumns < N) addEdge(i, i + waveColumns);
-      if (column + 1 < waveColumns && i + waveColumns + 1 < N) {
-        addEdge(i, i + waveColumns + 1);
-      }
-    }
-  } else {
-    const k = CFG.neighbours;
-    const maxLen2 = CFG.maxEdgeLen * CFG.maxEdgeLen;
-    for (let i = 0; i < N; i++) {
-      const best = []; // [dist2, j]
-      const ix = nodePos[i * 3], iy = nodePos[i * 3 + 1], iz = nodePos[i * 3 + 2];
-      for (let j = 0; j < N; j++) {
-        if (j === i) continue;
-        const dx = nodePos[j * 3] - ix, dy = nodePos[j * 3 + 1] - iy, dz = nodePos[j * 3 + 2] - iz;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (best.length < k || d2 < best[best.length - 1][0]) {
-          best.push([d2, j]);
-          best.sort((a, b) => a[0] - b[0]);
-          if (best.length > k) best.pop();
-        }
-      }
-      for (let n = 0; n < best.length; n++) {
-        const [d2, j] = best[n];
-        if (n > 0 && d2 > maxLen2) continue; // always keep at least one link
-        const key = i < j ? i * N + j : j * N + i;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const e = edgeA.length;
-        edgeA.push(i);
-        edgeB.push(j);
-        edgeLen.push(Math.sqrt(d2));
-        adjacency[i].push(e);
-        adjacency[j].push(e);
-      }
-    }
-  }
-  if (topology === 'dna') {
-    for (let i = 0; i < N; i++) {
-      const offset = i * 3;
-      const end = Math.max(0, Math.min(1, (Math.abs(nodePos[offset + 1]) / (CFG.radius * 1.1) - 0.72) / 0.28));
-      const scatter = end * end * (3 - 2 * end) * CFG.radius * 0.28;
-      // Stable per-node scatter opens only the tips; the central helix stays exact.
-      nodePos[offset] += Math.sin(i * 127.1 + 1.7) * scatter;
-      nodePos[offset + 2] += Math.sin(i * 311.7 + 4.3) * scatter;
-    }
-    for (let e = 0; e < edgeA.length; e++) {
-      const a = edgeA[e] * 3, b = edgeB[e] * 3;
-      edgeLen[e] = Math.hypot(nodePos[a] - nodePos[b],
-        nodePos[a + 1] - nodePos[b + 1], nodePos[a + 2] - nodePos[b + 2]);
-    }
-  }
-  const E = edgeA.length;
-  const nodeRestPos = topology === 'waves' || topology === 'dna' ? nodePos.slice() : null;
-  const edgeR = new Float32Array(E);
-  const edgeG = new Float32Array(E);
-  const edgeBColor = new Float32Array(E);
-  const edgeBase = new Float32Array(E);
-  let maxNodeDegree = 0;
-  for (let i = 0; i < N; i++) maxNodeDegree = Math.max(maxNodeDegree, adjacency[i].length);
-  const fireEdges = new Int32Array(maxNodeDegree);
-  const edgePositions = new Float32Array(E * 6);
-  const edgeColors = new Float32Array(E * 6);
-  for (let e = 0; e < E; e++) {
-    for (let c = 0; c < 3; c++) {
-      edgePositions[e * 6 + c] = nodePos[edgeA[e] * 3 + c];
-      edgePositions[e * 6 + 3 + c] = nodePos[edgeB[e] * 3 + c];
-    }
-    edgeBase[e] = settings.scene.edgeVariationMin + Math.random() * settings.scene.edgeVariationRange;
-  }
-  let edgeGeo, nodeGeo;
-  try {
-    edgeGeo = new THREE.BufferGeometry();
-    edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgePositions, 3)
-      .setUsage(nodeRestPos ? THREE.DynamicDrawUsage : THREE.StaticDrawUsage));
-    edgeGeo.setAttribute('color', new THREE.BufferAttribute(edgeColors, 3).setUsage(THREE.DynamicDrawUsage));
-    nodeGeo = new THREE.BufferGeometry();
-    nodeGeo.setAttribute('position', new THREE.BufferAttribute(nodePos, 3)
-      .setUsage(nodeRestPos ? THREE.DynamicDrawUsage : THREE.StaticDrawUsage));
-    nodeGeo.setAttribute('aEnergy', new THREE.BufferAttribute(nodeEnergy, 1).setUsage(THREE.DynamicDrawUsage));
-    nodeGeo.setAttribute('aHot', new THREE.BufferAttribute(nodeHot, 1).setUsage(THREE.DynamicDrawUsage));
-    nodeGeo.setAttribute('aSize', new THREE.BufferAttribute(nodeSize, 1));
-    if (nodeRestPos) {
-      // Covers wave crests and the DNA's fixed axial/radial envelope.
-      const bounds = new THREE.Sphere(new THREE.Vector3(), Math.hypot(CFG.radius, CFG.radius, 4.05));
-      nodeGeo.boundingSphere = bounds;
-      edgeGeo.boundingSphere = bounds.clone();
-    }
-  } catch (error) {
-    edgeGeo?.dispose();
-    nodeGeo?.dispose();
-    throw error;
-  }
-  return {
-    N, nodePos, nodeRestPos, nodeEnergy, nodeHot, nodeSize, E, edgeA, edgeB, edgeLen, adjacency,
-    edgeR, edgeG, edgeBColor, edgeBase, fireEdges, edgeColors, edgeGeo, nodeGeo,
-  };
+  return buildNetworkGraph(settings, CFG, { random: Math.random, three: THREE });
 }
 
+let currentNetwork = buildNetwork(VISUAL);
 let {
   N, nodePos, nodeRestPos, nodeEnergy, nodeHot, nodeSize, E, edgeA, edgeB, edgeLen, adjacency,
   edgeR, edgeG, edgeBColor, edgeBase, fireEdges, edgeColors, edgeGeo, nodeGeo,
-} = buildNetwork(VISUAL);
+} = currentNetwork;
 const edgeLines = new THREE.LineSegments(
   edgeGeo,
   new THREE.LineBasicMaterial({
@@ -293,7 +111,7 @@ const nodeMat = new THREE.ShaderMaterial({
     uScale: { value: VISUAL.nodes.scale * pixelRatio }, uTime: { value: 0 },
     uSize: { value: VISUAL.nodes.size }, uActiveGrowth: { value: VISUAL.nodes.activeGrowth },
     uIdleBrightness: { value: VISUAL.nodes.idleBrightness },
-    uDnaHalfLength: { value: VISUAL.topology === 'dna' ? CFG.radius * 1.1 : 0 },
+    uDnaHalfLength: { value: getTopologyDesign(VISUAL.topology).presentation.nodeDissolveHalfLength * CFG.radius },
     uActiveBrightness: { value: VISUAL.nodes.activeBrightness },
     uHotMix: { value: VISUAL.nodes.hotMix },
     uWhiteThreshold: { value: VISUAL.nodes.whiteThreshold },
@@ -365,6 +183,7 @@ brain.add(nodePoints);
 
 function installNetwork(next) {
   const previousNodeGeo = nodeGeo, previousEdgeGeo = edgeGeo;
+  currentNetwork = next;
   ({
     N, nodePos, nodeRestPos, nodeEnergy, nodeHot, nodeSize, E, edgeA, edgeB, edgeLen, adjacency,
     edgeR, edgeG, edgeBColor, edgeBase, fireEdges, edgeColors, edgeGeo, nodeGeo,
@@ -392,49 +211,11 @@ function installNetwork(next) {
   }
 }
 
-let wavePhase = 0;
-let dnaPhase = 0;
+const motionPhases = createTopologyMotionState();
 
 function updateNetworkMotion(dt) {
   if (!nodeRestPos) return;
-  if (VISUAL.topology === 'dna') {
-    if (!reducedMotion && VISUAL.camera.autoRotate) {
-      dnaPhase += dt * VISUAL.camera.autoRotateSpeed * Math.PI / 3;
-    }
-    for (let i = 0; i < N; i++) {
-      const offset = i * 3;
-      const x = nodeRestPos[offset], y = nodeRestPos[offset + 1], z = nodeRestPos[offset + 2];
-      // A travelling torsion twists around the strand's own axis, not the camera.
-      const angle = dnaPhase + 0.22 * (Math.sin(y * 0.5 - dnaPhase) - Math.sin(y * 0.5));
-      const cos = Math.cos(angle), sin = Math.sin(angle);
-      nodePos[offset] = x * cos - z * sin;
-      nodePos[offset + 2] = x * sin + z * cos;
-    }
-  } else {
-    if (!reducedMotion) wavePhase += dt * VISUAL.waves.speed;
-    const frequency = Math.PI * 2 / VISUAL.waves.wavelength;
-    const amplitude = VISUAL.waves.amplitude;
-    for (let i = 0; i < N; i++) {
-      const offset = i * 3;
-      const x = nodeRestPos[offset], z = nodeRestPos[offset + 2];
-      // Displace the sheet from rest heights without cumulative drift.
-      nodePos[offset + 1] = nodeRestPos[offset + 1] + amplitude * (
-        Math.sin(frequency * (x + z * 0.35) - wavePhase) +
-        0.35 * Math.sin(frequency * (z - x * 0.25) + wavePhase * 0.7));
-    }
-  }
-  const positions = edgeGeo.attributes.position.array;
-  for (let e = 0; e < E; e++) {
-    const a = edgeA[e] * 3, b = edgeB[e] * 3, offset = e * 6;
-    for (let c = 0; c < 3; c++) {
-      positions[offset + c] = nodePos[a + c];
-      positions[offset + 3 + c] = nodePos[b + c];
-    }
-    edgeLen[e] = Math.hypot(nodePos[a] - nodePos[b],
-      nodePos[a + 1] - nodePos[b + 1], nodePos[a + 2] - nodePos[b + 2]);
-  }
-  nodeGeo.attributes.position.needsUpdate = true;
-  edgeGeo.attributes.position.needsUpdate = true;
+  updateNetworkGeometry(currentNetwork, VISUAL, dt, reducedMotion, motionPhases);
   for (const cluster of waitingMarkerGroups) {
     if (!cluster.visible || cluster.userData.anchorIndex === undefined) continue;
     const offset = cluster.userData.anchorIndex * 3;
@@ -1007,12 +788,8 @@ function updatePulses(dt) {
   }
 }
 
-function dnaEndDissolve(y) {
-  const end = Math.max(0, Math.min(1, (Math.abs(y) / (CFG.radius * 1.1) - 0.72) / 0.28));
-  return end * end * (3 - 2 * end);
-}
-
 function writePulseBuffers() {
+  const presentation = getTopologyDesign(VISUAL.topology).presentation;
   for (let s = 0; s < P; s++) {
     const base = s * T;
     if (!pActive[s]) {
@@ -1038,9 +815,8 @@ function writePulseBuffers() {
       pulsePos[idx * 3 + 2] = nodePos[a + 2] + (nodePos[b + 2] - nodePos[a + 2]) * t;
       const f = Math.pow(1 - j / T, VISUAL.pulses.trailFalloff);
       let bright = j === 0 ? VISUAL.pulses.headBrightness : f;
-      if (VISUAL.topology === 'dna') {
-        const dissolve = dnaEndDissolve(pulsePos[idx * 3 + 1]);
-        bright *= j === 0 ? 1 - 0.85 * dissolve : (1 - dissolve) ** 4;
+      if (presentation.pulseBrightness) {
+        bright *= presentation.pulseBrightness(pulsePos[idx * 3 + 1], j === 0, CFG.radius);
       }
       pulseCol[idx * 3] = SCENE_RGB[rgb] * bright;
       pulseCol[idx * 3 + 1] = SCENE_RGB[rgb + 1] * bright;
@@ -1054,6 +830,7 @@ function writePulseBuffers() {
 }
 
 function writeEdgeColors(dt) {
+  const presentation = getTopologyDesign(VISUAL.topology).presentation;
   edgeLines.visible = VISUAL.scene.edgeVisibility !== 'hidden';
   const decay = Math.exp(-dt * VISUAL.scene.edgeFade);
   for (let e = 0; e < E; e++) {
@@ -1061,9 +838,8 @@ function writeEdgeColors(dt) {
     edgeG[e] *= decay;
     edgeBColor[e] *= decay;
     const b = VISUAL.scene.edgeVisibility === 'always' ? edgeBase[e] : 0;
-    const fade = VISUAL.topology === 'dna'
-      ? (1 - dnaEndDissolve(Math.max(Math.abs(nodePos[edgeA[e] * 3 + 1]),
-        Math.abs(nodePos[edgeB[e] * 3 + 1])))) ** 4 : 1;
+    const fade = presentation.edgeBrightness
+      ? presentation.edgeBrightness(nodePos, edgeA[e], edgeB[e], CFG.radius) : 1;
     const r = (VISUAL.scene.edgeBaseColor[0] * b + edgeR[e]) * fade;
     const g = (VISUAL.scene.edgeBaseColor[1] * b + edgeG[e]) * fade;
     const bl = (VISUAL.scene.edgeBaseColor[2] * b + edgeBColor[e]) * fade;
@@ -1580,8 +1356,9 @@ function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
   const now = clock.elapsedTime;
 
-  brain.rotation.x = VISUAL.topology === 'waves' ? 0.55 : 0;
-  brain.rotation.z = VISUAL.topology === 'dna' ? -0.55 : 0;
+  const presentation = getTopologyDesign(VISUAL.topology).presentation;
+  brain.rotation.x = presentation.rotationX;
+  brain.rotation.z = presentation.rotationZ;
   updateNetworkMotion(dt);
   renderObservedImpulses();
   renderDemoActivity(dt);
@@ -1733,7 +1510,7 @@ function applyVisualSettings(candidate) {
   controls.dampingFactor = candidate.camera.damping;
   controls.minDistance = candidate.camera.minDistance;
   controls.maxDistance = candidate.camera.maxDistance;
-  controls.autoRotate = candidate.camera.autoRotate && candidate.topology !== 'dna';
+  controls.autoRotate = candidate.camera.autoRotate && getTopologyDesign(candidate.topology).presentation.autoOrbit;
   controls.autoRotateSpeed = candidate.camera.autoRotateSpeed;
   if (changed('camera.fov')) camera.updateProjectionMatrix();
 
@@ -1763,7 +1540,7 @@ function applyVisualSettings(candidate) {
   nodeUniforms.uSize.value = VISUAL.nodes.size;
   nodeUniforms.uActiveGrowth.value = VISUAL.nodes.activeGrowth;
   nodeUniforms.uIdleBrightness.value = VISUAL.nodes.idleBrightness;
-  nodeUniforms.uDnaHalfLength.value = VISUAL.topology === 'dna' ? CFG.radius * 1.1 : 0;
+  nodeUniforms.uDnaHalfLength.value = getTopologyDesign(VISUAL.topology).presentation.nodeDissolveHalfLength * CFG.radius;
   nodeUniforms.uActiveBrightness.value = VISUAL.nodes.activeBrightness;
   nodeUniforms.uHotMix.value = VISUAL.nodes.hotMix;
   nodeUniforms.uWhiteThreshold.value = VISUAL.nodes.whiteThreshold;

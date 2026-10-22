@@ -26,6 +26,26 @@ test('server-side activity projection does not import browser visual settings', 
 	assert.doesNotMatch(client, /from '\.\/visual-settings\.mjs'/);
 });
 
+test('network modules are explicitly served as JavaScript without exposing adjacent files', async (t) => {
+	const activityRoot = await fixture(t);
+	const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
+	t.after(() => app.stop());
+	const { port } = await app.start();
+	const base = `http://127.0.0.1:${port}`;
+	for (const module of ['scene/network.mjs', 'network-topology-design/index.mjs',
+		'network-topology-design/lattice.mjs', 'network-topology-design/organic.mjs',
+		'network-topology-design/waves.mjs', 'network-topology-design/dna.mjs']) {
+		const response = await fetch(`${base}/${module}`);
+		assert.equal(response.status, 200, module);
+		assert.match(response.headers.get('content-type'), /^text\/javascript/);
+		assert.equal(await response.text(), await readFile(new URL(`../${module}`, import.meta.url), 'utf8'));
+	}
+	for (const unlisted of ['/scene/unlisted.mjs', '/network-topology-design/unlisted.mjs',
+		'/visual-settings_copy.mjs', '/tests/network-topology.test.mjs']) {
+		assert.equal((await fetch(`${base}${unlisted}`)).status, 404, unlisted);
+	}
+});
+
 test('SSE session projection uses stable opaque ids and excludes internal keys', async (t) => {
 	const activityRoot = await fixture(t);
 	const directory = 'private-session-dir';

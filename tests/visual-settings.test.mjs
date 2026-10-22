@@ -16,6 +16,7 @@ import { loadVisualConfiguration, startVisualApplication, validateVisualSettings
   VISUAL_SETTING_PRESENTATION,
   mergeVisualOverrides, visualConfigurationSignature, createVisualSettingsModuleSource } from '../visual-config.mjs';
 import { createVisualSettingsPanel } from '../visual-settings-ui.mjs';
+import { createSceneContext } from './scene-test-context.mjs';
 
 const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
 const settings = async () => structuredClone((await import('../visual-settings.mjs')).VISUAL);
@@ -134,7 +135,7 @@ function sceneFunction(name) {
 }
 
 function makeNetworkHarness(VISUAL) {
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, THREE, CATEGORY_INDEX, CATEGORY_HEX, CATEGORY_RGB, validateVisualSettings, structuredClone,
     createScenePalette, applyHookColors,
     SCENE_RGB: createScenePalette(VISUAL), pixelRatio: 1,
@@ -364,7 +365,7 @@ test('startup topology uses the requested count and produces valid connected end
     const VISUAL = await settings();
     VISUAL.topology = topology;
     VISUAL.nodes.count = count;
-    const context = vm.createContext({
+    const context = createSceneContext({
       VISUAL, THREE, CFG: { radius: 10, neighbours: 3, maxEdgeLen: 4.5 },
       Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
     });
@@ -665,7 +666,7 @@ test('DNA twists connected strands and rungs while pulses and anchors follow wit
   const VISUAL = await settings();
   VISUAL.topology = 'dna';
   VISUAL.nodes.count = 4000;
-  const cameraContext = vm.createContext({
+  const cameraContext = createSceneContext({
     VISUAL, THREE, window: { innerWidth: 800, innerHeight: 400 }, renderer: { domElement: {} },
     OrbitControls: class { constructor() { this.target = new THREE.Vector3(); } },
   });
@@ -890,7 +891,7 @@ test('line modes change rendered edges only and preserve decaying activity', asy
     const VISUAL = await settings();
     VISUAL.scene.edgeVisibility = mode;
     VISUAL.scene.edgeBaseColor = [0.2, 0.4, 0.6];
-    const context = vm.createContext({
+    const context = createSceneContext({
       VISUAL, Math, E: 2, edgeR: [1, 0], edgeG: [0.5, 0], edgeBColor: [0.25, 0],
       edgeBase: [1, 1], edgeColors: new Float32Array(12),
       edgeLines: { visible: true }, edgeGeo: { attributes: { color: {} } },
@@ -2130,7 +2131,7 @@ test('nondefault camera settings reach the camera and orbit controls', async () 
     fov: 65, position: [1, 2, 40], target: [3, 4, 5], damping: 0.1,
     minDistance: 12, maxDistance: 80, autoRotate: false, autoRotateSpeed: -0.5,
   });
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, THREE, window: { innerWidth: 800, innerHeight: 400 }, renderer: { domElement: {} },
     OrbitControls: class { constructor() { this.target = new THREE.Vector3(); } },
   });
@@ -2221,7 +2222,7 @@ test('node size and idle edge variation tuning leaves generated geometry unchang
   });
   Object.assign(VISUAL.scene, { edgeVariationMin: 0.2, edgeVariationRange: 0.4 });
   const createNodes = () => {
-    const context = vm.createContext({
+    const context = createSceneContext({
       VISUAL, THREE, CFG: { radius: 10, neighbours: 3, maxEdgeLen: 4.5 },
       Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
     });
@@ -2372,8 +2373,8 @@ test('nondefault node, pulse and floor values reach real material uniforms and s
       group[key] = Array.isArray(group[key]) ? [next++, next++, next++] : next++;
     }
   }
-  const context = vm.createContext({
-    VISUAL, pixelRatio: 2,
+  const context = createSceneContext({
+    VISUAL, pixelRatio: 2, CFG: { radius: 10 },
     THREE: {
       ShaderMaterial: class { constructor(options) { Object.assign(this, options); } },
       Vector3: class { constructor(...values) { this.values = values; } },
@@ -2457,7 +2458,7 @@ test('nondefault pulse speed, head, spacing, brightness and completion controls 
     neighbourSpread: 1, branchChance: 0, seedHeat: 1, nodeEnergy: 0.3, edgeIntensity: 0.4,
   });
   const calls = [];
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, CATEGORY_INDEX, SCENE_RGB: CATEGORY_RGB,
     Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
     P: 1, T: 2, pCursor: 0, activePulses: 0, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(1),
@@ -2526,7 +2527,7 @@ test('nondefault scene settings reach edge decay, bloom and load-based ambient p
   assert.equal(bloomContext.pass.strength, 0.2);
   assert.equal(bloomContext.pass.radius, 0.2);
   assert.equal(bloomContext.pass.threshold, 0.2);
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, Math, E: 1, edgeR: [1], edgeG: [1], edgeBColor: [1],
     edgeBase: [0], edgeColors: new Float32Array(6), edgeGeo: { attributes: { color: {} } },
     edgeLines: { visible: true },
@@ -2580,7 +2581,7 @@ test('node decay and ordinary arrival/trail settings alter the actual animation 
   Object.assign(VISUAL.pulses, {
     nodeEnergy: 0.8, stepEdgeIntensity: 0.2, thinkingEdgeIntensity: 0.3, minTrailSize: 0.8,
   });
-  const context = vm.createContext({
+  const context = createSceneContext({
     VISUAL, Math, SCENE_RGB: CATEGORY_RGB, P: 1, T: 2, N: 2, dt: 1,
     pActive: [1], pEdge: [0], pFrom: [0], pT: [0.5], pKind: [1], pCat: [CATEGORY_INDEX.tool],
     pSpeed: [1], pHops: [0], activePulses: 1, demoPulses: 0, demoSpawn: 0, pDemo: new Uint8Array(1), edgeLen: [1],

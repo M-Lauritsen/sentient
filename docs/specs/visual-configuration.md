@@ -38,8 +38,13 @@ The following behavior is present in the current workspace:
   IPv4 loopback and provides activity through `/events`.
 - Geometry, fixed buffer capacities, category palette and HUD/CSS ownership
   remain separate from visual tuning.
+- Topology algorithms, motion and presentation rules live in individual
+  `network-topology-design` modules with an explicit registry. `scene\network.mjs`
+  owns shared graph construction, geometry allocation and moving-edge updates.
+  `main.js` retains installation/reset/remapping and settings application.
 
 Source references: `visual-settings.mjs`, `main.js`,
+`scene\network.mjs`, `network-topology-design\index.mjs`,
 `activity-client.mjs`, `server.mjs`, `tests/visual-settings.test.mjs`,
 and README sections "Editing visual settings" and "Privacy and limitations".
 

@@ -572,6 +572,29 @@ Activity mapping, statuses, hidden-tab discard and network/privacy behavior
 are unaffected. Visual preview and file reload preserve page-local activity
 totals and timeline history; a full document refresh still resets them.
 
+### Network design modules
+
+Each design lives in `network-topology-design\`: `lattice.mjs`, `organic.mjs`,
+`waves.mjs` and `dna.mjs`. The explicit registry in `index.mjs` supplies the
+selected design to `scene\network.mjs` and the scene's presentation consumers.
+`scene\network.mjs` owns shared nearest-neighbor connectivity, graph buffers,
+geometry allocation/cleanup and moving-edge synchronization. `main.js` still
+owns graph installation, pulse reset, anchor remapping and the animation loop.
+
+A design's `createLayout` supplies per-node placement and, when needed, explicit
+connections and final position adjustments. Placement stays interleaved with
+node-size sampling to preserve the existing random stream. Moving designs also
+provide `updateMotion`; phase state survives switching/rebuilding. Optional
+presentation rules describe orientation, camera auto-orbit, node dissolve length
+and edge/pulse brightness. Shared renderers retain their buffers and shaders.
+
+To add a design, create its module and register it in
+`network-topology-design\index.mjs`, add its explicit `STATIC_FILES` mapping in
+`server.mjs`, then extend the existing topology options/help in
+`visual-config.mjs`, tests and documentation. No filesystem discovery or plugin
+loader is used. Settings validation still owns accepted configuration values;
+the registry does not change defaults, presets or exported settings.
+
 ## Privacy and limitations
 
 SENTIENT OS reads `events.jsonl` files in local session folders without modifying

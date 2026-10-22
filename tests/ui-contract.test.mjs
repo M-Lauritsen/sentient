@@ -9,6 +9,7 @@ import { createCategoryBurstPlan, createImpulseBuffer } from '../activity-client
 import { clearSessionStats, createPageActivityTotals, createSessionStatsDialog, createTimelineDialog, renderSessionRows } from '../session-stats-ui.mjs';
 import { createVisualSettingsPanel } from '../visual-settings-ui.mjs';
 import { resolveVisualSettings } from '../visual-config.mjs';
+import { createSceneContext } from './scene-test-context.mjs';
 
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 const main = await readFile(new URL('../main.js', import.meta.url), 'utf8');
@@ -816,7 +817,7 @@ test('pulse and RGB edge writers use category channels, preserve kind motion and
   const SCENE_RGB = Float32Array.from(CATEGORY_RGB, (channel) =>
     0.9 * (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4));
   assert.match(main, /const SCENE_RGB = createScenePalette\(VISUAL\)/);
-  const context = vm.createContext({
+  const context = createSceneContext({
     Math, SCENE_RGB, CATEGORY_INDEX, VISUAL,
     P: 1, T: 2, E: 1,
     pActive: new Uint8Array([1]), pEdge: new Int32Array([0]),
@@ -961,7 +962,7 @@ test(`${activity.eventType} produces one network cascade per frame without explo
 
 test('completion pulses branch and brighten lattice nodes, edges and trails', () => {
   const calls = [];
-  const context = vm.createContext({
+  const context = createSceneContext({
     Math: Object.assign(Object.create(Math), { random: () => 0.2 }),
     SCENE_RGB: CATEGORY_RGB, VISUAL, P: 1, T: 2,
     pActive: new Uint8Array([1]), pEdge: [0], pFrom: [0], pT: [0],
