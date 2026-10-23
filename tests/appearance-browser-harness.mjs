@@ -28,6 +28,13 @@ HTMLAnchorElement.prototype.click = function click() {
 
 const workspace = document.getElementById('workspace');
 const workspaceOpener = document.getElementById('workspace-open');
+// Exercise the production shell without starting its activity client or scene.
+const shellResponse = await fetch('/index.html');
+if (!shellResponse.ok) throw new Error(`Appearance shell failed to load (${shellResponse.status}).`);
+const shell = new DOMParser().parseFromString(await shellResponse.text(), 'text/html')
+  .getElementById('visual-settings-dialog');
+if (!shell) throw new Error('Appearance shell is missing.');
+document.getElementById('visual-settings-dialog').replaceWith(document.importNode(shell, true));
 const panel = createVisualSettingsPanel({
   document,
   opener: document.getElementById('visual-settings-open'),
@@ -36,6 +43,11 @@ const panel = createVisualSettingsPanel({
   presetSelect: document.getElementById('visual-settings-preset'),
   fields: document.getElementById('visual-settings-fields'),
   quickFields: document.getElementById('visual-settings-quick'),
+  categoryNav: document.getElementById('visual-settings-navigation'),
+  categorySelect: document.getElementById('visual-settings-category'),
+  scrollContainer: document.getElementById('visual-settings-scroll'),
+  presetsPanel: document.getElementById('visual-settings-presets'),
+  filesPanel: document.getElementById('visual-settings-files'),
   searchInput: document.getElementById('visual-settings-search'),
   searchStatus: document.getElementById('visual-settings-search-status'),
   clearSearchButton: document.getElementById('visual-settings-search-clear'),
@@ -130,6 +142,10 @@ window.appearanceHarness = {
         workspaceOpener.disabled !== true || getComputedStyle(dialog).display !== 'flex') {
       throw new Error('Appearance did not open without suspending Workspace.');
     }
+    const category = (key) => document.querySelector(
+      `#visual-settings-navigation [data-category="${key}"]`,
+    ).click();
+    category('camera');
     const fovField = document.querySelector(
       '#visual-settings-fields [data-setting-path="camera.fov"]',
     );
@@ -170,6 +186,7 @@ window.appearanceHarness = {
     const dustField = document.querySelector(
       '#visual-settings-fields [data-setting-path="dust.scale"]',
     );
+    category('atmosphere');
     const dustSlider = dustField.querySelector('input[type="range"]');
     dustSlider.value = '72';
     dustSlider.dispatchEvent(new Event('input', { bubbles: true }));
@@ -193,6 +210,7 @@ window.appearanceHarness = {
       throw new Error('Signed motion or out-of-slider dust scale lost its exact value.');
     }
 
+    category('quick');
     const count = document.querySelector(
       '#visual-settings-quick [data-setting-path="nodes.count"] input[type="number"]',
     );
@@ -207,7 +225,20 @@ window.appearanceHarness = {
       throw new Error('Committed node count did not rebuild exactly once.');
     }
 
+    category('network');
+    const scroll = document.getElementById('visual-settings-scroll');
+    const closeTop = document.getElementById('visual-settings-close').getBoundingClientRect().top;
+    scroll.scrollTop = 200;
+    const savedScroll = scroll.scrollTop;
     const search = document.getElementById('visual-settings-search');
+    search.value = 'camera.fov';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    document.getElementById('visual-settings-search-clear').click();
+    if (scroll.scrollTop !== savedScroll) throw new Error('Clearing search lost category scroll position.');
+    scroll.scrollTop = scroll.scrollHeight;
+    if (document.getElementById('visual-settings-close').getBoundingClientRect().top !== closeTop) {
+      throw new Error('Return to scene scrolled out of reach.');
+    }
     search.value = 'node projection scale';
     search.dispatchEvent(new Event('input', { bubbles: true }));
     const scale = document.querySelector(

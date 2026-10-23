@@ -30,15 +30,17 @@ const workspaceUi = await readFile(new URL('../workspace/workspace-ui.mjs', impo
 const navigationUi = await readFile(new URL('../ui/navigation-ui.mjs', import.meta.url), 'utf8');
 const visualSettingsUi = await readFile(new URL('../appearance/visual-settings-ui.mjs', import.meta.url), 'utf8');
 
-test('Appearance search visibly filters settings and empty groups, then restores them on clear', () => {
+function makeAppearanceDOM(options = {}) {
   const dom = new JSDOM(html);
-  const { document, Event, getComputedStyle } = dom.window;
+  const { document } = dom.window;
   const style = document.createElement('style');
   style.textContent = css;
   document.head.append(style);
   const ids = {
     opener: 'open', dialog: 'dialog', form: 'form', presetSelect: 'preset',
     fields: 'fields', quickFields: 'quick', searchInput: 'search',
+    categoryNav: 'navigation', categorySelect: 'category', scrollContainer: 'scroll',
+    presetsPanel: 'presets', filesPanel: 'files',
     searchStatus: 'search-status', clearSearchButton: 'search-clear', title: 'title',
     status: 'status', errorSummary: 'errors', conflict: 'conflict',
     useFileButton: 'use-file', keepPreviewButton: 'keep-preview', closeButton: 'close',
@@ -50,30 +52,40 @@ test('Appearance search visibly filters settings and empty groups, then restores
   const elements = Object.fromEntries(Object.entries(ids).map(([key, suffix]) =>
     [key, document.getElementById(`visual-settings-${suffix}`)]));
   const resolved = resolveVisualSettings(VISUAL, 'balanced');
-  createVisualSettingsPanel({
+  const applied = [];
+  const panel = createVisualSettingsPanel({
     document,
     ...elements,
     initialConfiguration: {
       defaults: VISUAL, preset: 'balanced', overrides: {}, settings: resolved.settings,
     },
-    getStorage: () => ({ getItem: () => null }),
-    applySettings() {},
+    getStorage: () => ({ getItem: () => null, setItem() {} }),
+    applySettings(value) { applied.push(value); },
+    requestFrame(callback) { queueMicrotask(callback); return 1; },
+    cancelFrame() {},
+    ...options,
   });
   elements.dialog.setAttribute('open', '');
+  const category = (key) => elements.categoryNav.querySelector(`[data-category="${key}"]`).click();
+  return { dom, document, elements, panel, applied, category };
+}
+
+test('Appearance search filters all categories and restores the selected category and scroll on clear', () => {
+  const { dom, document, elements, category } = makeAppearanceDOM();
+  const { Event, getComputedStyle } = dom.window;
   const fields = [...elements.fields.querySelectorAll('[data-setting-path]')];
   const groups = [...elements.fields.querySelectorAll('.visual-settings-section-row')];
-  const sections = groups.map((group) => group.querySelector('details'));
-  const originalOpen = sections.map((section, index) => {
-    section.open = index % 2 === 1;
-    return section.open;
-  });
   const search = (value) => {
     elements.searchInput.value = value;
     elements.searchInput.dispatchEvent(new Event('input', { bubbles: true }));
   };
   const hasDisplay = (element) => getComputedStyle(element).display !== 'none';
   try {
+    assert.equal(elements.fields.hidden, true, 'Quick is the landing view');
+    category('camera');
+    elements.scrollContainer.scrollTop = 240;
     search('  HeAt  ');
+    assert.equal(elements.scrollContainer.scrollTop, 0);
     const hotColor = fields.find((field) => field.dataset.settingPath === 'nodes.hotColor');
     const fov = fields.find((field) => field.dataset.settingPath === 'camera.fov');
     assert.equal(hasDisplay(hotColor), true, 'related controls remain visible');
@@ -99,32 +111,46 @@ test('Appearance search visibly filters settings and empty groups, then restores
 
     elements.clearSearchButton.click();
     assert.ok(fields.every(hasDisplay), 'clearing restores all controls');
-    assert.ok(groups.every(hasDisplay), 'clearing restores all sections');
-    assert.equal(hasDisplay(elements.quickFields), true);
+    assert.equal(groups.filter(hasDisplay).length, 1, 'only the previous category returns');
+    assert.match(groups.find(hasDisplay).textContent, /Camera/);
+    assert.equal(hasDisplay(elements.quickFields), false);
     assert.equal(hasDisplay(elements.clearSearchButton), false);
-    assert.deepEqual(sections.map((section) => section.open), originalOpen,
-      'clearing restores every section to its original expansion state');
+    assert.equal(elements.scrollContainer.scrollTop, 240);
     assert.equal(document.activeElement, elements.searchInput);
 
     search('heat');
     search('   ');
     assert.ok(fields.every(hasDisplay), 'deleting the query also restores controls');
-    assert.ok(groups.every(hasDisplay));
+    assert.equal(groups.filter(hasDisplay).length, 1);
+    category('quick');
     assert.equal(hasDisplay(elements.quickFields), true);
-    assert.deepEqual(sections.map((section) => section.open), originalOpen);
+    assert.equal(elements.fields.hidden, true);
+    search('nodes.hotColor');
+    assert.equal(fields.filter(hasDisplay).length, 1, 'configuration paths are searchable');
+    search('event effects');
+    assert.equal(groups.filter(hasDisplay).length, 1, 'friendly category names are searchable');
+    assert.match(groups.find(hasDisplay).textContent, /Event effects/);
+    category('motion');
+    assert.equal(elements.searchInput.value, '', 'choosing a category leaves search');
+    assert.equal(elements.categorySelect.value, 'motion');
   } finally {
     dom.window.close();
   }
 });
 
-test('Appearance scrolls its header and preset controls while save actions stay in the footer', () => {
+test('Appearance keeps dismissal, search, navigation and feedback outside the control scroll', () => {
   const document = new JSDOM(html).window.document;
   const form = document.querySelector('#visual-settings-form');
   const scroll = form.querySelector('.visual-settings-scroll');
   const footer = form.querySelector('.visual-settings-actions');
   for (const selector of ['.stats-dialog-header', '#visual-settings-preset',
-    '#visual-settings-preset-name', '#visual-settings-quick', '#visual-settings-fields']) {
-    assert.ok(scroll.contains(form.querySelector(selector)), `${selector} scrolls with content`);
+    '#visual-settings-search', '#visual-settings-navigation', '#visual-settings-category',
+    '#visual-settings-errors', '#visual-settings-conflict']) {
+    assert.equal(scroll.contains(form.querySelector(selector)), false, `${selector} stays reachable`);
+  }
+  for (const selector of ['#visual-settings-preset-name', '#visual-settings-quick',
+    '#visual-settings-fields', '#visual-settings-files']) {
+    assert.ok(scroll.contains(form.querySelector(selector)), `${selector} is in the editor`);
   }
   for (const id of ['visual-settings-preset-save-as', 'visual-settings-preset-save',
     'visual-settings-export', 'visual-settings-reset']) {
@@ -135,6 +161,91 @@ test('Appearance scrolls its header and preset controls while save actions stay 
   }
   assert.equal(scroll.contains(footer), false);
   assert.equal(footer.parentElement, form);
+});
+
+test('Appearance category navigation preserves drafts and reveals hidden invalid fields', async () => {
+  const { dom, document, elements, applied, category } = makeAppearanceDOM();
+  const { Event } = dom.window;
+  try {
+    category('network');
+    const field = elements.fields.querySelector('[data-setting-path="nodes.scale"]');
+    const input = field.querySelector('input[type="number"]');
+    const initial = input.value;
+    const before = applied.length;
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise(queueMicrotask);
+    assert.equal(input.getAttribute('aria-invalid'), 'true');
+    assert.equal(applied.length, before, 'invalid draft never reaches the scene');
+    elements.scrollContainer.scrollTop = 180;
+    category('camera');
+    assert.equal(field.closest('.visual-settings-section-row').hidden, true);
+    assert.equal(elements.errorSummary.hidden, false, 'hidden drafts remain discoverable');
+    const reveal = [...elements.errorSummary.querySelectorAll('button')]
+      .find((button) => button.textContent.includes('Node projection scale'));
+    assert.ok(reveal);
+    reveal.click();
+    assert.equal(field.closest('.visual-settings-section-row').hidden, false);
+    assert.equal(document.activeElement, input);
+    assert.equal(input.value, '', 'navigation does not discard the invalid draft');
+    assert.equal(elements.scrollContainer.scrollTop, 180);
+    input.value = initial;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise(queueMicrotask);
+    assert.equal(elements.errorSummary.hidden, true);
+    assert.equal(applied.at(-1).nodes.scale, Number(initial));
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('Appearance narrow category selector and preset naming share the same navigation', () => {
+  const { dom, document, elements, category } = makeAppearanceDOM();
+  try {
+    elements.categorySelect.value = 'files';
+    elements.categorySelect.dispatchEvent(new dom.window.Event('change'));
+    assert.equal(elements.filesPanel.hidden, false);
+    assert.equal(elements.quickFields.hidden, true);
+    assert.equal(elements.fields.hidden, true);
+    assert.equal(elements.categoryNav.querySelector('[aria-current]').textContent, 'File actions');
+    elements.saveAsPresetButton.click();
+    assert.equal(elements.presetsPanel.hidden, false);
+    assert.equal(elements.filesPanel.hidden, true);
+    assert.equal(document.activeElement, elements.presetNameInput);
+    elements.presetNameInput.value = 'My view';
+    elements.saveAsPresetButton.click();
+    assert.match(elements.status.textContent, /saved in this browser/);
+    assert.equal(elements.presetSelect.value, 'user:My view');
+    category('quick');
+    assert.equal(elements.presetsPanel.hidden, true);
+    assert.equal(elements.quickFields.hidden, false);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test('Appearance navigation and search clear demo targeting for controls that become hidden', () => {
+  const focused = [];
+  const { dom, elements, category } = makeAppearanceDOM({
+    previewMode: () => 'focus',
+    onPreviewFocus: (path) => focused.push(path),
+  });
+  try {
+    category('network');
+    const field = elements.fields.querySelector('[data-setting-path="nodes.scale"]');
+    field.dispatchEvent(new dom.window.Event('pointerover', { bubbles: true }));
+    assert.equal(focused.at(-1), 'nodes.scale');
+    category('camera');
+    assert.equal(focused.at(-1), null);
+    category('network');
+    field.dispatchEvent(new dom.window.Event('pointerover', { bubbles: true }));
+    elements.searchInput.value = 'camera.fov';
+    elements.searchInput.dispatchEvent(new dom.window.Event('input'));
+    assert.equal(focused.at(-1), null);
+    assert.equal(field.hidden, true);
+  } finally {
+    dom.window.close();
+  }
 });
 
 test('source recovery retains the header, running indicators and workspace while marking coverage unknown', () => {
@@ -469,7 +580,7 @@ test('Appearance is a searchable nonmodal drawer and suspends Workspace interact
   assert.match(html, /aria-label="Advanced appearance settings"/);
   assert.match(html, /aria-live="polite"[\s\S]*visual-settings-search-status/);
   assert.match(html, /id="visual-settings-search-clear"/);
-  assert.match(html, /<summary>File actions<\/summary>/);
+  assert.match(html, /id="visual-settings-files-title">File actions<\/h3>/);
   assert.match(visualSettingsUi, /dialog\.show\(\)/);
   assert.doesNotMatch(visualSettingsUi, /dialog\.showModal\(\)/);
   assert.match(visualSettingsUi, /opener\.focus\(\{ preventScroll: true \}\)/);
