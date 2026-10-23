@@ -315,6 +315,11 @@ last-known session state and session displays remain in place; no activity event
 are invented or counted. If the error persists for 15 seconds, stale session
 indicators and delegated branches are cleared and running-state pulses stop.
 
+Ordinary grouped activity bursts are queued in order and drained cooperatively,
+yielding between sends. Delivery remains bounded: clients that fall too far behind
+or would receive an oversized message are disconnected. Reconnection establishes
+the current snapshot rather than replaying missed activity.
+
 A successful `session.task_complete`
 event lights up a bright, branching cascade of impulses, nodes and edges within
 the lattice. Grouped completions share one bounded cascade per frame, with no

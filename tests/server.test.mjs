@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, rm, writeFile, appendFile, readFile } from 'node:fs/pro
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { get as httpGet } from 'node:http';
+import { get as httpGet, ServerResponse } from 'node:http';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { createSentientServer } from '../server.mjs';
 
 async function fixture(t) {
@@ -16,6 +17,128 @@ async function fixture(t) {
 function record(type, data = {}) {
 	return JSON.stringify({ id: `${type}-${Date.now()}`, type, data }) + '\n';
 }
+
+async function sseReader(base) {
+	const response = await fetch(`${base}/events`, {
+		headers: { origin: base },
+		signal: AbortSignal.timeout(10_000),
+	});
+	assert.equal(response.status, 200);
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let pending = '';
+	return {
+		cancel: () => reader.cancel(),
+		async next() {
+			while (!pending.includes('\n\n')) {
+				const part = await reader.read();
+				assert.equal(part.done, false, 'SSE stream must remain connected');
+				pending += decoder.decode(part.value, { stream: true });
+			}
+			const boundary = pending.indexOf('\n\n') + 2;
+			const frame = pending.slice(0, boundary);
+			pending = pending.slice(boundary);
+			return {
+				frame,
+				event: frame.match(/^event: (.+)$/m)[1],
+				data: JSON.parse(frame.match(/^data: (.+)$/m)[1]),
+			};
+		},
+	};
+}
+
+function fillWorstCaseStats(source) {
+	for (const session of source.sessions.values()) {
+		Object.assign(session.stats, {
+			kinds: { thinking: 1e9, step: 1e9, completion: 1e9, activity: 1e9 },
+			typeCounts: new Map(Array.from({ length: 10 }, (_, index) => [`type-${index}`.padEnd(128, 'a'), 1e9])),
+			otherTypes: 1e9,
+			toolCounts: new Map(Array.from({ length: 10 }, (_, index) => [`tool-${index}`.padEnd(128, 'a'), 1e9])),
+			otherTools: 1e9,
+			subagents: { started: 1e9, completed: 1e9, failed: 1e9 },
+			errors: 1e9,
+			runningMs: 1e9,
+			unverifiedMs: 1e9,
+			waitingMs: 1e9,
+			turns: { count: 1e9, lastMs: 1e9, maxMs: 1e9, durations: Array(50).fill(1e9) },
+		});
+	}
+}
+
+async function captureSse(t, base) {
+	let response;
+	const flushHeaders = ServerResponse.prototype.flushHeaders;
+	const mock = t.mock.method(ServerResponse.prototype, 'flushHeaders', function () {
+		if (this.req.headers.host === new URL(base).host && this.req.url === '/events') response = this;
+		return flushHeaders.call(this);
+	});
+	const reader = await sseReader(base);
+	t.after(() => reader.cancel().catch(() => {}));
+	const initial = await reader.next();
+	mock.mock.restore();
+	assert.ok(response);
+	return { reader, response, initial };
+}
+
+test('healthy SSE reader receives an ordered grouped burst beyond 128KiB and subsequent activity', async (t) => {
+	const activityRoot = await fixture(t);
+	const files = Array.from({ length: 32 }, (_, index) => path.join(activityRoot, `session-${index}`, 'events.jsonl'));
+	for (const file of files) {
+		await mkdir(path.dirname(file));
+		await writeFile(file, '');
+	}
+	const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
+	t.after(() => app.stop());
+	const { port } = await app.start();
+	for (const file of files) await appendFile(file, record('assistant.turn_start'));
+	await app.source.poll();
+	const reader = await sseReader(`http://127.0.0.1:${port}`);
+	t.after(() => reader.cancel().catch(() => {}));
+	const initial = await reader.next();
+	assert.equal(initial.event, 'snapshot');
+	const accepted = [];
+	app.source.on('activity', (value) => accepted.push({
+		eventType: value.eventType,
+		count: value.count,
+		steps: app.source.snapshot().steps,
+	}));
+	// Read concurrently with polling: this is a healthy consumer, not a paused socket.
+	const received = [];
+	const consume = (async () => {
+		while (received.length < 65) {
+			const message = await reader.next();
+			if (message.event === 'activity') received.push(message);
+		}
+	})();
+	// Attach a rejection handler immediately; assert the original error after polling.
+	consume.catch(() => {});
+	await appendFile(files[0], Array.from({ length: 64 }, (_, index) =>
+		Array.from({ length: 3 }, (_, repeat) => JSON.stringify({
+			id: `burst-${index}-${repeat}`, type: `future.burst.${index}`, data: { content: 'PRIVATE' },
+		}) + '\n').join('')).join(''));
+	await app.source.poll();
+	await appendFile(files[0], record('future.after_burst'));
+	await app.source.poll();
+	await consume;
+	assert.equal(accepted.length, 65);
+	assert.deepEqual(accepted.map(({ eventType, count }) => ({ eventType, count })), [
+		...Array.from({ length: 64 }, (_, index) => ({ eventType: `future.burst.${index}`, count: 3 })),
+		{ eventType: 'future.after_burst', count: undefined },
+	]);
+	assert.deepEqual(received.map(({ data }) => ({
+		eventType: data.eventType, count: data.count, steps: data.snapshot.steps,
+	})), accepted);
+	assert.ok(received.slice(0, 64).reduce((bytes, { frame }) => bytes + Buffer.byteLength(frame), 0) > 128 * 1024);
+	assert.deepEqual(received.map(({ data }) => data.sequence),
+		Array.from({ length: 65 }, (_, index) => initial.data.sequence + index + 1));
+	for (const { data, frame } of received) {
+		assert.equal(data.epoch, initial.data.epoch);
+		assert.match(frame, new RegExp(`^id: ${data.sequence}\\n`));
+		assert.doesNotMatch(frame, /PRIVATE|events\.jsonl|session-0/);
+	}
+	assert.ok(received.slice(0, 64).every(({ data }) => data.count === 3));
+	assert.equal(received.at(-1).data.eventType, 'future.after_burst');
+});
 
 test('server-side activity projection does not import browser visual settings', async () => {
 	const [server, client] = await Promise.all([
@@ -277,21 +400,7 @@ test('worst-case stats snapshot for 32 sessions stays within the SSE buffer boun
 	const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
 	t.after(() => app.stop());
 	const { port } = await app.start();
-	for (const session of app.source.sessions.values()) {
-		Object.assign(session.stats, {
-			kinds: { thinking: 1e9, step: 1e9, completion: 1e9, activity: 1e9 },
-			typeCounts: new Map(Array.from({ length: 10 }, (_, index) => [`type-${index}`.padEnd(128, 'a'), 1e9])),
-			otherTypes: 1e9,
-			toolCounts: new Map(Array.from({ length: 10 }, (_, index) => [`tool-${index}`.padEnd(128, 'a'), 1e9])),
-			otherTools: 1e9,
-			subagents: { started: 1e9, completed: 1e9, failed: 1e9 },
-			errors: 1e9,
-			runningMs: 1e9,
-			unverifiedMs: 1e9,
-			waitingMs: 1e9,
-			turns: { count: 1e9, lastMs: 1e9, maxMs: 1e9, durations: Array(50).fill(1e9) },
-		});
-	}
+	fillWorstCaseStats(app.source);
 	const response = await fetch(`http://127.0.0.1:${port}/events`, {
 		headers: { origin: `http://127.0.0.1:${port}` },
 		signal: AbortSignal.timeout(3000),
@@ -309,20 +418,244 @@ test('worst-case stats snapshot for 32 sessions stays within the SSE buffer boun
 
 	app.source.emit('activity', { kind: 'activity', eventType: 'overflow.test' });
 	app.source.emit('activity', { kind: 'activity', eventType: 'overflow.test' });
-	let ended = false;
-	try {
-		while (true) {
-			const chunk = await reader.read();
-			if (chunk.done) {
-				ended = true;
-				break;
-			}
-		}
-	} catch (error) {
-		if (error?.name === 'AbortError' || error?.name === 'TimeoutError') throw error;
-		ended = true;
+	let activityText = '';
+	while ((activityText.match(/event: activity/g) ?? []).length < 2 || !activityText.endsWith('\n\n')) {
+		const chunk = await reader.read();
+		assert.equal(chunk.done, false);
+		activityText += new TextDecoder().decode(chunk.value);
 	}
-	assert.equal(ended, true, 'the queued frame plus the next stats snapshot exceeds the client buffer cap');
+	const activities = activityText.trim().split('\n\n').map((frame) => JSON.parse(frame.match(/data: (.+)/)[1]));
+	assert.equal(activities.length, 2);
+	assert.deepEqual(activities.map(({ sequence }) => sequence), [1, 2]);
+	assert.ok(Buffer.byteLength(activityText) > 128 * 1024);
+	for (const { snapshot } of activities) assert.equal(snapshot.sessions.length, 32);
+	await reader.cancel();
+});
+
+test('SSE FIFO captures emission-time state and gates each turn on both callback and drain', async (t) => {
+	const activityRoot = await fixture(t);
+	const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0 });
+	t.after(() => app.stop());
+	const { port } = await app.start();
+	const { response } = await captureSse(t, `http://127.0.0.1:${port}`);
+	const writes = [];
+	t.mock.method(response, 'write', (frame, callback) => {
+		writes.push({ frame, callback });
+		return false;
+	});
+	app.source.steps = 11;
+	app.source.emit('activity', { kind: 'activity', eventType: 'fifo.first' });
+	app.source.steps = 22;
+	app.source.emit('activity', { kind: 'activity', eventType: 'fifo.second' });
+	app.source.emit('change');
+	app.source.steps = 33;
+	assert.equal(writes.length, 0, 'emission must not write synchronously');
+	await nextTurn();
+	assert.equal(writes.length, 1);
+	writes[0].callback();
+	await nextTurn();
+	assert.equal(writes.length, 1, 'callback alone does not release write(false)');
+	response.emit('drain');
+	response.emit('drain');
+	await nextTurn();
+	assert.equal(writes.length, 2, 'duplicate drains must not schedule duplicate writes');
+	response.emit('drain');
+	await nextTurn();
+	assert.equal(writes.length, 2, 'drain alone does not release the outstanding callback');
+	writes[1].callback();
+	await nextTurn();
+	assert.equal(writes.length, 3);
+	const frames = writes.map(({ frame }) => frame.toString());
+	assert.deepEqual(frames.map((frame) => frame.match(/event: (.+)/)[1]), ['activity', 'activity', 'snapshot']);
+	const values = frames.map((frame) => JSON.parse(frame.match(/data: (.+)/)[1]));
+	assert.deepEqual(values.map(({ snapshot }) => snapshot.steps), [11, 22, 22]);
+	assert.deepEqual(values.map(({ sequence }) => sequence), [1, 2, 2]);
+	writes[2].callback();
+	response.emit('drain');
+	await nextTurn();
+	assert.equal(writes.length, 3, 'no accepted write is retried');
+});
+
+test('new SSE admission excludes frames still queued for an existing subscriber', async (t) => {
+	const activityRoot = await fixture(t);
+	const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0, maxClients: 2 });
+	t.after(() => app.stop());
+	const { port } = await app.start();
+	const base = `http://127.0.0.1:${port}`;
+	const { response } = await captureSse(t, base);
+	const writes = t.mock.method(response, 'write', () => false);
+	app.source.emit('activity', { kind: 'activity', eventType: 'before.admission.first' });
+	app.source.emit('activity', { kind: 'completion', eventType: 'session.task_complete' });
+	await nextTurn();
+	assert.equal(writes.mock.callCount(), 1, 'one frame remains in flight and another in the FIFO');
+	const newcomer = await sseReader(base);
+	t.after(() => newcomer.cancel().catch(() => {}));
+	const initial = await newcomer.next();
+	assert.equal(initial.event, 'snapshot');
+	assert.equal(initial.data.sequence, 2);
+	app.source.emit('activity', { kind: 'activity', eventType: 'after.admission' });
+	const live = await newcomer.next();
+	assert.equal(live.event, 'activity');
+	assert.equal(live.data.sequence, 3);
+	assert.equal(live.data.eventType, 'after.admission');
+	assert.equal(live.data.epoch, initial.data.epoch);
+});
+
+test('paused real SSE reader overflows only its bounded FIFO while a healthy reader continues', async (t) => {
+	const activityRoot = await fixture(t);
+	for (let index = 0; index < 32; index++) {
+		const directory = path.join(activityRoot, `session-${index}`);
+		await mkdir(directory);
+		await writeFile(path.join(directory, 'events.jsonl'), '');
+	}
+	const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0, maxClients: 2 });
+	t.after(() => app.stop());
+	const { port } = await app.start();
+	fillWorstCaseStats(app.source);
+	const base = `http://127.0.0.1:${port}`;
+	let stalled;
+	const flushHeaders = ServerResponse.prototype.flushHeaders;
+	const capture = t.mock.method(ServerResponse.prototype, 'flushHeaders', function () {
+		if (this.req.url === '/events' && this.req.headers.host === `127.0.0.1:${port}`) stalled = this;
+		return flushHeaders.call(this);
+	});
+	const request = httpGet(`${base}/events`, { headers: { origin: base } });
+	t.after(() => request.destroy());
+	await new Promise((resolve, reject) => {
+		request.once('error', reject);
+		request.once('response', (response) => {
+			// IncomingMessage stays paused: no data listener, resume, or body reads.
+			response.on('error', (error) => assert.equal(error.code, 'ECONNRESET'));
+			resolve();
+		});
+	});
+	capture.mock.restore();
+	assert.ok(stalled);
+	const healthy = await sseReader(base);
+	t.after(() => healthy.cancel().catch(() => {}));
+	await healthy.next();
+	assert.equal((await fetch(`${base}/events`, { headers: { origin: base } })).status, 429);
+	let writtenBytes = 0;
+	let outstanding = 0;
+	let maximumOutstanding = 0;
+	const write = stalled.write;
+	t.mock.method(stalled, 'write', function (frame, callback) {
+		writtenBytes += frame.length;
+		maximumOutstanding = Math.max(maximumOutstanding, ++outstanding);
+		return write.call(this, frame, (error) => {
+			outstanding--;
+			callback(error);
+		});
+	});
+	let publishedBytes = 0;
+	let disconnectedAt = 0;
+	for (let index = 0; index < 512; index++) {
+		app.source.emit('activity', { kind: 'activity', eventType: 'stalled.test' });
+		const message = await healthy.next();
+		assert.equal(message.event, 'activity');
+		assert.equal(message.data.sequence, index + 1);
+		publishedBytes += Buffer.byteLength(message.frame);
+		const queuedBytes = publishedBytes - writtenBytes;
+		if (stalled.destroyed) {
+			assert.ok(queuedBytes > 8 * 1024 * 1024, 'disconnect occurs when the next frame exceeds the FIFO budget');
+			assert.ok(queuedBytes - Buffer.byteLength(message.frame) <= 8 * 1024 * 1024);
+			disconnectedAt = index + 1;
+			break;
+		}
+		assert.ok(queuedBytes <= 8 * 1024 * 1024, 'retained FIFO stays within 8MiB');
+	}
+	assert.ok(disconnectedAt > 0, 'a genuinely unread stream must eventually be disconnected');
+	assert.equal(maximumOutstanding, 1);
+	assert.equal(stalled.listenerCount('drain'), 0);
+	app.source.emit('activity', { kind: 'activity', eventType: 'healthy.after_overflow' });
+	assert.equal((await healthy.next()).data.eventType, 'healthy.after_overflow');
+	const replacement = await sseReader(base);
+	t.after(() => replacement.cancel().catch(() => {}));
+	assert.equal((await replacement.next()).event, 'snapshot', 'overflow releases admission immediately');
+});
+
+test('SSE oversize frame closes only its recipient and releases admission', async (t) => {
+	const activityRoot = await fixture(t);
+	const directory = path.join(activityRoot, 'session');
+	await mkdir(directory);
+	await writeFile(path.join(directory, 'events.jsonl'), '');
+	const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0, maxClients: 1 });
+	t.after(() => app.stop());
+	const { port } = await app.start();
+	const base = `http://127.0.0.1:${port}`;
+	const { response } = await captureSse(t, base);
+	const writes = t.mock.method(response, 'write', () => assert.fail('oversize frame must not reach the transport'));
+	const value = app.source.snapshot();
+	// Synthetic source boundary fault: valid individual sessions, but a count
+	// beyond the source's normal bound. The oversized projection must not escape.
+	const snapshot = t.mock.method(app.source, 'snapshot', () => ({
+		...value, sessions: Array(1024).fill(value.sessions[0]),
+	}));
+	app.source.emit('change');
+	assert.equal(response.destroyed, true);
+	assert.equal(response.listenerCount('drain'), 0);
+	await nextTurn();
+	assert.equal(writes.mock.callCount(), 0);
+	snapshot.mock.restore();
+	const replacement = await sseReader(base);
+	t.after(() => replacement.cancel().catch(() => {}));
+	assert.equal((await replacement.next()).event, 'snapshot');
+});
+
+test('SSE failure, close and stop cleanup cancel queued work and ignore late callbacks', async (t) => {
+	for (const mode of ['throw', 'callback-error', 'response-error', 'peer-close', 'stop-scheduled', 'stop-writing', 'stop-drain']) {
+		await t.test(mode, async (t) => {
+			const activityRoot = await fixture(t);
+			const app = createSentientServer({ activityRoot, port: 0, pollIntervalMs: 0, maxClients: 1 });
+			t.after(() => app.stop());
+			const { port } = await app.start();
+			const base = `http://127.0.0.1:${port}`;
+			const { response } = await captureSse(t, base);
+			let callback;
+			const writes = t.mock.method(response, 'write', (_frame, done) => {
+				callback = done;
+				if (mode === 'throw') throw new Error('synthetic write failure');
+				return false;
+			});
+			app.source.emit('activity', { kind: 'activity', eventType: 'queued.first' });
+			app.source.emit('activity', { kind: 'activity', eventType: 'queued.second' });
+			if (mode !== 'stop-scheduled') await nextTurn();
+			if (mode === 'callback-error') callback(new Error('synthetic callback failure'));
+			if (mode === 'response-error') response.emit('error', new Error('synthetic response failure'));
+			if (mode === 'peer-close') await new Promise((resolve) => {
+				response.once('close', resolve);
+				response.destroy();
+			});
+			if (mode === 'stop-drain') callback();
+			if (mode.startsWith('stop-')) {
+				const stopped = app.stop();
+				assert.equal(app.stop(), stopped, 'stop is idempotent');
+				await stopped;
+			}
+			await nextTurn();
+			assert.equal(response.destroyed, true);
+			assert.equal(response.listenerCount('drain'), 0);
+			const count = writes.mock.callCount();
+			assert.equal(count, mode === 'stop-scheduled' ? 0 : 1);
+			callback?.();
+			response.emit('error', new Error('late transport notification after cleanup'));
+			response.emit('drain');
+			response.emit('drain');
+			app.source.emit('activity', { kind: 'activity', eventType: 'after.cleanup' });
+			app.source.emit('change');
+			await nextTurn();
+			assert.equal(writes.mock.callCount(), count, 'cleanup prevents late callbacks and drains restarting delivery');
+			if (!mode.startsWith('stop-')) {
+				const replacement = await sseReader(base);
+				t.after(() => replacement.cancel().catch(() => {}));
+				const initial = await replacement.next();
+				assert.equal(initial.event, 'snapshot');
+				assert.equal(initial.data.sequence, 3);
+				app.source.emit('activity', { kind: 'activity', eventType: 'replacement.live' });
+				assert.equal((await replacement.next()).data.eventType, 'replacement.live');
+			}
+		});
+	}
 });
 
 test('loopback server serves only explicit app assets and denies traversal', async (t) => {

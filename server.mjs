@@ -10,7 +10,8 @@ import { projectActivity, projectSessionStats } from './activity/activity-client
 
 const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const MAX_CLIENTS = 8;
-const MAX_CLIENT_BUFFER = 128 * 1024;
+const MAX_CLIENT_FRAME = 128 * 1024;
+const MAX_CLIENT_QUEUE = 8 * 1024 * 1024;
 const MAX_TREE_SESSIONS = 32;
 const MAX_TREE_SUBAGENTS = 16;
 const MAX_TREE_RETIREMENTS = 8;
@@ -334,6 +335,7 @@ export function createSentientServer({
 	let origin;
 	let started = false;
 	let stopping;
+	let stopped = false;
 	const libraryToken = randomBytes(32).toString('base64url');
 	let librarySource;
 	const getLibrarySource = () => {
@@ -421,27 +423,94 @@ export function createSentientServer({
 		};
 	};
 
-	const sendEvent = (response, name, data, id) => {
-		const payload = JSON.stringify(data);
-		const frame = `${id === undefined ? '' : `id: ${id}\n`}event: ${name}\ndata: ${payload}\n\n`;
-		if (
-			response.destroyed ||
-			!response.writable ||
-			response.writableLength + Buffer.byteLength(frame) > MAX_CLIENT_BUFFER
-		) {
-			response.destroy();
-			clients.delete(response);
-			return;
-		}
-		response.write(frame);
+	const closeClient = (client) => {
+		if (client.closed) return;
+		client.closed = true;
+		clients.delete(client);
+		clearImmediate(client.immediate);
+		client.immediate = undefined;
+		client.queue.length = 0;
+		client.queuedBytes = 0;
+		client.response.removeListener('close', client.onClose);
+		// A failed write can invoke its callback before emitting 'error'.
+		// Keep the idempotent error handler for that late transport notification.
+		client.response.removeListener('drain', client.onDrain);
+		client.response.destroy();
 	};
 
-	const sendSnapshot = (response) => {
-		sendEvent(response, 'snapshot', { epoch: streamEpoch, sequence: streamSequence, snapshot: snapshot() });
+	const scheduleClient = (client) => {
+		if (stopped || client.closed || client.immediate || client.writing || client.waitingDrain || !client.queue.length) return;
+		client.immediate = setImmediate(() => {
+			client.immediate = undefined;
+			if (stopped || client.closed) return;
+			const { response } = client;
+			if (response.destroyed || !response.writable) {
+				closeClient(client);
+				return;
+			}
+			const frame = client.queue.shift();
+			client.queuedBytes -= frame.length;
+			client.writing = true;
+			// A false return accepts the frame. Both callback and drain must
+			// complete before the next turn; never retry an accepted write.
+			client.waitingDrain = true;
+			try {
+				const writable = response.write(frame, (error) => {
+					if (client.closed) return;
+					if (error) {
+						closeClient(client);
+						return;
+					}
+					client.writing = false;
+					scheduleClient(client);
+				});
+				if (writable) client.waitingDrain = false;
+				scheduleClient(client);
+			} catch {
+				closeClient(client);
+			}
+		});
+	};
+
+	const eventFrame = (name, data, id) => {
+		const payload = JSON.stringify(data);
+		return Buffer.from(`${id === undefined ? '' : `id: ${id}\n`}event: ${name}\ndata: ${payload}\n\n`);
+	};
+
+	const sendEvent = (client, frame) => {
+		if (stopped || client.closed) return;
+		if (client.response.destroyed || !client.response.writable ||
+			frame.length > MAX_CLIENT_FRAME || client.queuedBytes + frame.length > MAX_CLIENT_QUEUE) {
+			closeClient(client);
+			return;
+		}
+		client.queue.push(frame);
+		client.queuedBytes += frame.length;
+		scheduleClient(client);
+	};
+
+	const snapshotFrame = () => eventFrame('snapshot', {
+		epoch: streamEpoch, sequence: streamSequence, snapshot: snapshot(),
+	});
+
+	const admitClient = (response) => {
+		const client = { response, queue: [], queuedBytes: 0, writing: false, waitingDrain: false, closed: false };
+		client.onClose = () => closeClient(client);
+		client.onDrain = () => {
+			client.waitingDrain = false;
+			scheduleClient(client);
+		};
+		response.on('close', client.onClose);
+		response.on('error', client.onClose);
+		response.on('drain', client.onDrain);
+		clients.add(client);
+		sendEvent(client, snapshotFrame());
 	};
 
 	const broadcastState = () => {
-		for (const response of clients) sendSnapshot(response);
+		if (!clients.size) return;
+		const frame = snapshotFrame();
+		for (const client of clients) sendEvent(client, frame);
 	};
 
 	const broadcastActivity = (value) => {
@@ -449,7 +518,8 @@ export function createSentientServer({
 		if (!activity) return;
 		streamSequence++;
 		const message = { epoch: streamEpoch, sequence: streamSequence, ...activity, snapshot: snapshot(false) };
-		for (const response of clients) sendEvent(response, 'activity', message, streamSequence);
+		const frame = eventFrame('activity', message, streamSequence);
+		for (const client of clients) sendEvent(client, frame);
 	};
 
 	const handleLibrary = async (request, response, rawPath, rawUrl) => {
@@ -581,6 +651,10 @@ export function createSentientServer({
 			return;
 		}
 		if (rawPath === '/events') {
+			if (stopped) {
+				response.destroy();
+				return;
+			}
 			const fetchSite = request.headers['sec-fetch-site'];
 			const badOrigin = requestOrigin !== undefined ? requestOrigin !== origin : fetchSite !== 'same-origin';
 			if (request.method !== 'GET' || badOrigin || (fetchSite && fetchSite !== 'same-origin')) {
@@ -602,9 +676,7 @@ export function createSentientServer({
 			// Deliver those only to existing subscribers before admitting this one;
 			// its snapshot then establishes a watermark with no historical deltas.
 			source.flushActivities();
-			clients.add(response);
-			response.on('close', () => clients.delete(response));
-			sendSnapshot(response);
+			admitClient(response);
 			return;
 		}
 		if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -686,9 +758,9 @@ export function createSentientServer({
 		},
 		stop() {
 			stopping ??= (async () => {
+				stopped = true;
 				lifecycle?.close();
-				for (const response of clients) response.destroy();
-				clients.clear();
+				for (const client of clients) closeClient(client);
 				let closed;
 				if (server?.listening) {
 					closed = new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
