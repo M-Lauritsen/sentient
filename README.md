@@ -409,20 +409,27 @@ in-scope setting. The new presets offer teal/cyan and warm red/orange themes,
 plus a muted grayscale base scene that keeps the existing activity-category
 colors recognizable. Each also has distinct glow and atmosphere effects. The
 nonmodal drawer keeps the scene visible; closing it retains the current preview.
-The header and preset controls scroll with the settings, leaving more room for
-controls. Save as new, Save changes, Export settings and Reset preview remain
-available in the footer.
-Quick controls cover common adjustments, while searchable Advanced sections expose all 173
+The close control, search and preset selector stay above the scrolling controls.
+Choose Quick or a category in the left navigation; on narrow screens, use the
+Category selector instead. Only the selected category is shown, and returning to
+a category restores its scroll position. Presets and File actions have their own
+destinations, keeping administration out of everyday tuning.
+Save as new, Save changes, Export settings and Reset preview remain available in
+the footer. Save as new opens Presets; enter a name there
+and choose Save as new again.
+Quick controls cover common adjustments, while searchable categories expose all
 configuration paths with friendly labels, help and exact numeric inputs.
-Searching shows only matching Advanced controls and hides empty sections and
-duplicate Quick controls. Clear the search to restore all controls and the
-previously expanded sections.
+Search all settings matches labels, descriptions, categories and configuration
+paths. Results are grouped by category without duplicate Quick controls.
+Clear search to return to the previous category and scroll position.
+Errors remain reachable below the editor; use their Show buttons to reveal an
+invalid field even when its category is hidden.
 Each setting includes an always-visible description of what it changes in the
-scene. Quick and Advanced use full-width rows with compact exact-value inputs
+scene. Quick and category views use full-width rows with compact exact-value inputs
 and share the same descriptions; no hover or tooltip is needed to understand a
 control. Open **Details** for constraints, the configuration path and a small
 **Reset to file** action. Errors and out-of-slider-range notices remain visible
-without opening Details. Slider guidance is shown once above Advanced settings.
+without opening Details. Slider guidance is shown once above category settings.
 All 143 scalar numeric settings include a slider; vectors keep named X/Y/Z inputs.
 Suggested slider ranges are guidance only: valid values outside them remain
 unchanged and can be edited exactly. Pulse minimum/maximum and automatic
@@ -473,7 +480,7 @@ This is public, browser-loaded configuration: never put secrets in it. Visual
 changes do not alter activity data, session state, timeline history or
 statistics.
 
-**Appearance → Advanced → Event effects** includes separate `hook.start`,
+**Appearance → Event effects** includes separate `hook.start`,
 `hook.end` and other `hook.*` colors, shared by feed text and scene pulses.
 Each has a scene-impact control from 0 (off) through 1 (normal) to 4 (maximum).
 Impact changes pulse brightness and spread, not feed animation. Hook text keeps
@@ -533,7 +540,7 @@ The activity connection, pending observations, feed, timeline history,
 statistics and session/subagent state are preserved.
 An invalid value or failed rebuild leaves the previous valid network active.
 
-`topology` is a root-level visual setting in **Appearance → Advanced →
+`topology` is a root-level visual setting in **Appearance →
 Network**. It accepts `lattice` (the default), `organic`, `waves` and `dna`; older settings files
 without the field continue to use `lattice`. Lattice retains the existing
 Fibonacci-sphere placement. Organic uses randomized points in the same
@@ -564,7 +571,7 @@ attached. Use **Always visible** connecting lines to see the rungs even when
 idle. DNA interprets the supplied blue particle-helix references; exact image
 parity is not claimed.
 
-For Waves, **Appearance → Advanced → Motion** exposes `waves.amplitude`
+For Waves, **Appearance → Motion** exposes `waves.amplitude`
 (default 1.6 world units, range 0–3), `waves.wavelength` (default 10 world
 units, range 4–40), and `waves.speed` (default 0.8 radians/second, range 0–3).
 Two crossing wave components produce up to 1.35 times the configured amplitude.

@@ -302,7 +302,6 @@
 			class="visual-settings-dialog"
 			aria-labelledby="visual-settings-title">
 			<form id="visual-settings-form">
-				<div class="visual-settings-scroll">
 				<header class="stats-dialog-header">
 					<h2 id="visual-settings-title" tabindex="-1">Appearance</h2>
 					<button
@@ -314,6 +313,14 @@
 						Return to scene
 					</button>
 				</header>
+				<div class="visual-settings-search">
+					<label for="visual-settings-search">Search all settings</label>
+					<input id="visual-settings-search" type="search" autocomplete="off"
+						placeholder="Find an effect or setting"
+						aria-describedby="visual-settings-search-status" />
+					<button id="visual-settings-search-clear" type="button" hidden>Clear search</button>
+					<p id="visual-settings-search-status" role="status" aria-live="polite"></p>
+				</div>
 				<div class="visual-settings-toolbar" aria-label="Appearance presets">
 					<label>
 						Preset
@@ -326,6 +333,14 @@
 						Demo activity
 					</label>
 				</div>
+				<label class="visual-settings-category-label" for="visual-settings-category">Category</label>
+				<select id="visual-settings-category" class="visual-settings-category"></select>
+				<div class="visual-settings-body">
+				<nav id="visual-settings-navigation" class="visual-settings-navigation" aria-label="Appearance categories"></nav>
+				<div class="visual-settings-scroll" id="visual-settings-scroll">
+				<section id="visual-settings-presets" hidden aria-labelledby="visual-settings-presets-title">
+				<h3 id="visual-settings-presets-title">Personal presets</h3>
+				<p class="visual-settings-help">Name your current preview, then choose Save as new. Personal presets are stored in this browser only.</p>
 				<div
 					class="visual-settings-personal-presets"
 					role="group"
@@ -346,65 +361,21 @@
 				<p
 					id="visual-settings-help"
 					class="visual-settings-help">
-					Quick controls are shown first. Advanced settings keep their original paths and exact numeric values. Valid changes preview live; personal presets are stored in this browser only.
+					Valid changes preview live. Closing keeps the preview; export and save the downloaded file yourself to update the repository.
 				</p>
-				<p
-					id="visual-settings-status"
-					role="status"
-					aria-live="polite">Preview matches the loaded file.</p>
-				<p
-					id="visual-settings-errors"
-					class="visual-settings-errors"
-					role="alert"
-					hidden></p>
-				<div
-					id="visual-settings-conflict"
-					class="visual-settings-conflict"
-					role="group"
-					aria-label="Resolve visual settings file conflict"
-					hidden>
-					<p>The file changed while a preview is active.</p>
-					<button
-						id="visual-settings-use-file"
-						type="button">
-						Use file
-					</button>
-					<button
-						id="visual-settings-keep-preview"
-						type="button">
-						Keep preview
-					</button>
-				</div>
+				</section>
 				<section
 					id="visual-settings-quick"
 					class="visual-settings-quick"
 					aria-label="Quick appearance controls">
 					<h3>Quick controls</h3>
 				</section>
-				<div class="visual-settings-search">
-					<label for="visual-settings-search">Search advanced settings</label>
-					<input
-						id="visual-settings-search"
-						type="search"
-						autocomplete="off"
-						aria-describedby="visual-settings-search-status" />
-					<button
-						id="visual-settings-search-clear"
-						type="button"
-						hidden>
-						Clear search
-					</button>
-					<p
-						id="visual-settings-search-status"
-						role="status"
-						aria-live="polite"></p>
-				</div>
 				<div
 					id="visual-settings-fields"
 					class="visual-settings-fields"
 					aria-label="Advanced appearance settings"></div>
-				<details class="visual-file-actions">
-					<summary>File actions</summary>
+				<section id="visual-settings-files" class="visual-file-actions" hidden aria-labelledby="visual-settings-files-title">
+					<h3 id="visual-settings-files-title">File actions</h3>
 					<p>File actions affect the page configuration only when you export and save the downloaded file yourself.</p>
 					<div class="visual-file-actions-controls">
 						<button id="visual-settings-reload" type="button">Reload from file</button>
@@ -413,7 +384,18 @@
 							Auto reload every 5 seconds
 						</label>
 					</div>
-				</details>
+				</section>
+				</div>
+				</div>
+				<div class="visual-settings-feedback">
+					<p id="visual-settings-status" role="status" aria-live="polite">Preview matches the loaded file.</p>
+					<p id="visual-settings-errors" class="visual-settings-errors" role="alert" hidden></p>
+					<div id="visual-settings-conflict" class="visual-settings-conflict" role="group"
+						aria-label="Resolve visual settings file conflict" hidden>
+						<p>The file changed while a preview is active.</p>
+						<button id="visual-settings-use-file" type="button">Use file</button>
+						<button id="visual-settings-keep-preview" type="button">Keep preview</button>
+					</div>
 				</div>
 				<footer class="visual-settings-actions">
 					<button id="visual-settings-preset-save-as" type="button">Save as new</button>

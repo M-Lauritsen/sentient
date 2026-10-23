@@ -170,6 +170,11 @@ export function createVisualSettingsPanel({
   presetSelect,
   fields,
   quickFields,
+  categoryNav,
+  categorySelect,
+  scrollContainer,
+  presetsPanel,
+  filesPanel,
   searchInput,
   searchStatus,
   clearSearchButton,
@@ -251,6 +256,44 @@ export function createVisualSettingsPanel({
   const sectionDetails = new Map();
   const sectionRows = new Map();
   let searchSectionState = null;
+  let selectedCategory = 'quick';
+  let searching = false;
+  const scrollPositions = new Map();
+  const categoryButtons = new Map();
+  const categories = [
+    ['quick', 'Quick'],
+    ...sections.map(([key, label]) => [key, label.split(' · ')[0]]),
+    ['presets', 'Presets'],
+    ['files', 'File actions'],
+  ];
+  for (const [key, label] of categories) {
+    if (categoryNav) {
+      const button = createElement(document, 'button', '', label);
+      button.type = 'button';
+      button.setAttribute('data-category', key);
+      button.addEventListener('click', () => selectCategory(key));
+      categoryNav.append(button);
+      categoryButtons.set(key, button);
+    }
+    if (categorySelect) {
+      const option = createElement(document, 'option', '', label);
+      option.value = key;
+      categorySelect.append(option);
+    }
+  }
+  categorySelect?.addEventListener('change', () => selectCategory(categorySelect.value));
+
+  function selectCategory(category) {
+    if (!categories.some(([key]) => key === category)) return;
+    if (scrollContainer && !searching) {
+      scrollPositions.set(selectedCategory, scrollContainer.scrollTop);
+    }
+    selectedCategory = category;
+    if (searchInput) searchInput.value = '';
+    clearPreviewTarget();
+    updateSearch();
+    if (scrollContainer) scrollContainer.scrollTop = scrollPositions.get(category) ?? 0;
+  }
   fields.append(createElement(document, 'p', 'visual-settings-guidance',
     'Sliders show suggested ranges, not limits. Use the exact value inputs for other valid values. Open Details for constraints, configuration paths and individual resets.'));
   for (const [key, label] of sections) {
@@ -463,9 +506,15 @@ export function createVisualSettingsPanel({
   function updateSearch() {
     if (!searchInput || !searchStatus || !clearSearchButton) return;
     const query = searchInput.value.trim().toLocaleLowerCase();
-    const matches = advancedProjections.filter(({ presentation }) =>
-      !query || `${presentation.label} ${presentation.helpText} ${presentation.section} ${presentation.label}`
+    const matches = advancedProjections.filter(({ presentation, definition }) =>
+      !query || `${presentation.label} ${presentation.helpText} ${presentation.section} ${presentation.section.replaceAll('-', ' ')} ${definition.path}`
         .toLocaleLowerCase().includes(query));
+    const hasNavigation = Boolean(categoryNav);
+    const searchChanged = Boolean(query) !== searching;
+    if (scrollContainer && searchChanged && query) {
+      scrollPositions.set(selectedCategory, scrollContainer.scrollTop);
+    }
+    searching = Boolean(query);
     const matchedSections = new Set(matches.map(({ presentation }) => presentation.section));
     for (const projection of advancedProjections) {
       projection.wrapper.hidden = Boolean(query) && !matches.includes(projection);
@@ -475,18 +524,32 @@ export function createVisualSettingsPanel({
         [section, details.open]));
     }
     for (const [section, details] of sectionDetails) {
-      sectionRows.get(section).hidden = Boolean(query) && !matchedSections.has(section);
+      sectionRows.get(section).hidden = query
+        ? !matchedSections.has(section) : hasNavigation && selectedCategory !== section;
       if (query) details.open = matchedSections.has(section);
+      else if (hasNavigation) details.open = selectedCategory === section;
       else if (searchSectionState) details.open = searchSectionState.get(section);
     }
     if (!query) searchSectionState = null;
-    if (quickFields) quickFields.hidden = Boolean(query);
+    if (quickFields) quickFields.hidden = Boolean(query) || (hasNavigation && selectedCategory !== 'quick');
+    if (hasNavigation) fields.hidden = !query && !sectionRows.has(selectedCategory);
+    if (presetsPanel) presetsPanel.hidden = Boolean(query) || selectedCategory !== 'presets';
+    if (filesPanel) filesPanel.hidden = Boolean(query) || selectedCategory !== 'files';
+    for (const [key, button] of categoryButtons) {
+      if (!query && key === selectedCategory) button.setAttribute('aria-current', 'true');
+      else button.removeAttribute('aria-current');
+    }
+    if (categorySelect) categorySelect.value = selectedCategory;
     clearSearchButton.hidden = !query;
     searchStatus.textContent = query
       ? matches.length
         ? `${matches.length} setting${matches.length === 1 ? '' : 's'} found.`
         : 'No settings match. Clear search to show all settings.'
       : `${VISUAL_SETTING_DEFINITIONS.length} settings available.`;
+    // Restore after revealing the category; a short result list would clamp it to zero.
+    if (scrollContainer && searchChanged) {
+      scrollContainer.scrollTop = query ? 0 : scrollPositions.get(selectedCategory) ?? 0;
+    }
   }
 
   function syncPresetOptions() {
@@ -519,9 +582,13 @@ export function createVisualSettingsPanel({
   syncPresetOptions();
   presetSelect.value = activePreset;
   opener.setAttribute('aria-expanded', 'false');
-  searchInput?.addEventListener('input', updateSearch);
+  searchInput?.addEventListener('input', () => {
+    clearPreviewTarget();
+    updateSearch();
+  });
   clearSearchButton?.addEventListener('click', () => {
     searchInput.value = '';
+    clearPreviewTarget();
     updateSearch();
     searchInput.focus();
   });
@@ -572,6 +639,22 @@ export function createVisualSettingsPanel({
     }
     errorSummary.textContent = errors.map(({ path, message }) => `${path}: ${message}`).join(' ');
     errorSummary.hidden = errors.length === 0;
+    if (categoryNav) {
+      for (const [path] of fieldErrors) {
+        const control = controls.get(path);
+        if (!control) continue;
+        const { presentation } = control.projections[0];
+        const reveal = createElement(document, 'button', 'visual-error-link', `Show ${presentation.label}`);
+        reveal.type = 'button';
+        reveal.addEventListener('click', () => {
+          selectCategory(presentation.section);
+          const projection = control.projections[0];
+          projection.wrapper.scrollIntoView?.({ block: 'nearest' });
+          projection.inputs[0].focus({ preventScroll: true });
+        });
+        errorSummary.append(reveal);
+      }
+    }
     for (const [path, control] of controls) {
       const messages = fieldErrors.get(path) ?? [];
       for (const projection of control.projections) {
@@ -887,6 +970,15 @@ export function createVisualSettingsPanel({
   let sweep = null;
   let sweepFrame = 0;
 
+  function clearPreviewTarget() {
+    hoverRow = null;
+    hoverPath = null;
+    focusRow = null;
+    focusPath = null;
+    pausedPath = null;
+    refreshPreview();
+  }
+
   function rowFrom(target) {
     return target?.closest?.('[data-setting-path]') ?? null;
   }
@@ -1092,6 +1184,11 @@ export function createVisualSettingsPanel({
   }
 
   saveAsPresetButton.addEventListener('click', () => {
+    if (categoryNav && (selectedCategory !== 'presets' || searching)) {
+      selectCategory('presets');
+      presetNameInput.focus({ preventScroll: true });
+      return;
+    }
     if (presetStorageError || !presetStorage) {
       setStatus(`Personal presets are unavailable: ${presetStorageError ?? 'browser local storage is unavailable.'}`);
       return;
