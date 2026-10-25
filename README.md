@@ -6,6 +6,18 @@ per-session `events.jsonl` activity files in
 on IPv4 loopback. It does not attach to sessions, install a Copilot extension,
 or change Copilot settings.
 
+## What it looks like
+
+These screenshots use synthetic activity only; they contain no real session data.
+
+![SENTIENT OS network scene with synthetic activity](docs/images/sentient-os-scene.png)
+
+*The network scene visualizes activity as pulses moving through connected nodes.*
+
+![Appearance settings with Demo activity enabled](docs/images/sentient-os-appearance-demo.png)
+
+*Appearance settings preview scene-only synthetic activity without adding it to session history.*
+
 ## Run
 
 Requires Node.js 22 or newer. The optional Copilot Library additionally requires
