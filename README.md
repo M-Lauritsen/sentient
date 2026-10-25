@@ -854,6 +854,14 @@ Git history or every binary/archive. Review `git status --short`, the staged
 diff, and any release archive yourself; ignore rules do not remove tracked files
 or history. If a credential was published, revoke or rotate it.
 
-SENTIENT OS has no project license yet. A license must be chosen before describing
-a public release as open source. The bundled Three.js dependency retains its
-own MIT license; that does not license SENTIENT OS.
+## Support
+
+For bug reports, feature requests, or questions, [open an issue on
+GitHub](https://github.com/M-Lauritsen/sentient/issues).
+Do not include private journals, prompts, commands, outputs, credentials, or
+machine-specific paths in issues.
+
+## License
+
+SENTIENT OS is licensed under the [MIT License](LICENSE). The bundled Three.js
+dependency retains its own MIT license; see its license notices for details.
